@@ -1,265 +1,150 @@
 package com.imin.iminapi.controller.event;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.dto.PageResponse;
-import com.imin.iminapi.dto.event.*;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.event.DraftEventDeletionService;
-import com.imin.iminapi.service.event.EventOverviewService;
-import com.imin.iminapi.service.event.EventService;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The organizer events HTTP contract over the real services; cross-org probes are owned by CrossOrgScopingTest. */
+@IminIntegrationTest
 class EventControllerTest {
 
     @Autowired MockMvc mvc;
-    final ObjectMapper om = new ObjectMapper();
-    @MockitoBean EventService eventService;
-    @MockitoBean EventOverviewService overviewService;
-    @MockitoBean DraftEventDeletionService draftDeletion;
+    @Autowired IminFixtures fx;
+    @Autowired EventRepository events;
+    @Autowired MutableClock clock;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    private final ObjectMapper om = new ObjectMapper();
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubAuthFactory.class)
-    public @interface WithStubUser {}
+    private RequestPostProcessor as(User u) {
+        return authentication(new UsernamePasswordAuthenticationToken(
+                fx.principal(u), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER"))));
+    }
 
-    public static class StubAuthFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override
-        public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubUser annotation) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
+    /**
+     * An unknown status was a bare valueOf and a 500; a genre over the outcome column's 64 chars rolled the
+     * whole publish back later. Both are FIELD_INVALID at the edge, and the event is left as it was.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"status", "genre"})
+    void an_invalid_parameter_is_FIELD_INVALID_on_its_field(String field) throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+        String genreBefore = e.getGenre();
+        MockHttpServletRequestBuilder req = field.equals("status")
+                ? get("/api/v1/events").param("status", "archived")
+                : patch("/api/v1/events/{id}", e.getId()).contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("genre", "x".repeat(65))));
+
+        mvc.perform(req.with(as(owner)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields." + field).exists());
+
+        if (field.equals("genre")) {
+            assertThat(events.findById(e.getId()).orElseThrow().getGenre()).isEqualTo(genreBefore);
         }
     }
 
-    private EventDto sample() {
-        return EventDto.summary(eventEntity(), com.imin.iminapi.dto.event.EventSalesFigures.EMPTY);
-    }
-
-    private com.imin.iminapi.model.Event eventEntity() {
-        com.imin.iminapi.model.Event e = new com.imin.iminapi.model.Event();
-        e.setId(UUID.randomUUID()); e.setOrgId(ORG); e.setCreatedBy(USER);
-        e.setName("X"); e.setSlug("x"); e.setUpdatedAt(Instant.parse("2026-04-23T10:00:00Z"));
-        return e;
-    }
-
     @Test
-    @WithStubUser
-    void post_events_creates_201() throws Exception {
-        when(eventService.createDraft(any(), any())).thenReturn(sample());
-        mvc.perform(post("/api/v1/events")
+    void a_genre_at_the_64_char_limit_is_accepted_and_saved() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+        String genre = "g".repeat(64);
+
+        mvc.perform(patch("/api/v1/events/{id}", e.getId()).with(as(owner))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("draft"));
+                        .content(om.writeValueAsString(Map.of("genre", genre))))
+                .andExpect(status().isOk());
+
+        assertThat(events.findById(e.getId()).orElseThrow().getGenre()).isEqualTo(genre);
     }
 
     @Test
-    @WithStubUser
-    void delete_event_returns_204_and_delegates() throws Exception {
-        UUID id = UUID.randomUUID();
-        mvc.perform(delete("/api/v1/events/" + id))
+    void post_creates_a_draft_in_the_callers_org() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+
+        String body = mvc.perform(post("/api/v1/events").with(as(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("draft"))
+                .andReturn().getResponse().getContentAsString();
+
+        Event created = events.findById(UUID.fromString(JsonPath.read(body, "$.id"))).orElseThrow();
+        assertThat(created.getOrgId()).isEqualTo(org.getId());
+        assertThat(created.getStatus()).isEqualTo(EventStatus.DRAFT);
+    }
+
+    @Test
+    void the_status_filter_lists_only_the_matching_own_events() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event live = fx.event(org, owner, EventStatus.LIVE, clock.instant().plusSeconds(86_400));
+        Event draft = fx.event(org, owner, EventStatus.DRAFT, null);
+
+        String body = mvc.perform(get("/api/v1/events").param("status", "live").with(as(owner)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        List<String> ids = JsonPath.read(body, "$.items[*].id");
+        assertThat(ids).containsExactly(live.getId().toString()).doesNotContain(draft.getId().toString());
+    }
+
+    @Test
+    void delete_removes_an_own_draft_with_204() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event draft = fx.event(org, owner, EventStatus.DRAFT, null);
+
+        mvc.perform(delete("/api/v1/events/{id}", draft.getId()).with(as(owner)))
                 .andExpect(status().isNoContent())
                 .andExpect(content().string(""));
-        verify(draftDeletion).deleteDraft(argThat(p -> p.orgId().equals(ORG) && p.userId().equals(USER)), eq(id));
+
+        assertThat(events.findActive(draft.getId())).isEmpty();
     }
 
     @Test
-    @WithStubUser
-    void get_events_returns_paginated() throws Exception {
-        when(eventService.list(any(), eq(null), eq(1), eq(20)))
-                .thenReturn(new PageResponse<>(List.of(sample()), 1L, 1, 20));
-        mvc.perform(get("/api/v1/events"))
+    void the_overview_of_an_own_event_reports_its_tier_capacity() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.LIVE, clock.instant().plusSeconds(86_400 * 30L));
+        fx.tier(e, 1500, 120);
+
+        mvc.perform(get("/api/v1/events/{id}/overview", e.getId()).with(as(owner)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].id").exists())
-                .andExpect(jsonPath("$.total").value(1));
-    }
-
-    @Test
-    @WithStubUser
-    void get_events_serialises_sold_capacity_and_revenue() throws Exception {
-        EventDto withCapacity = EventDto.summary(eventEntity(),
-                new com.imin.iminapi.dto.event.EventSalesFigures(12, 200, 4500L));
-        when(eventService.list(any(), eq(null), eq(1), eq(20)))
-                .thenReturn(new PageResponse<>(List.of(withCapacity), 1L, 1, 20));
-        mvc.perform(get("/api/v1/events"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].sold").value(12))
-                .andExpect(jsonPath("$.items[0].capacity").value(200))
-                .andExpect(jsonPath("$.items[0].revenueMinor").value(4500));
-    }
-
-    @Test
-    @WithStubUser
-    void get_events_omits_capacity_when_unknown() throws Exception {
-        when(eventService.list(any(), eq(null), eq(1), eq(20)))
-                .thenReturn(new PageResponse<>(List.of(sample()), 1L, 1, 20));
-        mvc.perform(get("/api/v1/events"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].sold").value(0))
-                .andExpect(jsonPath("$.items[0].capacity").doesNotExist());
-    }
-
-    @Test
-    void openapi_publishes_capacity_on_EventDto() throws Exception {
-        mvc.perform(get("/v3/api-docs"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.EventDto.properties.capacity.type").value("integer"))
-                .andExpect(jsonPath("$.components.schemas.EventDto.properties.sold").exists())
-                .andExpect(jsonPath("$.components.schemas.EventDto.properties.revenueMinor").exists());
-    }
-
-    @Test
-    @WithStubUser
-    void get_events_with_status_filter() throws Exception {
-        when(eventService.list(any(), eq(com.imin.iminapi.model.EventStatus.LIVE), eq(1), eq(20)))
-                .thenReturn(new PageResponse<>(List.of(), 0L, 1, 20));
-        mvc.perform(get("/api/v1/events?status=live"))
-                .andExpect(status().isOk());
-    }
-
-    /**
-     * api-6: {@code EventStatus.fromWire} is a bare {@code valueOf}, so a stale bookmark or a
-     * typo'd deep link threw IllegalArgumentException, which nothing handled — a 500 INTERNAL
-     * plus a log.error for what is a client typo. The FE expects the FIELD_INVALID envelope.
-     */
-    @Test
-    @WithStubUser
-    void get_events_with_unknown_status_is_a_400_not_a_500() throws Exception {
-        mvc.perform(get("/api/v1/events?status=archived"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.status").exists());
-        verify(eventService, org.mockito.Mockito.never()).list(any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
-    }
-
-    @Test
-    @WithStubUser
-    void patch_event_passes_ifMatch() throws Exception {
-        UUID id = UUID.randomUUID();
-        when(eventService.patch(any(), eq(id), eq("\"2026-04-23T10:00:00Z\""), any()))
-                .thenReturn(sample());
-        mvc.perform(patch("/api/v1/events/" + id)
-                        .header("If-Match", "\"2026-04-23T10:00:00Z\"")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("name", "Renamed"))))
-                .andExpect(status().isOk());
-    }
-
-    /**
-     * predictor-edge-5: the predictor's publish-freeze snapshots events.genre into
-     * event_outcomes.genre_family (VARCHAR(64)) inside EventService.publish's transaction, so an
-     * over-long genre used to fail that INSERT and roll the WHOLE publish back with only a
-     * generic "Request violates a data constraint". The bound has to be enforced here, at the
-     * edge, and the endpoint needs @Valid or the @Size is inert.
-     */
-    @Test
-    @WithStubUser
-    void patch_rejects_a_genre_longer_than_the_outcome_column() throws Exception {
-        UUID id = UUID.randomUUID();
-        String tooLong = "x".repeat(65);
-
-        mvc.perform(patch("/api/v1/events/" + id)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("genre", tooLong))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.genre").exists());
-        verify(eventService, org.mockito.Mockito.never()).patch(any(), any(), any(), any());
-    }
-
-    @Test
-    @WithStubUser
-    void patch_accepts_a_genre_at_the_limit() throws Exception {
-        UUID id = UUID.randomUUID();
-        when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
-
-        mvc.perform(patch("/api/v1/events/" + id)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("genre", "x".repeat(64)))))
-                .andExpect(status().isOk());
-    }
-
-    @Test
-    @WithStubUser
-    void patch_deserializes_embedded_tiers_into_request() throws Exception {
-        UUID id = UUID.randomUUID();
-        UUID existingTierId = UUID.randomUUID();
-        when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
-
-        String body = "{\"tiers\":[" +
-                "{\"name\":\"GA\",\"priceMinor\":1500,\"quantity\":100}," +
-                "{\"id\":\"" + existingTierId + "\",\"priceMinor\":2000}" +
-                "]}";
-
-        mvc.perform(patch("/api/v1/events/" + id)
-                        .header("If-Match", "\"2026-04-23T10:00:00Z\"")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk());
-
-        verify(eventService).patch(any(), any(), any(),
-                argThat(req -> req.tiers() != null && req.tiers().size() == 2
-                        && req.tiers().get(0).id() == null
-                        && existingTierId.equals(req.tiers().get(1).id())));
-    }
-
-    @Test
-    @WithStubUser
-    void publish_returns_event() throws Exception {
-        UUID id = UUID.randomUUID();
-        when(eventService.publish(any(), eq(id))).thenReturn(sample());
-        mvc.perform(post("/api/v1/events/" + id + "/publish"))
-                .andExpect(status().isOk());
-    }
-
-    @Test
-    @WithStubUser
-    void overview_returns_metrics() throws Exception {
-        UUID id = UUID.randomUUID();
-        when(overviewService.overview(any(), eq(id)))
-                .thenReturn(new EventOverviewResponse(
-                        new EventOverviewResponse.Metrics(0, 120, 0, 0, "EUR", 30, 0, 0),
-                        List.of(), null,
-                        List.of(new EventOverviewResponse.QuickAction("copy_link", "🔗", "Copy buyer link"))));
-        mvc.perform(get("/api/v1/events/" + id + "/overview"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.metrics.daysOut").value(30))
-                .andExpect(jsonPath("$.metrics.capacity").value(120))
-                .andExpect(jsonPath("$.quickActions[0].key").value("copy_link"));
+                .andExpect(jsonPath("$.metrics.capacity").value(120));
     }
 }

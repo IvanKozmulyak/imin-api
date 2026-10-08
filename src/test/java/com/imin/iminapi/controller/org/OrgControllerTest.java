@@ -1,187 +1,101 @@
 package com.imin.iminapi.controller.org;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.dto.OrganizationDto;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.org.OrgService;
-import org.junit.jupiter.api.Test;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.stream.Stream;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** Organization settings over the real OrgService: the legal identity bounds and the saved, trimmed values. */
+@IminIntegrationTest
 class OrgControllerTest {
 
     @Autowired MockMvc mvc;
-    final ObjectMapper om = new ObjectMapper();
-    @MockitoBean OrgService orgService;
+    @Autowired IminFixtures fx;
+    @Autowired OrganizationRepository orgs;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000010");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000011");
+    private final ObjectMapper om = new ObjectMapper();
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubAuthFactory.class)
-    public @interface WithStubUser {}
-
-    public static class StubAuthFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override
-        public SecurityContext createSecurityContext(WithStubUser annotation) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    private RequestPostProcessor as(User u) {
+        return authentication(new UsernamePasswordAuthenticationToken(
+                fx.principal(u), null, List.of(new SimpleGrantedAuthority("ROLE_" + u.getRole().name()))));
     }
 
-    private OrganizationDto sampleOrg() {
-        return new OrganizationDto(ORG, "Test Org", "test-org", "test@example.com", "DE",
-                "Europe/Berlin", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
+
+    static Stream<Arguments> invalidLegalIdentity() {
+        return Stream.of(
+                Arguments.of(Map.of("legalName", "n".repeat(201)), "legalName", null),
+                Arguments.of(Map.of("legalContact", "c".repeat(321)), "legalContact", null),
+                Arguments.of(Map.of("legalName", "Night SAS\r\nBcc: x@y.z"), "legalName", "must be a single line"),
+                Arguments.of(Map.of("legalContact", "1 rue X\n57000 Metz"), "legalContact", "must be a single line"));
     }
 
-    @Test
-    void get_without_token_returns_AUTH_MISSING() throws Exception {
-        mvc.perform(get("/api/v1/org"))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error.code").value("AUTH_MISSING"));
-    }
+    /** The legal identity is printed in campaign footers; a newline would inject a header line there. */
+    @ParameterizedTest
+    @MethodSource("invalidLegalIdentity")
+    void an_invalid_legal_identity_is_FIELD_INVALID_and_not_saved(Map<String, String> body, String field,
+                                                                  String message) throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
 
-    @Test
-    @WithStubUser
-    void get_returns_org() throws Exception {
-        when(orgService.get(any(AuthPrincipal.class))).thenReturn(sampleOrg());
-        mvc.perform(get("/api/v1/org"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(ORG.toString()))
-                .andExpect(jsonPath("$.name").value("Test Org"));
-    }
-
-    @Test
-    @WithStubUser
-    void patch_returns_updated() throws Exception {
-        OrganizationDto updated = new OrganizationDto(ORG, "Updated Org", "updated-org", "test@example.com", "DE",
-                "Europe/Berlin", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T11:00:00Z"));
-        when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(updated);
-        mvc.perform(patch("/api/v1/org")
-                        .header("If-Match", "\"2026-04-23T10:00:00Z\"")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("name", "Updated Org"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Updated Org"));
-    }
-
-    @Test
-    @WithStubUser
-    void delete_returns_204() throws Exception {
-        mvc.perform(delete("/api/v1/org"))
-                .andExpect(status().isNoContent());
-        verify(orgService).delete(any(AuthPrincipal.class));
-    }
-
-    @Test
-    @WithStubUser
-    void get_returns_legal_identity() throws Exception {
-        OrganizationDto withLegal = new OrganizationDto(ORG, "Test Org", "test-org", "test@example.com", "DE",
-                "Europe/Berlin", "growth", 89, "EUR", "Test Org GmbH", "legal@test.org",
-                Instant.parse("2026-04-23T10:00:00Z"));
-        when(orgService.get(any(AuthPrincipal.class))).thenReturn(withLegal);
-        mvc.perform(get("/api/v1/org"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.legalName").value("Test Org GmbH"))
-                .andExpect(jsonPath("$.legalContact").value("legal@test.org"));
-    }
-
-    @Test
-    @WithStubUser
-    void patch_accepts_legal_fields_at_their_bounds() throws Exception {
-        when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(sampleOrg());
-        String name = "n".repeat(200);
-        String contact = "c".repeat(320);
-        mvc.perform(patch("/api/v1/org")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("legalName", name, "legalContact", contact))))
-                .andExpect(status().isOk());
-        var captor = org.mockito.ArgumentCaptor.forClass(com.imin.iminapi.dto.org.OrgPatchRequest.class);
-        verify(orgService).patch(any(AuthPrincipal.class), any(), captor.capture());
-        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalName()).isEqualTo(name);
-        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalContact()).isEqualTo(contact);
-    }
-
-    @Test
-    @WithStubUser
-    void patch_rejects_legal_name_over_200() throws Exception {
-        mvc.perform(patch("/api/v1/org")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("legalName", "n".repeat(201)))))
+        var r = mvc.perform(patch("/api/v1/org").with(as(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(body)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.legalName").exists());
+                .andExpect(jsonPath("$.error.fields." + field).exists());
+        if (message != null) r.andExpect(jsonPath("$.error.fields." + field).value(message));
+
+        Organization after = orgs.findById(org.getId()).orElseThrow();
+        assertThat(after.getLegalName()).isNull();
+        assertThat(after.getLegalContact()).isNull();
     }
 
-    @Test
-    @WithStubUser
-    void patch_rejects_legal_contact_over_320() throws Exception {
-        mvc.perform(patch("/api/v1/org")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("legalContact", "c".repeat(321)))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.legalContact").exists());
-    }
-
-    @Test
-    @WithStubUser
-    void patch_rejects_multi_line_legal_fields() throws Exception {
-        mvc.perform(patch("/api/v1/org")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of(
-                                "legalName", "Night SAS\r\nBcc: x@y.z", "legalContact", "1 rue X\n57000 Metz"))))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.legalName").value("must be a single line"))
-                .andExpect(jsonPath("$.error.fields.legalContact").value("must be a single line"));
-    }
-
-    @Test
-    @WithStubUser
-    void patch_measures_legal_fields_after_trimming() throws Exception {
-        when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(sampleOrg());
+    static Stream<Arguments> savedLegalIdentity() {
         String name = "n".repeat(200);
-        mvc.perform(patch("/api/v1/org")
+        return Stream.of(
+                Arguments.of(name, "c".repeat(320), name, "c".repeat(320)),
+                Arguments.of("  " + name + " \n", "\t c ", name, "c"));
+    }
+
+    /** Bounds are measured after trimming, and what is saved is what GET then serves. */
+    @ParameterizedTest
+    @MethodSource("savedLegalIdentity")
+    void a_legal_identity_within_bounds_is_saved_trimmed(String legalName, String legalContact,
+                                                         String savedName, String savedContact) throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+
+        mvc.perform(patch("/api/v1/org").with(as(owner))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("legalName", "  " + name + " \n", "legalContact", "\t c "))))
+                        .content(om.writeValueAsString(Map.of("legalName", legalName, "legalContact", legalContact))))
                 .andExpect(status().isOk());
-        var captor = org.mockito.ArgumentCaptor.forClass(com.imin.iminapi.dto.org.OrgPatchRequest.class);
-        verify(orgService).patch(any(AuthPrincipal.class), any(), captor.capture());
-        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalName()).isEqualTo(name);
-        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalContact()).isEqualTo("c");
+
+        Organization after = orgs.findById(org.getId()).orElseThrow();
+        assertThat(after.getLegalName()).isEqualTo(savedName);
+        assertThat(after.getLegalContact()).isEqualTo(savedContact);
+        mvc.perform(get("/api/v1/org").with(as(owner)))
+                .andExpect(jsonPath("$.legalName").value(savedName))
+                .andExpect(jsonPath("$.legalContact").value(savedContact));
     }
 }

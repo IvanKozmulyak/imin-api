@@ -1,99 +1,71 @@
 package com.imin.iminapi.controller.org;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.dto.org.InviteResponse;
-import com.imin.iminapi.dto.org.TeamMemberDto;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.org.TeamService;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The team list is the caller's org only; cross-org removal is owned by CrossOrgScopingTest. */
+@IminIntegrationTest
 class TeamControllerTest {
 
     @Autowired MockMvc mvc;
-    final ObjectMapper om = new ObjectMapper();
-    @MockitoBean TeamService teamService;
+    @Autowired IminFixtures fx;
+    @Autowired UserRepository users;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000020");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000021");
+    private RequestPostProcessor as(User u) {
+        return authentication(new UsernamePasswordAuthenticationToken(
+                fx.principal(u), null, List.of(new SimpleGrantedAuthority("ROLE_" + u.getRole().name()))));
+    }
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubAuthFactory.class)
-    public @interface WithStubUser {}
-
-    public static class StubAuthFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override
-        public SecurityContext createSecurityContext(WithStubUser annotation) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    private User member(Organization org) {
+        User u = new User();
+        u.setOrgId(org.getId());
+        u.setEmail(fx.email("member"));
+        u.setRole(UserRole.MEMBER);
+        return users.save(u);
     }
 
     @Test
-    @WithStubUser
-    void list_returns_members() throws Exception {
-        TeamMemberDto member = new TeamMemberDto(USER, "test@example.com",
-                "Test", "", "owner", "TE", ORG, Instant.parse("2026-04-23T10:00:00Z"), null);
-        when(teamService.list(any(AuthPrincipal.class))).thenReturn(List.of(member));
-        mvc.perform(get("/api/v1/org/team"))
+    void the_team_list_is_the_callers_org_only() throws Exception {
+        Organization own = fx.org();
+        User owner = fx.owner(own);
+        User ownMember = member(own);
+        Organization other = fx.org();
+        User otherOwner = fx.owner(other);
+        User otherMember = member(other);
+
+        String body = mvc.perform(get("/api/v1/org/team").with(as(owner)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].email").value("test@example.com"));
+                .andReturn().getResponse().getContentAsString();
+        List<String> ids = JsonPath.read(body, "$[*].id");
+        assertThat(ids).containsExactlyInAnyOrder(owner.getId().toString(), ownMember.getId().toString())
+                .doesNotContain(otherOwner.getId().toString(), otherMember.getId().toString());
     }
 
     @Test
-    @WithStubUser
-    void invite_returns_inviteId() throws Exception {
-        UUID inviteId = UUID.randomUUID();
-        when(teamService.invite(any(AuthPrincipal.class), any()))
-                .thenReturn(new InviteResponse(inviteId, "newmember@example.com", "admin"));
-        mvc.perform(post("/api/v1/org/team/invite")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("email", "newmember@example.com", "role", "admin"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.inviteId").value(inviteId.toString()));
-    }
+    void removing_an_own_member_answers_204() throws Exception {
+        Organization own = fx.org();
+        User owner = fx.owner(own);
 
-    @Test
-    @WithStubUser
-    void remove_returns_204() throws Exception {
-        UUID targetId = UUID.randomUUID();
-        mvc.perform(delete("/api/v1/org/team/" + targetId))
+        mvc.perform(delete("/api/v1/org/team/{id}", member(own).getId()).with(as(owner)))
                 .andExpect(status().isNoContent());
-        verify(teamService).remove(any(AuthPrincipal.class), eq(targetId));
     }
 }

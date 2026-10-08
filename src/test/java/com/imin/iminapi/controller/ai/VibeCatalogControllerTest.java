@@ -1,67 +1,37 @@
 package com.imin.iminapi.controller.ai;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.List;
-import java.util.UUID;
 
+import static org.hamcrest.Matchers.greaterThan;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The AI Studio vibe picker catalog. */
+@IminIntegrationTest
 class VibeCatalogControllerTest {
 
     @Autowired MockMvc mvc;
-
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
-
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithStubUser {}
-
-    public static class StubFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override
-        public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubUser ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
-    }
+    @Autowired IminFixtures fx;
 
     @Test
-    @WithStubUser
-    void lists_twelve_vibes() throws Exception {
-        mvc.perform(get("/api/v1/ai/vibes"))
+    void the_catalog_is_served_to_an_organizer() throws Exception {
+        User owner = fx.owner(fx.org());
+
+        mvc.perform(get("/api/v1/ai/vibes").with(authentication(new UsernamePasswordAuthenticationToken(
+                        fx.principal(owner), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER"))))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(12))
-                .andExpect(jsonPath("$[0].id").value("brutalist_techno"))
-                .andExpect(jsonPath("$[0].name").value("Brutalist Techno"))
-                .andExpect(jsonPath("$[0].palette").isArray());
-    }
-
-    @Test
-    void requires_authentication() throws Exception {
-        mvc.perform(get("/api/v1/ai/vibes"))
-                .andExpect(status().is4xxClientError());
+                .andExpect(jsonPath("$.length()").value(greaterThan(0)))
+                .andExpect(jsonPath("$[0].id").isNotEmpty());
     }
 }

@@ -1,112 +1,81 @@
 package com.imin.iminapi.controller;
 
-import com.imin.iminapi.config.SecurityConfig;
-import com.imin.iminapi.repository.AuthSessionRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.security.TokenService;
-import com.imin.iminapi.service.gate.GateAuthService;
 import com.imin.iminapi.service.poster.ReferenceImageLibrary;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.security.saml2.autoconfigure.Saml2RelyingPartyAutoConfiguration;
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(
-        controllers = StyleReferenceController.class,
-        excludeAutoConfiguration = Saml2RelyingPartyAutoConfiguration.class
-)
-// BuyerConfig supplies BuyerProperties: @WebMvcTest slices include Filter beans,
-// so the two buyer filters are instantiated here even though this controller has
-// nothing to do with them — same reason the organizer session repositories below
-// are mocked for BearerTokenAuthFilter.
-@Import({SecurityConfig.class, com.imin.iminapi.buyer.BuyerConfig.class,
-        com.imin.iminapi.security.GlobalExceptionHandler.class})
+/** Anonymous style-reference images over the real classpath library. */
+@IminIntegrationTest
 class StyleReferenceControllerTest {
 
-    @Autowired private MockMvc mockMvc;
-    @MockitoBean private ReferenceImageLibrary library;
-    @MockitoBean private AuthSessionRepository authSessionRepository;
-    @MockitoBean private UserRepository userRepository;
-    @MockitoBean private TokenService tokenService;
-    @MockitoBean private GateAuthService gateAuthService;
-    @MockitoBean private com.imin.iminapi.buyer.repository.BuyerSessionRepository buyerSessionRepository;
+    @Autowired MockMvc mvc;
+    @Autowired ReferenceImageLibrary library;
 
+    private String populatedTag() {
+        return library.tags().stream().filter(t -> library.referenceCount(t) > 0).findFirst()
+                .orElseThrow(() -> new AssertionError("no populated reference tag on the classpath"));
+    }
+
+    /** The Poster Studio picker: one entry per populated tag, a readable label and one URL per image. */
     @Test
-    void list_returnsCatalogWithImageUrls() throws Exception {
-        when(library.tags()).thenReturn(List.of("neon_underground", "chrome_tropical"));
-        when(library.referenceCount("neon_underground")).thenReturn(3);
-        when(library.referenceCount("chrome_tropical")).thenReturn(2);
+    void the_catalog_lists_every_tag_with_a_label_and_its_image_urls() throws Exception {
+        List<String> tags = library.tags();
+        int i = tags.indexOf("brutalist_techno");
+        assertThat(i).as("brutalist_techno is a curated vibe with flyers").isNotNegative();
+        int count = library.referenceCount("brutalist_techno");
 
-        mockMvc.perform(get("/api/v1/posters/style-references"))
+        mvc.perform(get("/api/v1/posters/style-references"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$[0].tag").value("neon_underground"))
-                .andExpect(jsonPath("$[0].label").value("Neon Underground"))
-                .andExpect(jsonPath("$[0].imageUrls").isArray())
-                .andExpect(jsonPath("$[0].imageUrls.length()").value(3))
-                .andExpect(jsonPath("$[0].imageUrls[0]")
-                        .value("/api/v1/posters/style-references/neon_underground/0"))
-                .andExpect(jsonPath("$[1].imageUrls.length()").value(2));
+                .andExpect(jsonPath("$.length()").value(tags.size()))
+                .andExpect(jsonPath("$[" + i + "].tag").value("brutalist_techno"))
+                .andExpect(jsonPath("$[" + i + "].label").value("Brutalist Techno"))
+                .andExpect(jsonPath("$[" + i + "].imageUrls.length()").value(count))
+                .andExpect(jsonPath("$[" + i + "].imageUrls[0]")
+                        .value("/api/v1/posters/style-references/brutalist_techno/0"));
     }
 
     @Test
-    void image_validTagAndIndex_returnsPngBytes() throws Exception {
-        byte[] png = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-        when(library.loadBytes("neon_underground", 0)).thenReturn(png);
+    void image_of_a_known_tag_is_served_as_png_bytes() throws Exception {
+        String tag = populatedTag();
+        byte[] expected = library.loadBytes(tag, 0);
 
-        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/0"))
+        mvc.perform(get("/api/v1/posters/style-references/{tag}/0", tag))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type", "image/png"))
-                .andExpect(content().bytes(png));
-    }
-
-    @Test
-    void image_unknownTag_returns404() throws Exception {
-        when(library.loadBytes("nope", 0))
-                .thenThrow(new IllegalArgumentException("Unknown sub-style tag: nope"));
-
-        mockMvc.perform(get("/api/v1/posters/style-references/nope/0"))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
-    void image_indexOutOfRange_returns404() throws Exception {
-        when(library.loadBytes("neon_underground", 99))
-                .thenThrow(new IllegalArgumentException("Index 99 out of range"));
-
-        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/99"))
-                .andExpect(status().isNotFound());
+                .andExpect(content().bytes(expected));
+        assertThat(expected).isNotEmpty();
     }
 
     /**
-     * api-15: the 404 reason was {@code e.getMessage()} straight off the library's
-     * IllegalArgumentException, and GlobalExceptionHandler copies a ResponseStatusException's
-     * reason into the body. The whole /api/v1/posters/** tree is permitAll, so an anonymous
-     * caller was reading whatever the library chose to say about the classpath — including the
-     * per-tag reference count ("size=K"). It is the one place in the codebase that reflected an
-     * internal message rather than substituting a fixed string.
+     * The tree is permitAll and GlobalExceptionHandler copies a reason into the body, so the 404 must
+     * be the fixed string, never the library's message (which carried the per-tag "size=K").
      */
-    @Test
-    void image_404_does_not_echo_the_internal_message() throws Exception {
-        when(library.loadBytes("neon_underground", 99))
-                .thenThrow(new IllegalArgumentException(
-                        "Index 99 out of range for tag neon_underground (size=4)"));
+    @ParameterizedTest
+    @CsvSource({"known-tag-index-out-of-range", "unknown-tag"})
+    void a_missing_image_is_a_404_that_does_not_echo_the_internal_message(String kind) throws Exception {
+        String tag = kind.equals("unknown-tag") ? "nope_not_a_vibe" : populatedTag();
+        int index = kind.equals("unknown-tag") ? 0 : library.referenceCount(tag) + 5;
 
-        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/99"))
+        mvc.perform(get("/api/v1/posters/style-references/{tag}/{index}", tag, index))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
-                .andExpect(content().string(org.hamcrest.Matchers.not(
-                        org.hamcrest.Matchers.containsString("size=4"))))
-                .andExpect(content().string(org.hamcrest.Matchers.not(
-                        org.hamcrest.Matchers.containsString("out of range"))));
+                .andExpect(content().string(not(containsString("size="))))
+                .andExpect(content().string(not(containsString("out of range"))))
+                .andExpect(content().string(not(containsString("Unknown sub-style"))));
     }
 }

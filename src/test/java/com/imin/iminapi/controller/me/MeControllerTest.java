@@ -1,131 +1,88 @@
 package com.imin.iminapi.controller.me;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.dto.NotificationPreferencesDto;
-import com.imin.iminapi.dto.OrganizationDto;
-import com.imin.iminapi.dto.UserDto;
-import com.imin.iminapi.dto.auth.MeResponse;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.me.NotificationPrefsService;
-import com.imin.iminapi.service.me.ProfileService;
+import com.imin.iminapi.repository.NotificationPreferencesRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** Notification preferences are per user: a teammate's PATCH never changes anyone else's row. */
+@IminIntegrationTest
 class MeControllerTest {
 
     @Autowired MockMvc mvc;
-    final ObjectMapper om = new ObjectMapper();
-    @MockitoBean NotificationPrefsService notificationPrefsService;
-    @MockitoBean ProfileService profileService;
+    @Autowired IminFixtures fx;
+    @Autowired UserRepository users;
+    @Autowired NotificationPreferencesRepository prefs;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000030");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000031");
-
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubAuthFactory.class)
-    public @interface WithStubUser {}
-
-    public static class StubAuthFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override
-        public SecurityContext createSecurityContext(WithStubUser annotation) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
-    }
-
-    private NotificationPreferencesDto samplePrefs() {
-        return new NotificationPreferencesDto(USER, true, true, false, true, false, true);
+    private RequestPostProcessor as(User u) {
+        return authentication(new UsernamePasswordAuthenticationToken(
+                fx.principal(u), null, List.of(new SimpleGrantedAuthority("ROLE_" + u.getRole().name()))));
     }
 
     @Test
-    @WithStubUser
-    void get_returns_prefs() throws Exception {
-        when(notificationPrefsService.get(any(AuthPrincipal.class))).thenReturn(samplePrefs());
-        mvc.perform(get("/api/v1/me/notifications"))
+    void a_users_prefs_patch_changes_only_that_users_row() throws Exception {
+        Organization org = fx.org();
+        User a = fx.owner(org);
+        User b = new User();
+        b.setOrgId(org.getId());
+        b.setEmail(fx.email("teammate"));
+        b.setRole(UserRole.MEMBER);
+        b = users.save(b);
+        mvc.perform(get("/api/v1/me/notifications").with(as(b)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.userId").value(USER.toString()))
+                .andExpect(jsonPath("$.ticketSold").value(true));
+
+        mvc.perform(patch("/api/v1/me/notifications").with(as(a))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ticketSold\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(a.getId().toString()))
+                .andExpect(jsonPath("$.ticketSold").value(false));
+
+        assertThat(prefs.findById(a.getId()).orElseThrow().isTicketSold()).isFalse();
+        assertThat(prefs.findById(b.getId()).orElseThrow().isTicketSold()).isTrue();
+        mvc.perform(get("/api/v1/me/notifications").with(as(b)))
+                .andExpect(jsonPath("$.userId").value(b.getId().toString()))
                 .andExpect(jsonPath("$.ticketSold").value(true));
     }
 
     @Test
-    @WithStubUser
-    void patch_returns_updated_prefs() throws Exception {
-        NotificationPreferencesDto updated = new NotificationPreferencesDto(USER, false, false, false, false, false, false);
-        when(notificationPrefsService.patch(any(AuthPrincipal.class), any())).thenReturn(updated);
-        mvc.perform(patch("/api/v1/me/notifications")
+    void a_profile_patch_changes_only_the_callers_name() throws Exception {
+        Organization org = fx.org();
+        User a = fx.owner(org);
+        User b = new User();
+        b.setOrgId(org.getId());
+        b.setEmail(fx.email("teammate"));
+        b.setRole(UserRole.MEMBER);
+        b.setFirstName("Bea");
+        b = users.save(b);
+
+        mvc.perform(patch("/api/v1/me/profile").with(as(a))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("ticketSold", false))))
+                        .content("{\"firstName\":\"Grace\",\"lastName\":\"Hopper\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.ticketSold").value(false));
-    }
+                .andExpect(jsonPath("$.user.id").value(a.getId().toString()))
+                .andExpect(jsonPath("$.user.firstName").value("Grace"));
 
-    @Test
-    @WithStubUser
-    void patch_profile_returns_updated_me_response() throws Exception {
-        UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
-                Instant.parse("2026-04-23T10:00:00Z"), "en");
-        OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
-                "GB", "UTC", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
-        when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
-
-        mvc.perform(patch("/api/v1/me/profile")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of(
-                                "firstName", "Grace",
-                                "lastName", "Hopper"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.firstName").value("Grace"))
-                .andExpect(jsonPath("$.user.lastName").value("Hopper"))
-                .andExpect(jsonPath("$.user.avatarInitials").value("GH"))
-                .andExpect(jsonPath("$.org.id").value(ORG.toString()));
-    }
-
-    @Test
-    @WithStubUser
-    void patch_profile_updates_locale() throws Exception {
-        UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
-                Instant.parse("2026-04-23T10:00:00Z"), "uk");
-        OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
-                "GB", "UTC", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
-        when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
-
-        mvc.perform(patch("/api/v1/me/profile")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("locale", "uk"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.locale").value("uk"));
+        assertThat(users.findById(a.getId()).orElseThrow().getFirstName()).isEqualTo("Grace");
+        assertThat(users.findById(b.getId()).orElseThrow().getFirstName()).isEqualTo("Bea");
     }
 }

@@ -1,32 +1,28 @@
 package com.imin.iminapi.controller.order;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -47,19 +43,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Orders-tab row rendering, over real persistence. A chargeback revokes the order's
  * tickets, so without the dispute lookup the row is indistinguishable from a refund.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventOrdersControllerTest {
 
     @Autowired MockMvc mvc;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired DisputeRepository disputes;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired MutableClock clock;
 
     private static final Instant OPENED_AT = Instant.parse("2026-09-01T10:15:30Z");
 
@@ -71,58 +66,27 @@ class EventOrdersControllerTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        org = new Organization();
-        org.setName("Orders Org");
-        org.setSlug("orders-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("orders@test.example");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        event = new Event();
-        event.setOrgId(org.getId());
-        event.setName("Chargeback Night");
-        event.setSlug("chargeback-night-" + UUID.randomUUID().toString().substring(0, 8));
-        event.setVisibility(EventVisibility.PUBLIC);
-        event.setStatus(EventStatus.LIVE);
-        event.setPublishedAt(Instant.now().minusSeconds(7200));
-        event.setStartsAt(Instant.now().plusSeconds(86_400L * 10));
-        event.setCreatedBy(owner.getId());
-        event.setCurrency("EUR");
+        org = fx.org();
+        owner = fx.owner(org);
+        event = fx.event(org, owner, EventStatus.LIVE, clock.instant().plusSeconds(86_400L * 10));
+        event.setPublishedAt(clock.instant().minusSeconds(7200));
         event = events.save(event);
 
-        ga = new TicketTier();
-        ga.setEventId(event.getId());
+        ga = fx.tier(event, 1149, 100);
         ga.setName("GA");
-        ga.setPriceMinor(1149);
-        ga.setQuantity(100);
         ga.setReserved(0);
         ga.setSold(1);
         ga.setEnabled(true);
         ga = tiers.save(ga);
 
-        auth = new UsernamePasswordAuthenticationToken(
-                new AuthPrincipal(owner.getId(), org.getId(), UserRole.OWNER, UUID.randomUUID()),
+        auth = new UsernamePasswordAuthenticationToken(fx.principal(owner),
                 null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
     }
 
+    /** Disputes are swept across every org, so the open ones this class leaves must go with their org. */
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        disputes.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private Order newOrder(long totalMinor) {
@@ -130,12 +94,12 @@ class EventOrdersControllerTest {
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(event.getId());
         o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
+        o.setEmail(fx.email("buyer"));
         o.setTotalMinor(totalMinor);
         o.setCurrency("eur");
         o.setPaymentMethod("stripe");
         o.setStripePaymentIntentId("pi_" + UUID.randomUUID());
-        o.setCreatedAt(Instant.now().minusSeconds(600));
+        o.setCreatedAt(clock.instant().minusSeconds(600));
         return orders.save(o);
     }
 

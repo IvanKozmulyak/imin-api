@@ -1,37 +1,26 @@
 package com.imin.iminapi.controller.gate;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.gate.GateLoginRequest;
 import com.imin.iminapi.dto.gate.GateLoginResponse;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.AuthSessionRepository;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.GateCredentialRepository;
-import com.imin.iminapi.repository.GateSessionRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.service.gate.GateAuthService;
-import org.junit.jupiter.api.AfterEach;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -51,22 +40,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       (gate-events is gate-only)</li>
  * </ul>
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class GateEventsControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
     @Autowired GateAuthService gateAuth;
-    @Autowired GateCredentialRepository gateCredentials;
-    @Autowired GateSessionRepository gateSessions;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired AuthSessionRepository authSessions;
     @Autowired TokenService tokenService;
-
-    final ObjectMapper om = new ObjectMapper();
+    @Autowired MutableClock clock;
 
     private Organization org;
     private User owner;
@@ -74,52 +57,17 @@ class GateEventsControllerTest {
 
     @BeforeEach
     void seed() {
-        cleanDb();
-
-        org = new Organization();
-        org.setName("Gate Events Org");
-        org.setSlug("gate-events-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("ge@example.test");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        owner = new User();
-        owner.setOrgId(org.getId());
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        AuthPrincipal ownerPrincipal = new AuthPrincipal(owner.getId(), org.getId(),
-                UserRole.OWNER, UUID.randomUUID());
-        gateAuth.rotate(ownerPrincipal, org.getId(), "gate-password-12345");
+        org = fx.org();
+        owner = fx.owner(org);
+        gateAuth.rotate(fx.principal(owner), org.getId(), "gate-password-12345");
         GateLoginResponse login = gateAuth.login(
                 new GateLoginRequest(org.getSlug(), "gate-password-12345"));
         gateToken = login.token();
     }
 
-    @AfterEach
-    void after() { cleanDb(); }
-
-    private void cleanDb() {
-        gateSessions.deleteAll();
-        gateCredentials.deleteAll();
-        authSessions.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-    }
-
-    private Event makeEvent(UUID orgId, String name, Instant startsAt) {
-        Event e = new Event();
-        e.setOrgId(orgId);
+    private Event makeEvent(Organization o, String name, Instant startsAt) {
+        Event e = fx.event(o, owner, EventStatus.LIVE, startsAt);
         e.setName(name);
-        e.setSlug(name.toLowerCase().replaceAll("[^a-z0-9]+", "-") + "-"
-                + UUID.randomUUID().toString().substring(0, 6));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.LIVE);
-        e.setCurrency("EUR");
-        e.setStartsAt(startsAt);
-        e.setCreatedBy(owner.getId());
         return events.save(e);
     }
 
@@ -127,10 +75,10 @@ class GateEventsControllerTest {
 
     @Test
     void returns_org_events_in_startsAt_ascending_order() throws Exception {
-        Instant now = Instant.now();
-        Event later = makeEvent(org.getId(), "Z Later", now.plus(Duration.ofDays(7)));
-        Event sooner = makeEvent(org.getId(), "A Sooner", now.plus(Duration.ofDays(1)));
-        Event running = makeEvent(org.getId(), "M Running", now.minus(Duration.ofHours(2)));
+        Instant now = clock.instant();
+        Event later = makeEvent(org, "Z Later", now.plus(Duration.ofDays(7)));
+        Event sooner = makeEvent(org, "A Sooner", now.plus(Duration.ofDays(1)));
+        Event running = makeEvent(org, "M Running", now.minus(Duration.ofHours(2)));
 
         mvc.perform(get("/api/v1/gate/events")
                         .header("Authorization", "Bearer " + gateToken))
@@ -149,9 +97,9 @@ class GateEventsControllerTest {
 
     @Test
     void excludes_events_older_than_24h() throws Exception {
-        Instant now = Instant.now();
-        Event old = makeEvent(org.getId(), "Old", now.minus(Duration.ofDays(2)));
-        Event upcoming = makeEvent(org.getId(), "Upcoming", now.plus(Duration.ofDays(1)));
+        Instant now = clock.instant();
+        Event old = makeEvent(org, "Old", now.minus(Duration.ofDays(2)));
+        Event upcoming = makeEvent(org, "Upcoming", now.plus(Duration.ofDays(1)));
 
         mvc.perform(get("/api/v1/gate/events")
                         .header("Authorization", "Bearer " + gateToken))
@@ -163,15 +111,10 @@ class GateEventsControllerTest {
 
     @Test
     void excludes_events_from_other_orgs() throws Exception {
-        Organization otherOrg = new Organization();
-        otherOrg.setName("Other Org");
-        otherOrg.setSlug("other-" + UUID.randomUUID().toString().substring(0, 8));
-        otherOrg.setContactEmail("other@example.test");
-        otherOrg.setCountry("DE");
-        otherOrg = orgs.save(otherOrg);
+        Organization otherOrg = fx.org();
 
-        Event mine = makeEvent(org.getId(), "Mine", Instant.now().plus(Duration.ofDays(1)));
-        Event theirs = makeEvent(otherOrg.getId(), "Theirs", Instant.now().plus(Duration.ofDays(2)));
+        Event mine = makeEvent(org, "Mine", clock.instant().plus(Duration.ofDays(1)));
+        Event theirs = makeEvent(otherOrg, "Theirs", clock.instant().plus(Duration.ofDays(2)));
 
         mvc.perform(get("/api/v1/gate/events")
                         .header("Authorization", "Bearer " + gateToken))
@@ -207,7 +150,7 @@ class GateEventsControllerTest {
         AuthSession s = new AuthSession();
         s.setUserId(owner.getId());
         s.setTokenHash(issued.tokenHash());
-        s.setExpiresAt(Instant.now().plus(Duration.ofDays(1)));
+        s.setExpiresAt(clock.instant().plus(Duration.ofDays(1)));
         authSessions.save(s);
 
         mvc.perform(get("/api/v1/gate/events")

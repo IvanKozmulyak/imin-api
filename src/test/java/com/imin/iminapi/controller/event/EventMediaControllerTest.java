@@ -1,198 +1,75 @@
 package com.imin.iminapi.controller.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.dto.event.MediaUploadResponse;
-import com.imin.iminapi.model.MediaKind;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.event.MediaUploadService;
+import com.imin.iminapi.storage.InMemoryMediaStorage;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.List;
-import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** Event media uploads over the real MediaUploadService and the in-memory storage. */
+@IminIntegrationTest
 class EventMediaControllerTest {
 
     @Autowired MockMvc mvc;
-    @MockitoBean MediaUploadService uploadService;
+    @Autowired IminFixtures fx;
+    @Autowired EventRepository events;
+    @Autowired MediaUploadService uploadService;
+    @Autowired InMemoryMediaStorage storage;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
-    static final UUID eventId = UUID.fromString("00000000-0000-0000-0000-000000000003");
-
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithStubUser {}
-
-    public static class StubFactory implements WithSecurityContextFactory<WithStubUser> {
-        @Override public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubUser ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    private RequestPostProcessor as(User u) {
+        return authentication(new UsernamePasswordAuthenticationToken(
+                fx.principal(u), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER"))));
     }
 
-    @Test
-    @WithStubUser
-    void post_poster_returns_url() throws Exception {
-        UUID id = UUID.randomUUID();
-        MockMultipartFile file = new MockMultipartFile("file", "p.png", "image/png", new byte[]{(byte) 0x89, 'P','N','G'});
-        when(uploadService.upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"), eq("p.png"), isNull(), isNull()))
-                .thenReturn(new MediaUploadResponse("https://media.test/events/" + id + "/poster.png", 4, "image/png", null));
-
-        mvc.perform(multipart("/api/v1/events/" + id + "/media/poster").file(file))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.url").exists())
-                .andExpect(jsonPath("$.durationSec").doesNotExist());
+    private static byte[] png(int w, int h) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
     }
 
-    @Test
-    @WithStubUser
-    void post_video_returns_url_and_duration() throws Exception {
-        UUID id = UUID.randomUUID();
-        MockMultipartFile file = new MockMultipartFile("file", "v.mp4", "video/mp4", new byte[]{0,0,0,0});
-        when(uploadService.upload(any(), eq(id), eq(MediaKind.VIDEO), any(), eq("video/mp4"), eq("v.mp4"), isNull(), isNull()))
-                .thenReturn(new MediaUploadResponse("https://media.test/events/" + id + "/video.mp4", 4, "video/mp4", 12));
-
-        mvc.perform(multipart("/api/v1/events/" + id + "/media/video").file(file))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.durationSec").value(12));
-    }
-
-    @Test
-    @WithStubUser
-    void uploadsDjPhotoKind() throws Exception {
-        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(), eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE)))
-                .thenReturn(new MediaUploadResponse("https://cdn.example/dj.png", 123L, "image/png", null));
-        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
-                        .file(new MockMultipartFile("file", "dj.png", "image/png", new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}))
-                        .param("rightsAttested", "true"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.url").value("https://cdn.example/dj.png"));
+    private boolean storedFor(Event e) {
+        return storage.blobs().keySet().stream().anyMatch(k -> k.startsWith("events/" + e.getId() + "/"));
     }
 
     /**
-     * AI Act Art.50: the Poster Studio uploads its own output through this same
-     * endpoint, and the bytes cannot tell AI art from an organizer's artwork —
-     * so the flag has to reach the service, not stop at the controller.
+     * The multipart ceiling is 60 MB for VIDEO, but a POSTER is capped at 5 MB: the cap must be checked on the
+     * declared size before getBytes() copies the part onto the heap.
      */
     @Test
-    @WithStubUser
-    void poster_upload_forwards_the_ai_generated_flag() throws Exception {
-        UUID id = UUID.randomUUID();
-        MockMultipartFile file = new MockMultipartFile("file", "p.png", "image/png",
-                new byte[]{(byte) 0x89, 'P', 'N', 'G'});
-        when(uploadService.upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"),
-                eq("p.png"), eq(Boolean.TRUE), isNull()))
-                .thenReturn(new MediaUploadResponse("https://media.test/p.png", 4, "image/png", null));
-
-        mvc.perform(multipart("/api/v1/events/" + id + "/media/poster")
-                        .file(file)
-                        .param("aiGenerated", "true"))
-                .andExpect(status().isOk());
-
-        verify(uploadService).upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"),
-                eq("p.png"), eq(Boolean.TRUE), isNull());
-    }
-
-    /**
-     * Rights attestation (droit à l'image). The gate itself lives in the service
-     * — this asserts the flag survives the wire, which is the half a controller
-     * can get wrong.
-     */
-    @Test
-    @WithStubUser
-    void dj_photo_upload_forwards_the_rights_attestation() throws Exception {
-        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
-                eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE)))
-                .thenReturn(new MediaUploadResponse("https://cdn.example/dj.png", 123L, "image/png", null));
-
-        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
-                        .file(new MockMultipartFile("file", "dj.png", "image/png",
-                                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}))
-                        .param("rightsAttested", "true"))
-                .andExpect(status().isOk());
-
-        verify(uploadService).upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
-                eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE));
-    }
-
-    /** No param at all still reaches the service, which is what refuses it. */
-    @Test
-    @WithStubUser
-    void dj_photo_upload_without_the_param_passes_null_through() throws Exception {
-        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
-                eq("image/png"), eq("dj.png"), isNull(), isNull()))
-                .thenThrow(new com.imin.iminapi.security.ApiException(
-                        org.springframework.http.HttpStatus.BAD_REQUEST,
-                        com.imin.iminapi.security.ErrorCode.RIGHTS_ATTESTATION_REQUIRED,
-                        "You must confirm you hold the rights to this image"));
-
-        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
-                        .file(new MockMultipartFile("file", "dj.png", "image/png",
-                                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47})))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("RIGHTS_ATTESTATION_REQUIRED"));
-    }
-
-    @Test
-    @WithStubUser
-    void unknownKindIsCleanNotFoundNot500() throws Exception {
-        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/banner")
-                        .file(new MockMultipartFile("file", "x.png", "image/png", new byte[]{1})))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
-    }
-
-    @Test
-    @WithStubUser
-    void delete_returns_204() throws Exception {
-        UUID id = UUID.randomUUID();
-        mvc.perform(delete("/api/v1/events/" + id + "/media/poster"))
-                .andExpect(status().isNoContent());
-    }
-    /**
-     * api-13: spring.servlet.multipart.max-file-size is 60MB because the VIDEO kind needs it,
-     * but a POSTER is capped at 5 MB — and the cap was only consulted inside
-     * MediaUploadService.validate, i.e. AFTER {@code file.getBytes()} had already copied the
-     * whole part onto the heap. A 60 MB poster upload therefore allocated 60 MB per concurrent
-     * request to be told it was 12x over the limit. The response was always correct; what this
-     * pins is the ORDER, which is the only thing that was wrong.
-     */
-    @Test
-    void oversized_poster_is_rejected_before_the_part_is_copied_onto_the_heap() {
-        MediaUploadService svc = org.mockito.Mockito.mock(MediaUploadService.class);
-        EventMediaController controller = new EventMediaController(svc);
-        AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-
-        // Declares 60 MB but refuses to materialise: reaching getBytes() is the defect.
+    void an_oversized_poster_is_rejected_before_the_part_is_copied_onto_the_heap() {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
         MockMultipartFile huge = new MockMultipartFile("file", "big.png", "image/png", new byte[0]) {
             @Override public long getSize() { return 60L * 1024 * 1024; }
             @Override public byte[] getBytes() {
@@ -200,12 +77,75 @@ class EventMediaControllerTest {
             }
         };
 
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> controller.upload(p, eventId, "poster", huge, null, null))
-                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
-                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.FIELD_INVALID);
-
-        org.mockito.Mockito.verifyNoInteractions(svc);
+        assertThatThrownBy(() -> new EventMediaController(uploadService)
+                        .upload(fx.principal(owner), e.getId(), "poster", huge, null, null))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+        assertThat(storedFor(e)).isFalse();
     }
 
+    @Test
+    void an_unknown_media_kind_is_a_clean_404() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+
+        mvc.perform(multipart("/api/v1/events/{id}/media/banner", e.getId())
+                        .file(new MockMultipartFile("file", "x.png", "image/png", png(16, 16)))
+                        .with(as(owner)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        assertThat(storedFor(e)).isFalse();
+    }
+
+    /** The AI-provenance flag (AI Act Art.50) and the DJ-photo rights attestation must survive the wire. */
+    @ParameterizedTest
+    @ValueSource(strings = {"ai-poster", "attested-dj-photo", "unattested-dj-photo"})
+    void the_provenance_and_rights_flags_reach_the_stored_event(String row) throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+        String kind = row.equals("ai-poster") ? "poster" : "dj-photo";
+        MockMultipartHttpServletRequestBuilder req = multipart("/api/v1/events/{id}/media/{kind}", e.getId(), kind);
+        req.file(new MockMultipartFile("file", kind + ".png", "image/png", png(600, 800)));
+        if (row.equals("ai-poster")) req.param("aiGenerated", "true");
+        if (row.equals("attested-dj-photo")) req.param("rightsAttested", "true");
+
+        if (row.equals("unattested-dj-photo")) {
+            mvc.perform(req.with(as(owner)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("RIGHTS_ATTESTATION_REQUIRED"));
+            assertThat(events.findById(e.getId()).orElseThrow().getDjPhotoUrl()).isNull();
+            assertThat(storedFor(e)).isFalse();
+            return;
+        }
+        mvc.perform(req.with(as(owner))).andExpect(status().isOk());
+
+        Event after = events.findById(e.getId()).orElseThrow();
+        if (row.equals("ai-poster")) {
+            assertThat(after.getPosterUrl()).isNotNull();
+            assertThat(after.getPosterAiGenerated()).isTrue();
+        } else {
+            assertThat(after.getDjPhotoUrl()).isNotNull();
+            assertThat(after.getDjPhotoRightsAttestedAt()).isNotNull();
+        }
+    }
+
+    @Test
+    void deleting_an_own_poster_clears_it_and_its_object() throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+        mvc.perform(multipart("/api/v1/events/{id}/media/poster", e.getId())
+                        .file(new MockMultipartFile("file", "p.png", "image/png", png(600, 800)))
+                        .with(as(owner)))
+                .andExpect(status().isOk());
+        assertThat(storedFor(e)).isTrue();
+
+        mvc.perform(delete("/api/v1/events/{id}/media/poster", e.getId()).with(as(owner)))
+                .andExpect(status().isNoContent());
+
+        assertThat(events.findById(e.getId()).orElseThrow().getPosterUrl()).isNull();
+        assertThat(storedFor(e)).isFalse();
+    }
 }
