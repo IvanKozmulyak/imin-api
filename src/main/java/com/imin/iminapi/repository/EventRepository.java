@@ -200,10 +200,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
               guard, not the list, decides whether the facet filters at all:
               `0 = 0 OR anything` is TRUE in three-valued logic whatever the IN
               evaluates to, so no short-circuit is assumed. The caller never
-              passes an empty collection either — an empty IN list is rendered
-              differently by H2 and Postgres and this repo has been bitten by
-              exactly that class of divergence before (see V30, and the
-              lower(bytea) note on the search queries). */
+              passes an empty collection either, so no empty IN list ever
+              reaches the SQL. */
            AND (CAST(:cityKey AS string) IS NULL OR e.venueCityKey = CAST(:cityKey AS string))
            AND (CAST(:country AS string) IS NULL OR e.venueCountry = :country)
            AND (CAST(:q AS string) IS NULL OR LOWER(e.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
@@ -398,8 +396,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                                       @Param("now") Instant now);
 
     /**
-     * Row-locks the org's live event until commit with a no-op write: portable across Postgres and
-     * H2, and unlike FOR UPDATE it does not block FK inserts (orders) on the event.
+     * Row-locks the org's live event until commit with a no-op write: unlike FOR UPDATE it does not
+     * block FK inserts (orders) on the event.
      */
     @Modifying
     @Transactional
@@ -468,7 +466,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      *
      * <p>Matches on the derived {@code venue_city_key} (V82). Besides merging the case variants
      * of one city, this removes a latent production bug: the previous {@code LOWER(:city)} on a
-     * nullable String parameter passes on H2 but throws {@code function lower(bytea) does not
+     * nullable String parameter throws {@code function lower(bytea) does not
      * exist} on PostgreSQL the first time a null is bound. The caller normalises with
      * {@code EventNormalization.cityKey} and a blank key binds no rows.
      */

@@ -1,7 +1,7 @@
 package com.imin.iminapi.audienceplan.repository;
 
 /**
- * ConsentGate as one native query (H2 and Postgres): each org member with its first exclusion reason, null = mailable.
+ * ConsentGate as one native query: each org member with its first exclusion reason, null = mailable.
  * Empty list parameters are bound as a never-matching sentinel; only channel='email' consents count.
  */
 public final class ConsentGateSql {

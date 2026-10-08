@@ -6,8 +6,7 @@ package com.imin.iminapi.marketing.template;
  * CSS {@code font-family} stack. ONE renderer turns this into a 600px, fully-inlined
  * HTML shell — builtins and org-saved (AI) templates share the exact same structure.
  *
- * <p>Stored as JSON (TEXT column via {@link TemplateTokensJsonConverter}, for H2/PG
- * parity), returned on the API, and bound from the AI generator's structured output.
+ * <p>Stored as JSON (TEXT column via {@link TemplateTokensJsonConverter}), returned on the API, and bound from the AI generator's structured output.
  * The generator's output is untrusted — {@link TemplateTokenValidator} rewrites it to a
  * known-safe instance before it is ever persisted or rendered.
  */

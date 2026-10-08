@@ -393,17 +393,15 @@ public class PublicEventService {
     }
 
     /**
-     * The collection actually handed to JPA. Never empty: H2 and Postgres render an
-     * empty {@code IN ()} differently, and the count guard beside it already makes
-     * the contents irrelevant when the facet is off.
+     * The collection actually handed to JPA. Never empty, so no empty {@code IN ()}
+     * reaches the SQL, and the count guard beside it already makes the contents
+     * irrelevant when the facet is off.
      *
      * <p><b>The placeholder must be a legal string, not merely an impossible key.</b>
      * The first version of this used {@code "\u0000"} — unmatchable, and accepted by
      * H2, so the whole suite passed. Postgres rejects a NUL byte in text outright
      * ({@code invalid byte sequence for encoding "UTF8": 0x00}), which took the
-     * entire public listing to 400 in production the moment it deployed. Same class
-     * of H2-passes-Postgres-fails divergence this repo already documents for
-     * {@code lower(bytea)} and for partial indexes; the lesson is that "impossible
+     * entire public listing to 400 in production the moment it deployed. "Impossible
      * value" and "valid value" are different requirements and this needs both.
      */
     private static Collection<String> bindable(List<String> values) {

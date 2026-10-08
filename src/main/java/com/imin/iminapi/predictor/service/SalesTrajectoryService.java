@@ -29,7 +29,7 @@ import java.util.UUID;
  * yields the same rows, and the job's first run backfills all history for free.
  *
  * <p>Day bucketing is done in Java in the event's timezone, never a SQL {@code date(...)}
- * (H2 and Postgres diverge on truncation).
+ * (which truncates in the session zone).
  */
 @Service
 public class SalesTrajectoryService {

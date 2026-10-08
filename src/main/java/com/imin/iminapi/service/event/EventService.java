@@ -86,28 +86,6 @@ public class EventService {
         this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null, null, null);
     }
 
-    /** 9-arg constructor used by tests that wire audit but not the predictor outcome writer. */
-    public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
-                        EventValidator validator, IfMatchSupport ifMatch,
-                        TicketTierService tierService,
-                        StripeConnectService stripeConnect,
-                        AuditLogger auditLogger) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, auditLogger, null, null);
-    }
-
-    /** 10-arg constructor (pre-V71) used by tests that don't wire the concept repo. */
-    public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
-                        EventValidator validator, IfMatchSupport ifMatch,
-                        TicketTierService tierService,
-                        StripeConnectService stripeConnect,
-                        AuditLogger auditLogger,
-                        EventOutcomeService outcomeService) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
-                auditLogger, outcomeService, null);
-    }
-
     /** 11-arg constructor (pre-scope-B) used by tests that don't wire predictor reactivity. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,

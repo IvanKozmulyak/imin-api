@@ -134,7 +134,7 @@ public class AttributionService {
     /**
      * Picks the query for the requested client slice. Three separate queries,
      * never one with a nullable bind: a null {@code String} in a comparison is
-     * the {@code lower(bytea)} trap that passes on H2 and 500s on Postgres.
+     * the {@code lower(bytea)} trap that 500s on Postgres.
      */
     private List<Object[]> visitsBySource(AuthPrincipal p, String client) {
         if (client == null || client.isBlank()) return funnel.countVisitsBySourceForOrg(p.orgId());

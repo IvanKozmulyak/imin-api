@@ -8,7 +8,7 @@ import jakarta.persistence.Converter;
 import java.util.Collections;
 import java.util.List;
 
-/** Persists a List<String> as a Postgres jsonb array (and an H2-PG VARCHAR jsonb shim). */
+/** Persists a List<String> as a Postgres jsonb array. */
 @Converter
 public class StringListJsonConverter implements AttributeConverter<List<String>, String> {
 

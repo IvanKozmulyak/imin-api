@@ -21,7 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Writes the PRIM snapshot and its poll state (V175). No ON CONFLICT, so H2 runs it too. */
+/** Writes the PRIM snapshot and its poll state (V175). */
 @Component
 public class PrimWriter {
 

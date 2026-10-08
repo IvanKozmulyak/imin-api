@@ -71,8 +71,8 @@ public class BuyerNotifySubscriptionController {
             byId.put(event.getId(), event);
         }
 
-        // Un-notified first, then newest first. Sorted here rather than in the
-        // query: NULLS FIRST is not portable across H2 and Postgres.
+        // Un-notified first, then newest first. Sorted here rather than with
+        // NULLS FIRST in the query.
         List<BuyerNotifySubscriptionResponse> out = rows.stream()
                 .sorted(Comparator
                         .comparing((NotifySubscription s) -> s.getNotifiedAt() != null)

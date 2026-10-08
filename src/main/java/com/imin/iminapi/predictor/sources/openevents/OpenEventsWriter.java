@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Writes open_event_occurrence and re-derives genre_week_count from it. No ON CONFLICT, so H2 runs it too;
+ * Writes open_event_occurrence and re-derives genre_week_count from it;
  * counts are always recomputed from the stored rows, never applied as a delta.
  */
 @Component

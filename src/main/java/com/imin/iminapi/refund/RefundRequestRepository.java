@@ -42,7 +42,7 @@ public interface RefundRequestRepository extends JpaRepository<RefundRequest, UU
      * Operator search variant. DELIBERATELY a separate query from {@link #page} rather
      * than a {@code (:search is null or ...)} branch: a NULLABLE String parameter reaching
      * {@code lower}/{@code concat}/{@code like} type-infers to bytea on real Postgres and
-     * 500s with {@code function lower(bytea) does not exist}, while passing on H2. Here
+     * 500s with {@code function lower(bytea) does not exist}. Here
      * {@code :search} is guaranteed non-null by the caller, so the trap can't fire.
      *
      * <p>Matches an exact reference OR a buyer-email substring — the two things an operator has

@@ -84,7 +84,6 @@ public class StripeProperties {
     /** Days a seat stays held while an async payment method settles. */
     private int asyncPaymentHoldDays = 7;
 
-    public String getSecretKey() { return secretKey; }
     public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
 
     /** Stripe encodes the mode in the key prefix: {@code sk_live_} standard, {@code rk_live_} restricted. */

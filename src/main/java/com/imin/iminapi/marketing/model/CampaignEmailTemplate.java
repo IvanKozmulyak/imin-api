@@ -16,7 +16,7 @@ import java.util.UUID;
 /**
  * An org-saved campaign email template (V66). Builtins are NOT rows — only AI-generated
  * (and, forward-compatibly, hand-customized) org templates live here. {@code tokens} is the
- * validated {@link TemplateTokens} set, stored as JSON TEXT (H2/PG parity — see
+ * validated {@link TemplateTokens} set, stored as JSON TEXT (see
  * {@link TemplateTokensJsonConverter}). A campaign references a saved template by putting its
  * {@code id} (as a string) in {@code campaigns.template_key}.
  */

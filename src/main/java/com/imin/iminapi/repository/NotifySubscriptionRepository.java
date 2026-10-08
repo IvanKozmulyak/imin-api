@@ -42,7 +42,7 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
      *
      * <p>{@code email} is NOT NULL in the column and lowercased on write; callers must pass a
      * non-null normalized address (the {@code LOWER()} is belt-and-braces, and keeping the
-     * parameter non-null side-steps the H2-vs-Postgres {@code lower(bytea)} null-String trap).
+     * parameter non-null side-steps the Postgres {@code lower(bytea)} null-String trap).
      */
     @Modifying
     @Transactional
@@ -72,7 +72,7 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
      *
      * <p>{@code email} is NOT NULL in the column and lowercased on write;
      * callers pass non-null normalized addresses, which also keeps the
-     * H2-vs-Postgres {@code lower(bytea)} null-String trap out of reach.
+     * Postgres {@code lower(bytea)} null-String trap out of reach.
      */
     @Modifying
     @Transactional
@@ -86,9 +86,8 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
      *
      * <p>Same boundary as {@code GET /buyer/orders}: the caller passes the
      * account's <b>verified</b> normalized addresses and nothing else. Sorting
-     * is left to the caller — the natural order is un-notified first, and
-     * {@code NULLS FIRST} is not portable across H2 and Postgres, so it is done
-     * in Java rather than fought with in the dialect.
+     * is left to the caller — the natural order is un-notified first, and it
+     * is done in Java rather than with {@code NULLS FIRST} in the dialect.
      *
      * <p>Compares the column directly rather than wrapping it in {@code LOWER}:
      * rows are lowercased on write and the caller passes

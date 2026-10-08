@@ -18,7 +18,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Native SQL for after-event outcomes and calibration (H2 and Postgres; no nullable parameter). Reads people only to
+ * Native SQL for after-event outcomes and calibration (no nullable parameter). Reads people only to
  * count them: every row it returns or writes is an aggregate.
  */
 @Repository

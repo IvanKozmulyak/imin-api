@@ -22,9 +22,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
      * <p>Used only by {@code AiQuotaService} to serialise its per-user check-then-insert, which
      * has no natural row of its own to lock and no DB-level uniqueness to lean on. The lock is
      * held for three short statements; nothing else in the codebase locks users, so there is no
-     * ordering to deadlock against. Native and plain {@code FOR UPDATE} on purpose: JPA's
-     * PESSIMISTIC_WRITE renders as PostgreSQL's {@code FOR NO KEY UPDATE}, which H2 — the test
-     * database — cannot parse, and a lock the tests cannot execute is a lock nothing proves.
+     * ordering to deadlock against. Native and plain {@code FOR UPDATE}: JPA's PESSIMISTIC_WRITE
+     * renders as PostgreSQL's {@code FOR NO KEY UPDATE}; this keeps the established lock mode.
      */
     @Query(value = "select id from users where id = :id for update", nativeQuery = true)
     Optional<UUID> lockForUpdate(@Param("id") UUID id);

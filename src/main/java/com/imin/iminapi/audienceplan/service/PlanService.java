@@ -36,13 +36,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.sql.DataSource;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Duration;
@@ -100,13 +96,11 @@ public class PlanService {
     private final AudiencePlanSegmentRepository segments;
     private final PortraitService portraits;
     private final Clock clock;
-    private final DataSource dataSource;
-    private volatile Boolean postgres;
 
     public PlanService(AudiencePlanAccess access, EventRepository events, TicketTierRepository tiers,
                        CandidateLoader candidates, AudiencePlanLogic logic, ResponseModel model,
                        AudiencePlanRepository plans, AudiencePlanSegmentRepository segments,
-                       PortraitService portraits, Clock clock, DataSource dataSource) {
+                       PortraitService portraits, Clock clock) {
         this.access = access;
         this.events = events;
         this.tiers = tiers;
@@ -118,7 +112,6 @@ public class PlanService {
         this.segments = segments;
         this.portraits = portraits;
         this.clock = clock;
-        this.dataSource = dataSource;
     }
 
     /** The organizer's plan choices; the defaults are the logic file's target and the mid tickets per order. */
@@ -235,21 +228,7 @@ public class PlanService {
     /** Held to commit; serialises the first plan of one event. Public so tests can hold the very same lock. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void lockFirstPlan(UUID eventId) {
-        if (postgres()) plans.lockEventAdvisory(eventId);
-        else plans.lockEventRow(eventId);
-    }
-
-    private boolean postgres() {
-        Boolean p = postgres;
-        if (p == null) {
-            try (Connection c = dataSource.getConnection()) {
-                p = "PostgreSQL".equals(c.getMetaData().getDatabaseProductName());
-            } catch (SQLException e) {
-                throw new IllegalStateException("Cannot read the database product", e);
-            }
-            postgres = p;
-        }
-        return p;
+        plans.lockEventAdvisory(eventId);
     }
 
     private Assumptions defaults() {

@@ -343,7 +343,7 @@ public class RefundRequestService {
         rr.setStatus(RefundRequestStatus.PENDING);
         rr.setReference(references.next());
         // pending_marker = order_id while PENDING; UNIQUE on this column
-        // enforces "one open request per order" across both Postgres and H2.
+        // enforces "one open request per order".
         rr.setPendingMarker(order.getId());
 
         try {
@@ -408,9 +408,8 @@ public class RefundRequestService {
 
     /**
      * Whether {@code name} appears anywhere in the exception chain — either as Hibernate's
-     * parsed constraint name or in a driver message. Both are checked because the two engines
-     * report it differently (Postgres lower-case and bare, H2 upper-case and schema-qualified)
-     * and because Hibernate cannot always parse a name out at all.
+     * parsed constraint name or in a driver message. Both are checked, case-insensitively,
+     * because Hibernate cannot always parse a name out at all.
      */
     private static boolean mentions(Throwable t, String name) {
         String needle = name.toLowerCase(Locale.ROOT);

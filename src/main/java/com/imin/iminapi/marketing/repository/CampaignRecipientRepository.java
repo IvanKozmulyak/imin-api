@@ -77,9 +77,8 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     // Status and engagement are ORTHOGONAL axes — a row can be `delivered` AND opened — so the
     // filter combinations are spelled out as distinct derived queries rather than one @Query with
     // nullable :status / :engagement params. That is deliberate on two counts:
-    //   1. A nullable String param bound into a SQL function is the H2-vs-Postgres trap that bit
-    //      MembershipRepository: Hibernate binds null as bytea and Postgres rejects it, while H2
-    //      happily passes. Derived queries bind no param at all on the branches that don't need it.
+    //   1. A nullable String param bound into a SQL function is the Postgres trap that bit
+    //      MembershipRepository: Hibernate binds null as bytea and Postgres rejects it. Derived queries bind no param at all on the branches that don't need it.
     //   2. Each method name below is UNIQUE — no new overloaded finders, and notably no paged
     //      `findByCampaignIdAndStatus(id, status, Pageable)` twin of the finder above: the log's
     //      status filter goes through findByCampaignIdAndStatusIn (a single value is just a

@@ -1,6 +1,6 @@
 package com.imin.iminapi.audienceplan.repository;
 
-/** Candidate builder inputs for one org and one event, as native queries (H2 and Postgres); no nullable parameter. */
+/** Candidate builder inputs for one org and one event, as native queries; no nullable parameter. */
 public final class CandidateSql {
 
     private CandidateSql() {}

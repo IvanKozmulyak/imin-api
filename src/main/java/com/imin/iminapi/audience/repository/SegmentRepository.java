@@ -42,7 +42,7 @@ public interface SegmentRepository extends Repository<Segment, UUID> {
     /**
      * Case-insensitive name collision check for create. {@code name} is never null here
      * (createSegment rejects blank first), so lower() is safe on Postgres — a nullable
-     * String bound into lower() is sent as bytea and 500s there while passing on H2.
+     * String bound into lower() is sent as bytea and 500s there.
      */
     @Query("select count(s) > 0 from Segment s where s.orgId = :orgId and lower(s.name) = lower(:name)")
     boolean existsByOrgIdAndName(@Param("orgId") UUID orgId, @Param("name") String name);

@@ -16,8 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
-import java.sql.Clob;
-import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -121,16 +119,9 @@ public class CandidateLoader {
         }
     }
 
-    /** TEXT arrives as String on Postgres and may arrive as a Clob on H2. */
+    /** TEXT arrives as String on Postgres. */
     private static String text(Object value) {
         if (value == null) return null;
-        if (value instanceof Clob clob) {
-            try {
-                return clob.getSubString(1, (int) clob.length());
-            } catch (SQLException e) {
-                throw new IllegalStateException("cannot read taste", e);
-            }
-        }
         return value.toString();
     }
 }

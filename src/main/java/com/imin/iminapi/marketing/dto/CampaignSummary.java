@@ -34,16 +34,6 @@ public record CampaignSummary(
         /** IANA zone of that same event, for showing its send times; null without one. */
         String eventTimezone
 ) {
-    /** Projection with no attributed revenue. See {@link #revMinor}. */
-    public static CampaignSummary from(Campaign c) {
-        return from(c, null);
-    }
-
-    /** Projection carrying the campaign's attributed revenue, without segment or event names. */
-    public static CampaignSummary from(Campaign c, Long revMinor) {
-        return from(c, revMinor, null, null, null);
-    }
-
     /** Projection for the list read path: revenue plus the batch-resolved segment and event context. */
     public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
                                        String eventName, String eventTimezone) {

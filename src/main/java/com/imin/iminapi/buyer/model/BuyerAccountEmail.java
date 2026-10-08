@@ -24,8 +24,7 @@ import java.util.UUID;
  * — verification is the entire security boundary of buyer accounts (§2.3).
  *
  * <p><b>Marker columns.</b> {@code verified_key} and {@code primary_marker}
- * exist because neither H2 (PG-compat, what the test suite runs) nor a
- * table-level UNIQUE takes a WHERE clause. They must stay in sync with
+ * follow the marker-column pattern of V83 (as refund_requests.pending_marker does). They must stay in sync with
  * {@code verified_at} / primary-ness, which is why the only supported way to
  * change either is {@link #markVerified(Instant)} and {@link #makePrimary()}
  * rather than raw setters. Invariants:

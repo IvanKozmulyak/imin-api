@@ -69,7 +69,6 @@ public class GoogleWalletProperties {
      */
     private List<String> origins = List.of();
 
-    public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean v) { this.enabled = v; }
     public String getIssuerId() { return issuerId; }
     public void setIssuerId(String v) { this.issuerId = v; }

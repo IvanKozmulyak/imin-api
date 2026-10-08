@@ -34,7 +34,7 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
      * defaults them to 0. Backs the org-wide Meta "signal health" funnel (spec §8).
      *
      * <p>Both bind params are non-null ({@code orgId}, {@code since}); no nullable
-     * String is threaded through a SQL function, so this avoids the H2-vs-Postgres
+     * String is threaded through a SQL function, so this avoids the Postgres
      * {@code lower(bytea)} trap.
      */
     @Query("""
@@ -68,8 +68,8 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
      * client ({@code "ios"} / {@code "android"}).
      *
      * <p><b>Three queries rather than one with nullable parameters.</b> A
-     * nullable {@code String} threaded into a comparison passes on H2 and 500s
-     * on Postgres — the standing trap in this codebase — and the web case needs
+     * nullable {@code String} threaded into a comparison 500s on Postgres
+     * — the standing trap in this codebase — and the web case needs
      * a different predicate anyway. {@code AttributionService} picks; nothing
      * ever binds null here.
      */

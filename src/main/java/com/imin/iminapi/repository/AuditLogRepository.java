@@ -27,7 +27,7 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
      * fixed system string.
      *
      * <p>Matched on the lowercased address, org-scoped, non-null parameter (the
-     * H2-vs-Postgres {@code lower(bytea)} trap bites nullable String params).
+     * Postgres {@code lower(bytea)} trap bites nullable String params).
      */
     @Modifying
     @Query("update AuditLog a set a.actorEmail = null "

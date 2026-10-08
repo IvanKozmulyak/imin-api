@@ -23,7 +23,7 @@ public class WikimediaPageviewsWriter {
         this.repository = repository;
     }
 
-    /** Updates views and synced_at of stored months and inserts the rest (no ON CONFLICT, so H2 runs it too). */
+    /** Updates views and synced_at of stored months and inserts the rest. */
     @Transactional
     public int upsert(String project, String article, List<MonthViews> months, Instant syncedAt) {
         if (months.isEmpty()) return 0;

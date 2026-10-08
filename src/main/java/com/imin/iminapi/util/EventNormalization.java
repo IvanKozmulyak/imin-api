@@ -31,8 +31,7 @@ import java.util.regex.Pattern;
  *
  * <p>The SQL in {@code V82__normalize_event_facets.sql} mirrors these rules exactly
  * ({@code trim(regexp_replace(x, '\s+', ' ', 'g'))}); Java's {@code \s} and PostgreSQL's
- * {@code \s} cover the same six characters, and H2 (which backs the test suite) runs the
- * same Java regex engine. Keep the two in step — the derived key is computed by this class
+ * {@code \s} cover the same six characters. Keep the two in step — the derived key is computed by this class
  * on every write and by that migration for every pre-existing row.
  */
 public final class EventNormalization {

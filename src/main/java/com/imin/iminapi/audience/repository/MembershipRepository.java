@@ -36,7 +36,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     /**
      * Row-locks the membership for the caller's transaction; fan_features writers and requestErase take it first.
-     * Native plain FOR UPDATE: the dialect's PESSIMISTIC_WRITE renders FOR NO KEY UPDATE, which H2 rejects.
+     * Native plain FOR UPDATE, kept rather than the dialect's PESSIMISTIC_WRITE, which renders FOR NO KEY UPDATE.
      */
     @Query(value = "SELECT * FROM memberships WHERE membership_id = :id AND org_id = :orgId FOR UPDATE",
             nativeQuery = true)
@@ -71,8 +71,8 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     // ---- CSV export: (created_at DESC, membership_id DESC); the paged list is MemberListQuery ----
     // search is split into its own methods: a nullable String fed into concat()/lower()
-    // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea)
-    // (H2 tolerates it). The no-search methods bind no :search param at all.
+    // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea).
+    // The no-search methods bind no :search param at all.
 
     @Query("""
             select m from Membership m

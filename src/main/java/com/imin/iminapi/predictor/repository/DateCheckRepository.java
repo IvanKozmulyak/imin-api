@@ -70,7 +70,7 @@ public interface DateCheckRepository extends JpaRepository<DateCheck, UUID> {
 
     /**
      * Serialises re-scores of one check: its dates are replaced under a unique (check, date) key. Native
-     * {@code FOR UPDATE}: PESSIMISTIC_WRITE renders {@code FOR NO KEY UPDATE}, which H2 cannot parse.
+     * {@code FOR UPDATE}, kept rather than PESSIMISTIC_WRITE, which renders {@code FOR NO KEY UPDATE}.
      */
     @Query(value = "SELECT * FROM date_check WHERE id = :id FOR UPDATE", nativeQuery = true)
     Optional<DateCheck> findLockedById(@Param("id") UUID id);

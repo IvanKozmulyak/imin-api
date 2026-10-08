@@ -19,9 +19,9 @@ import java.util.UUID;
  *
  * <p>The three segment queries below are deliberately split by relaxation rung
  * rather than expressed as one query with nullable filters: every bind param is
- * non-null and compared by equality, which sidesteps the H2-vs-Postgres
+ * non-null and compared by equality, which sidesteps the Postgres
  * {@code lower(bytea)} trap that a nullable {@code String} threaded through a SQL
- * function triggers (see reference: H2 vs PG null-String bytea). Own/foreign split,
+ * function triggers. Own/foreign split,
  * density counting, privacy aggregation and rounding all happen in Java in
  * {@code ComparableCorpusService} over the small per-segment result.
  *

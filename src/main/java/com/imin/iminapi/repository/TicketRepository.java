@@ -132,9 +132,8 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      * do it any other way, and inventing one would be a fabrication.
      *
      * <p>Returns raw timestamps rather than a SQL {@code GROUP BY date(...)}: day bucketing
-     * happens in Java. Postgres and H2 (PG-compat, used by the test suite) diverge on date
-     * truncation, and this repo has been bitten by exactly that class of H2-passes /
-     * PG-500s bug before. Row volume is bounded by one event's window (~10 days).
+     * happens in Java, in the event's timezone; a SQL {@code date(...)} truncates in the
+     * session zone instead. Row volume is bounded by one event's window (~10 days).
      */
     @Query("""
             select t.createdAt from Ticket t
@@ -198,8 +197,7 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     /**
      * (tierId, createdAt) for every SOLD ticket of an event, oldest first. The trajectory
      * materialization buckets these by calendar day in the event's timezone IN JAVA — never
-     * a SQL {@code date(...)} (H2 and Postgres diverge on truncation; this repo has been
-     * bitten before). The SOLD predicate matches {@link #tierAggregates} so the daily series
+     * a SQL {@code date(...)}, which truncates in the session zone. The SOLD predicate matches {@link #tierAggregates} so the daily series
      * reconciles with the per-tier sold figures.
      */
     @Query("""

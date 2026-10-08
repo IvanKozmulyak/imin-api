@@ -9,7 +9,6 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.ByteBuffer;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Instant;
@@ -273,13 +272,9 @@ public class ConsentGate {
         return values.isEmpty() ? List.of(NEVER_MATCHES) : values;
     }
 
-    /** Native scalar UUIDs arrive as UUID on Postgres and as 16 raw bytes on H2. */
+    /** Native scalar UUIDs arrive as UUID on Postgres; anything else is parsed from its text form. */
     static UUID uuid(Object o) {
         if (o instanceof UUID u) return u;
-        if (o instanceof byte[] b && b.length == 16) {
-            ByteBuffer buf = ByteBuffer.wrap(b);
-            return new UUID(buf.getLong(), buf.getLong());
-        }
         return UUID.fromString(o.toString());
     }
 }

@@ -72,8 +72,8 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
      * Row lock on a single org, used to serialize one-time lazy work for that org (e.g.
      * seeding its prebuilt segments) so two concurrent requests can't both run it. Native
      * {@code FOR UPDATE} — not {@code @Lock(PESSIMISTIC_WRITE)} — because PostgreSQLDialect
-     * renders the latter as {@code FOR NO KEY UPDATE}, which H2's PG-compat mode (tests)
-     * does not understand; plain {@code FOR UPDATE} works on both engines.
+     * renders the latter as {@code FOR NO KEY UPDATE}; this keeps the established plain
+     * {@code FOR UPDATE} lock mode.
      */
     @Query(value = "SELECT * FROM organizations WHERE id = :id FOR UPDATE", nativeQuery = true)
     Optional<Organization> findByIdForUpdate(@Param("id") UUID id);

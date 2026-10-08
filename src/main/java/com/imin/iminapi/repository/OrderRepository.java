@@ -367,8 +367,8 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     // most one row per address, so an order matches at most once per account.
     //
     // Two queries rather than one with nullable cursor parameters. A nullable
-    // parameter compared inside a query passes on H2 and can 500 on Postgres
-    // (the `lower(bytea)` trap this repo has hit before); splitting is the
+    // parameter compared inside a query can 500 on Postgres (the `lower(bytea)`
+    // trap this repo has hit before); splitting is the
     // house workaround and it also lets each query use the index cleanly.
 
     /**

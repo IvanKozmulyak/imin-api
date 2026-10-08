@@ -13,8 +13,8 @@ import java.util.UUID;
  *   <li>{@code marketing}      — org-scoped; one per (org_id, membership_id)</li>
  *   <li>{@code deliverability} — platform-shared; one per normalized_email</li>
  * </ul>
- * Uniqueness for each scope is enforced in the application layer (M4 — partial
- * unique indexes are not H2-compatible).
+ * Uniqueness for each scope is enforced in the application layer, backed by the
+ * unique indexes of V114.
  */
 @Entity
 @Table(name = "suppression_entries")

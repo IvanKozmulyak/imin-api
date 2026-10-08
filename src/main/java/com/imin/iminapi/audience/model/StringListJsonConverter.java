@@ -11,7 +11,6 @@ import java.util.List;
 
 /**
  * Converts {@code List<String>} to/from a JSON array stored as TEXT.
- * H2 and PostgreSQL both handle TEXT columns, so this is portable.
  */
 @Converter
 public class StringListJsonConverter implements AttributeConverter<List<String>, String> {

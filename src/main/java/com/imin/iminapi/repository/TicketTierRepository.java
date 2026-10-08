@@ -81,9 +81,8 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
      *
      * <p>Uses a native {@code SELECT ... FOR UPDATE} (instead of a JPA
      * {@code PESSIMISTIC_WRITE} lock hint) because the modern PostgreSQL Hibernate
-     * dialect translates {@code PESSIMISTIC_WRITE} to {@code FOR NO KEY UPDATE},
-     * which H2's PG-compat mode does not understand. The plain {@code FOR UPDATE}
-     * clause works on both Postgres and H2.
+     * dialect translates {@code PESSIMISTIC_WRITE} to {@code FOR NO KEY UPDATE};
+     * this keeps the established plain {@code FOR UPDATE} lock mode.
      */
     @Query(value = "SELECT * FROM ticket_tiers WHERE id = :id FOR UPDATE", nativeQuery = true)
     Optional<TicketTier> findByIdForUpdate(@Param("id") UUID id);

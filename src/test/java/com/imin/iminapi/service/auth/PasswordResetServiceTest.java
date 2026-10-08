@@ -60,9 +60,11 @@ class PasswordResetServiceTest {
         User u = newUser();
         String token = sut.issueToken(u);
 
-        assertThat(token).isNotBlank();
+        // 32 random bytes, URL-safe base64 without padding; stored as a 64-hex SHA-256.
+        assertThat(token).matches("[A-Za-z0-9_-]{43,}");
         verify(tokens).save(argThat(t ->
-                t.getTokenHash().equals(tokenSvc.hashOf(token))
+                t.getTokenHash().matches("[0-9a-f]{64}")
+                && t.getTokenHash().equals(tokenSvc.hashOf(token))
                 && t.getUserId().equals(u.getId())));
     }
 

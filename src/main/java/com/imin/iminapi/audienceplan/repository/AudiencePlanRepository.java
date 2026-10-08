@@ -22,8 +22,8 @@ public interface AudiencePlanRepository extends Repository<AudiencePlan, UUID> {
     Optional<AudiencePlan> findFirstByOrgIdAndEventIdAndSupersededByIsNullOrderByCreatedAtDesc(UUID orgId, UUID eventId);
 
     /**
-     * Locks the event's non-superseded plans, newest first. Native plain FOR UPDATE: the dialect's
-     * PESSIMISTIC_WRITE renders FOR NO KEY UPDATE, which H2 rejects.
+     * Locks the event's non-superseded plans, newest first. Native plain FOR UPDATE, kept rather than the
+     * dialect's PESSIMISTIC_WRITE, which renders FOR NO KEY UPDATE.
      */
     @Query(value = "SELECT * FROM audience_plans WHERE org_id = :orgId AND event_id = :eventId"
             + " AND superseded_by IS NULL ORDER BY created_at DESC FOR UPDATE", nativeQuery = true)
@@ -43,8 +43,4 @@ public interface AudiencePlanRepository extends Repository<AudiencePlan, UUID> {
     @Query(value = "SELECT count(*) FROM (SELECT pg_advisory_xact_lock(hashtextextended(CAST(:eventId AS text), 0))) l",
             nativeQuery = true)
     long lockEventAdvisory(@Param("eventId") UUID eventId);
-
-    /** H2 (tests only) has no advisory locks, so it falls back to the event row lock. */
-    @Query(value = "SELECT id FROM events WHERE id = :eventId FOR UPDATE", nativeQuery = true)
-    List<Object> lockEventRow(@Param("eventId") UUID eventId);
 }
