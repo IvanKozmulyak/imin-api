@@ -59,7 +59,6 @@ com.imin.iminapi.controller.publicapi.SmsConsentControllerTest
 com.imin.iminapi.controller.publicapi.WalletContractTest
 com.imin.iminapi.controller.reference.ReferenceControllerTest
 com.imin.iminapi.marketing.CampaignDispatcherDailyCapTest
-com.imin.iminapi.marketing.MomentumEvaluatorTest
 com.imin.iminapi.marketing.email.ResendTrackingHealthEndpointTest
 com.imin.iminapi.marketing.send.AudiencePlanLegalIdentityDispatchTest
 com.imin.iminapi.marketing.send.CampaignDailyCapDuringDrainTest
