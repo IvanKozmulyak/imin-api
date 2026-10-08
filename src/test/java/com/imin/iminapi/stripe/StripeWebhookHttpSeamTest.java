@@ -106,6 +106,43 @@ class StripeWebhookHttpSeamTest {
         assertThat(dedupRows(eventId)).isZero();
     }
 
+    // The SDK parses the body and the t= header before (V1) or after (V2) the HMAC; neither may be a 500.
+    @ParameterizedTest
+    @ValueSource(strings = {"v1NonJsonBody", "v1ThinEventBody", "v1EmptyBody", "v1NonNumericTimestamp",
+            "v1TimestampWithoutValue", "v1SignedNonJsonBody", "v2NonNumericTimestamp", "v2TimestampWithoutValue",
+            "v2SignedNonJsonBody"})
+    void malformedDeliveryIsRejectedAsInvalidSignatureNotAServerError(String variant) throws Exception {
+        String v1Body = completedEvent(eventId);
+        String v2Body = thinEvent(eventId, "v2.core.account[requirements].updated");
+        String v1Hmac = Webhook.Util.computeHmacSha256(V1_SECRET, now() + "." + v1Body);
+        String v2Hmac = Webhook.Util.computeHmacSha256(V2_SECRET, now() + "." + v2Body);
+        String url = variant.startsWith("v1") ? V1_URL : V2_URL;
+        String body;
+        String header;
+        switch (variant) {
+            case "v1NonJsonBody" -> { body = "not json {"; header = sign("whsec_attacker", now(), body); }
+            case "v1ThinEventBody" -> { body = "{\"object\":\"v2.core.event\"}"; header = sign("whsec_attacker", now(), body); }
+            case "v1EmptyBody" -> { body = ""; header = sign("whsec_attacker", now(), body); }
+            case "v1NonNumericTimestamp" -> { body = v1Body; header = "t=abc,v1=" + v1Hmac; }
+            case "v1TimestampWithoutValue" -> { body = v1Body; header = "t,v1=" + v1Hmac; }
+            // Correctly signed, so it passes the HMAC and fails only in the parse.
+            case "v1SignedNonJsonBody" -> { body = "not json {"; header = sign(V1_SECRET, now(), body); }
+            case "v2NonNumericTimestamp" -> { body = v2Body; header = "t=abc,v1=" + v2Hmac; }
+            case "v2TimestampWithoutValue" -> { body = v2Body; header = "t,v1=" + v2Hmac; }
+            case "v2SignedNonJsonBody" -> { body = "not json {"; header = sign(V2_SECRET, now(), body); }
+            default -> throw new IllegalArgumentException(variant);
+        }
+        int dedupBefore = allDedupRows();
+
+        send(url, body, header)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.error.message").value("Invalid Stripe signature"));
+
+        assertThat(allDedupRows()).isEqualTo(dedupBefore);
+        verify(stripeClient, never()).v2();
+    }
+
     @Test
     void v1VerifiesTheRawBytesNotAReserializedBody() throws Exception {
         // Indentation, a trailing newline, non-alphabetical keys and non-ASCII text: any re-encoding changes the HMAC input.
@@ -187,6 +224,11 @@ class StripeWebhookHttpSeamTest {
     private int dedupRows(String id) {
         Integer n = jdbc.queryForObject(
                 "SELECT count(*) FROM processed_webhook_events WHERE stripe_event_id = ?", Integer.class, id);
+        return n == null ? 0 : n;
+    }
+
+    private int allDedupRows() {
+        Integer n = jdbc.queryForObject("SELECT count(*) FROM processed_webhook_events", Integer.class);
         return n == null ? 0 : n;
     }
 

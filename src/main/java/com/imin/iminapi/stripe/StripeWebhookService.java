@@ -169,23 +169,53 @@ public class StripeWebhookService {
      * The Connect secret is optional: when blank this is identical to single-secret verification.
      */
     private com.stripe.model.Event constructV1Event(String rawBody, String sigHeader, String primarySecret) {
+        String verifiedSecret = verifyV1Signature(rawBody, sigHeader, primarySecret);
         try {
-            return Webhook.constructEvent(rawBody, sigHeader, primarySecret);
+            // Tolerance 0 skips only the time window, which verifyV1Signature just checked; the HMAC is re-checked.
+            return Webhook.constructEvent(rawBody, sigHeader, verifiedSecret, 0);
+        } catch (SignatureVerificationException | RuntimeException e) {
+            log.error("Stripe v1 webhook verified but could not be parsed: {}", e.toString());
+            throw invalidSignature();
+        }
+    }
+
+    /** Returns the secret the header verifies against, or throws the 400 for unverifiable deliveries. */
+    private String verifyV1Signature(String rawBody, String sigHeader, String primarySecret) {
+        try {
+            Webhook.Signature.verifyHeader(rawBody, sigHeader, primarySecret, Webhook.DEFAULT_TOLERANCE);
+            return primarySecret;
         } catch (SignatureVerificationException primaryFail) {
             String connectSecret = props.getWebhookSecretConnect();
             boolean haveConnect = connectSecret != null && !connectSecret.isBlank();
             if (haveConnect) {
                 try {
-                    return Webhook.constructEvent(rawBody, sigHeader, connectSecret);
+                    Webhook.Signature.verifyHeader(rawBody, sigHeader, connectSecret, Webhook.DEFAULT_TOLERANCE);
+                    return connectSecret;
                 } catch (SignatureVerificationException connectFail) {
                     // both secrets failed — fall through to the error below
                 }
             }
             log.warn("Stripe v1 webhook signature verification failed (tried v1{}): {}",
                     haveConnect ? "+connect" : "", primaryFail.getMessage());
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Invalid Stripe signature");
+            throw invalidSignature();
+        } catch (RuntimeException malformedHeader) {
+            // The SDK's t= parse throws (bad number, no '=') instead of failing verification.
+            log.warn("Stripe v1 webhook signature header unparseable: {}", malformedHeader.toString());
+            throw invalidSignature();
         }
+    }
+
+    private static boolean signatureVerifies(String rawBody, String sigHeader, String secret) {
+        try {
+            return Webhook.Signature.verifyHeader(rawBody, sigHeader, secret, Webhook.DEFAULT_TOLERANCE);
+        } catch (SignatureVerificationException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static ApiException invalidSignature() {
+        return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                "Invalid Stripe signature");
     }
 
     /**
@@ -347,8 +377,15 @@ public class StripeWebhookService {
             notification = stripeClient.parseEventNotification(rawBody, sigHeader, secret);
         } catch (SignatureVerificationException e) {
             log.warn("Stripe v2 webhook signature verification failed: {}", e.getMessage());
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Invalid Stripe signature");
+            throw invalidSignature();
+        } catch (RuntimeException e) {
+            // Only the SDK call is inside: a bad t= header throws before the HMAC, a bad body after it.
+            if (signatureVerifies(rawBody, sigHeader, secret)) {
+                log.error("Stripe v2 webhook verified but could not be parsed: {}", e.toString());
+            } else {
+                log.warn("Stripe v2 webhook signature header unparseable: {}", e.toString());
+            }
+            throw invalidSignature();
         }
 
         String type = notification.getType();
