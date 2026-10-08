@@ -1,154 +1,83 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.marketing.dto.CampaignDto;      // Phase 2
-import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
-import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
-import com.imin.iminapi.marketing.model.Campaign;        // Phase 2
-import com.imin.iminapi.marketing.service.MomentumService;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/**
- * MockMvc coverage for the Momentum Engine endpoints (spec §6.4): list, approve
- * (returns the created origin='momentum' campaign), dismiss (204), and the auth gate.
- * Follows the marketing/refund controller-test convention — nested @WithStubOrganizer
- * (there is no shared com.imin.iminapi.security.WithStubOrganizer type).
- */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** Momentum route wiring and statuses; MomentumServiceTest owns the payloads and effects. */
+@IminIntegrationTest
 class MomentumControllerTest {
 
     @Autowired MockMvc mvc;
-    @MockitoBean MomentumService service;
+    @Autowired MomentumSuggestionRepository suggestions;
+    @Autowired MomentumTestSupport support;
+    @Autowired JdbcTemplate jdbc;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-0000000000d1");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-0000000000d2");
+    private UUID org;
+    private UUID event;
+    private UsernamePasswordAuthenticationToken auth;
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithStubOrganizer {}
+    @BeforeEach
+    void seed() {
+        event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        org = support.orgIdOf(event);
+        auth = new UsernamePasswordAuthenticationToken(
+                support.principalFor(org), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
+    }
 
-    public static class StubFactory implements WithSecurityContextFactory<WithStubOrganizer> {
-        @Override public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubOrganizer ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    /** The seeded event is live and on sale, so the evaluator's pass would otherwise keep visiting it. */
+    @AfterEach
+    void deleteOwnRows() {
+        jdbc.update("delete from momentum_suggestions where org_id = ?", org);
+        CampaignRows.delete(jdbc, List.of(org));
+        OrgRows.delete(jdbc, List.of(org));
+    }
+
+    private MomentumSuggestion suggestion(String trigger) {
+        MomentumSuggestion s = new MomentumSuggestion();
+        s.setId(UUID.randomUUID());
+        s.setOrgId(org);
+        s.setEventId(event);
+        s.setTriggerType(trigger);
+        s.setStatus("suggested");
+        s.setMetricsSnapshot("{\"sellThroughPct\":5}");
+        s.setDraftPayload("{\"subject\":\"Announcing\",\"bodyMd\":\"b\",\"segmentId\":null,\"why\":\"low sales\"}");
+        s.setSuggestedAt(Instant.now());
+        return suggestions.save(s);
     }
 
     @Test
-    @WithStubOrganizer
-    void listsSuggestions() throws Exception {
-        when(service.list(any(), any())).thenReturn(List.of(new MomentumSuggestionDto(
-                UUID.randomUUID(), UUID.randomUUID(), "Subterrane // Vol. 09", "launch_push",
-                "suggested", "{}", "{\"subject\":\"Hi\"}", null, Instant.now(),
-                "TICKETS LIVE", "92 sold in the first 48 hours, 2% of the room",
-                "On-sale 2 days", List.of(0, 14, 22, 18), "Repeat", true)));
-        mvc.perform(get("/api/v1/marketing/suggestions?status=suggested"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].triggerType").value("launch_push"))
-                // The enriched card fields must survive JSON serialization — the card is
-                // stripped of its evidence if any of these silently drop off the wire.
-                .andExpect(jsonPath("$[0].eventName").value("Subterrane // Vol. 09"))
-                .andExpect(jsonPath("$[0].headline").value("TICKETS LIVE"))
-                .andExpect(jsonPath("$[0].daysOutLabel").value("On-sale 2 days"))
-                .andExpect(jsonPath("$[0].segmentLabel").value("Repeat"))
-                .andExpect(jsonPath("$[0].smsLocked").value(true))
-                .andExpect(jsonPath("$[0].spark").isArray())
-                .andExpect(jsonPath("$[0].spark[1]").value(14));
-    }
+    void momentumRoutes_answerTheirStatus() throws Exception {
+        MomentumSuggestion approved = suggestion("launch_push");
+        MomentumSuggestion dismissed = suggestion("slump");
 
-    @Test
-    @WithStubOrganizer
-    void approveReturnsMomentumCampaign() throws Exception {
-        UUID id = UUID.randomUUID();
-        when(service.approve(any(), any())).thenReturn(sampleCampaign());
-        mvc.perform(post("/api/v1/marketing/suggestions/" + id + "/approve"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.origin").value("momentum"))
-                .andExpect(jsonPath("$.status").value("draft"));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void dismissReturns204() throws Exception {
-        UUID id = UUID.randomUUID();
-        mvc.perform(post("/api/v1/marketing/suggestions/" + id + "/dismiss"))
+        mvc.perform(get("/api/v1/marketing/suggestions?status=suggested").with(authentication(auth)))
+                .andExpect(status().isOk());
+        // 200 here proves "state" is not captured as the {id} path variable.
+        mvc.perform(get("/api/v1/marketing/suggestions/state").with(authentication(auth)))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/marketing/suggestions/" + approved.getId() + "/approve").with(authentication(auth)))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/marketing/suggestions/" + dismissed.getId() + "/dismiss").with(authentication(auth)))
                 .andExpect(status().isNoContent());
-    }
-
-    @Test
-    @WithStubOrganizer
-    void stateReturnsEngineShape() throws Exception {
-        when(service.state(any())).thenReturn(new MomentumEngineStateDto(
-                2, 1, 3, 1, 0L, 10, 7,
-                List.of(new MomentumEngineStateDto.LogEntry(
-                        "check", "green", "Approved — Neon Nights urgency 72h", "2 days ago"))));
-        mvc.perform(get("/api/v1/marketing/suggestions/state"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.watching").value(2))
-                .andExpect(jsonPath("$.waiting").value(1))
-                .andExpect(jsonPath("$.approved30d").value(3))
-                .andExpect(jsonPath("$.dismissed30d").value(1))
-                .andExpect(jsonPath("$.attributedMinor").value(0))
-                .andExpect(jsonPath("$.minAudienceFloor").value(10))
-                .andExpect(jsonPath("$.cooldownDays").value(7))
-                .andExpect(jsonPath("$.log[0].icon").value("check"))
-                .andExpect(jsonPath("$.log[0].tone").value("green"))
-                .andExpect(jsonPath("$.log[0].text").value("Approved — Neon Nights urgency 72h"))
-                .andExpect(jsonPath("$.log[0].sub").value("2 days ago"));
-    }
-
-    @Test
-    void listRequiresAuth() throws Exception {
-        mvc.perform(get("/api/v1/marketing/suggestions")).andExpect(status().isUnauthorized());
-    }
-
-    @Test
-    void stateRequiresAuth() throws Exception {
-        mvc.perform(get("/api/v1/marketing/suggestions/state")).andExpect(status().isUnauthorized());
-    }
-
-    // Build a real CampaignDto from a minimal Phase-2 Campaign entity via the same
-    // CampaignDto.from(...) factory MomentumService.approve uses (Task 7). Only the
-    // three asserted fields (origin/status/channel) must be set for the JSON checks.
-    private CampaignDto sampleCampaign() {
-        Campaign c = new Campaign();
-        c.setId(UUID.randomUUID());
-        c.setOrgId(UUID.randomUUID());
-        c.setChannel("email");
-        c.setName("Momentum campaign");
-        c.setStatus("draft");
-        c.setOrigin("momentum");
-        c.setCreatedBy(UUID.randomUUID());
-        return CampaignDto.from(c);
     }
 }

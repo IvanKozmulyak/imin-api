@@ -5,26 +5,28 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.webhook.ResendWebhookProjector;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.event.ApplicationEvents;
 import org.springframework.test.context.event.RecordApplicationEvents;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @RecordApplicationEvents
 class ResendWebhookProjectorTest {
 
@@ -35,15 +37,31 @@ class ResendWebhookProjectorTest {
     @Autowired SuppressionRepository suppressionRepo;
     @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
     @Autowired com.imin.iminapi.audience.repository.MarketingOptOutRepository optOutRepo;
-    @MockitoBean AuditLogger auditLogger;
     @Autowired ApplicationEvents published;
     @Autowired com.imin.iminapi.audienceplan.repository.FanFeatureRepository fanFeatureRepo;
     @Autowired org.springframework.transaction.PlatformTransactionManager txManager;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    /** The campaigns are left `sending`, which the dispatcher reclaims for every org once stale. */
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** Events this test published for its own org; other threads may publish meanwhile. */
+    private List<com.imin.iminapi.audience.service.ConsentChanged> consentChanges(UUID orgId) {
+        return published.stream(com.imin.iminapi.audience.service.ConsentChanged.class)
+                .filter(e -> orgId.equals(e.orgId())).toList();
+    }
 
     private record Fixture(UUID orgId, UUID campaignId, UUID membershipId, UUID recipientId, String email) {}
 
     private Fixture seed(String email) {
         UUID orgId = UUID.randomUUID();
+        orgIds.add(orgId);
 
         // memberships.consumer_id is UUID NOT NULL REFERENCES consumers(consumer_id)
         // (V48__audience_memberships.sql:8); H2 MODE=PostgreSQL enforces the FK on
@@ -95,7 +113,7 @@ class ResendWebhookProjectorTest {
      */
     @Test
     void nullEventTypeIsIgnoredInsteadOfThrowing() {
-        Fixture f = seed("null-type@example.com");
+        Fixture f = seed(fx.email("null-type"));
         org.assertj.core.api.Assertions.assertThatCode(() ->
                 projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
                         f.email(), null, null, Instant.now()))
@@ -106,22 +124,22 @@ class ResendWebhookProjectorTest {
 
     @Test
     void deliveredMarksRecipientDelivered() {
-        Fixture f = seed("a@example.com");
+        Fixture f = seed(fx.email("a"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "a@example.com", "email.delivered", null, Instant.now());
+            f.email(), "email.delivered", null, Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("delivered");
     }
 
     @Test
     void aPermanentBounceSuppressesDeliverabilityByNormalizedEmail() {
-        Fixture f = seed("Bounce@Example.com");
+        Fixture f = seed(fx.email("Bounce").replace("@example.test", "@Example.test"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "Bounce@Example.com", "email.bounced", "Permanent", Instant.now());
+            f.email(), "email.bounced", "Permanent", Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("bounced");
         // normalized lower+trim per EmailNormalizer
-        assertThat(suppressionRepo.findDeliverabilityByEmail("bounce@example.com")).isPresent();
+        assertThat(suppressionRepo.findDeliverabilityByEmail(f.email().toLowerCase(Locale.ROOT))).isPresent();
     }
 
     /**
@@ -133,14 +151,14 @@ class ResendWebhookProjectorTest {
      */
     @Test
     void aTransientBounceDoesNotTouchTheSharedList() {
-        Fixture f = seed("soft@example.com");
+        Fixture f = seed(fx.email("soft"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "soft@example.com", "email.bounced", "Transient", Instant.now());
+            f.email(), "email.bounced", "Transient", Instant.now());
 
         CampaignRecipient after = recipientRepo.findById(f.recipientId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo("bounced");
         assertThat(after.getErrorCode()).isEqualTo("soft_bounce");
-        assertThat(suppressionRepo.findDeliverabilityByEmail("soft@example.com")).isEmpty();
+        assertThat(suppressionRepo.findDeliverabilityByEmail(f.email())).isEmpty();
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
             .isEmpty();
     }
@@ -148,10 +166,10 @@ class ResendWebhookProjectorTest {
     /** An absent bounce.type is treated as transient — the shared list is never written on a guess. */
     @Test
     void anUntypedBounceIsTreatedAsTransient() {
-        Fixture f = seed("untyped@example.com");
+        Fixture f = seed(fx.email("untyped"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "untyped@example.com", "email.bounced", null, Instant.now());
-        assertThat(suppressionRepo.findDeliverabilityByEmail("untyped@example.com")).isEmpty();
+            f.email(), "email.bounced", null, Instant.now());
+        assertThat(suppressionRepo.findDeliverabilityByEmail(f.email())).isEmpty();
     }
 
     /**
@@ -160,7 +178,7 @@ class ResendWebhookProjectorTest {
      */
     @Test
     void repeatedTransientBouncesSuppressTheMembershipForItsOwnOrgOnly() {
-        Fixture f = seed("repeat-soft@example.com");
+        Fixture f = seed(fx.email("repeat-soft"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             f.email(), "email.bounced", "Transient", Instant.now());
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
@@ -175,7 +193,7 @@ class ResendWebhookProjectorTest {
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
             .isPresent();
         // ...and the platform-wide list is still untouched.
-        assertThat(suppressionRepo.findDeliverabilityByEmail("repeat-soft@example.com")).isEmpty();
+        assertThat(suppressionRepo.findDeliverabilityByEmail(f.email())).isEmpty();
     }
 
     /**
@@ -206,9 +224,9 @@ class ResendWebhookProjectorTest {
 
     @Test
     void complainedSuppressesMarketingAndMarksComplained() {
-        Fixture f = seed("spam@example.com");
+        Fixture f = seed(fx.email("spam"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "spam@example.com", "email.complained", null, Instant.now());
+            f.email(), "email.complained", null, Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("complained");
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
@@ -217,9 +235,9 @@ class ResendWebhookProjectorTest {
 
     @Test
     void complainedMarksTheMemberAsObjectingToProfiling() {
-        Fixture f = seed("spam-profiling@example.com");
+        Fixture f = seed(fx.email("spam-profiling"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "spam-profiling@example.com", "email.complained", null, Instant.now());
+            f.email(), "email.complained", null, Instant.now());
         Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
         assertThat(m.isObjectedProfiling()).isTrue();
         String address = consumerRepo.findByConsumerId(m.getConsumerId()).orElseThrow().getNormalizedEmail();
@@ -228,16 +246,16 @@ class ResendWebhookProjectorTest {
 
     @Test
     void complainedPublishesConsentChangedSoTasteClears() {
-        Fixture f = seed("spam-taste@example.com");
+        Fixture f = seed(fx.email("spam-taste"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "spam-taste@example.com", "email.complained", null, Instant.now());
-        assertThat(published.stream(com.imin.iminapi.audience.service.ConsentChanged.class))
+            f.email(), "email.complained", null, Instant.now());
+        assertThat(consentChanges(f.orgId()))
             .containsExactly(new com.imin.iminapi.audience.service.ConsentChanged(f.orgId(), f.membershipId(), false));
     }
 
     @Test
     void complainedClearsTasteInsideTheWebhookTransaction() {
-        Fixture f = seed("spam-inline@example.com");
+        Fixture f = seed(fx.email("spam-inline"));
         com.imin.iminapi.audienceplan.model.FanFeature seeded = new com.imin.iminapi.audienceplan.model.FanFeature();
         seeded.setMembershipId(f.membershipId());
         seeded.setOrgId(f.orgId());
@@ -252,7 +270,7 @@ class ResendWebhookProjectorTest {
         // Read before commit: the after-commit listener has not run, so a cleared row proves the clear is inline.
         var inside = new org.springframework.transaction.support.TransactionTemplate(txManager).execute(s -> {
             projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-                "spam-inline@example.com", "email.complained", null, Instant.now());
+                f.email(), "email.complained", null, Instant.now());
             return fanFeatureRepo.findById(f.membershipId()).orElseThrow();
         });
 
@@ -264,20 +282,20 @@ class ResendWebhookProjectorTest {
 
     @Test
     void deliveredLeavesProfilingObjectionFalse() {
-        Fixture f = seed("delivered-profiling@example.com");
+        Fixture f = seed(fx.email("delivered-profiling"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "delivered-profiling@example.com", "email.delivered", null, Instant.now());
+            f.email(), "email.delivered", null, Instant.now());
         assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
             .orElseThrow().isObjectedProfiling()).isFalse();
-        assertThat(published.stream(com.imin.iminapi.audience.service.ConsentChanged.class)).isEmpty();
+        assertThat(consentChanges(f.orgId())).isEmpty();
     }
 
     @Test
     void openedStampsRecipientOnly_membershipUnchanged() {
-        Fixture f = seed("open@example.com");
+        Fixture f = seed(fx.email("open"));
         Instant when = Instant.now();
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "open@example.com", "email.opened", null, when);
+            f.email(), "email.opened", null, when);
         CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
         assertThat(r.getOpenedAt()).isNotNull();
         assertThat(r.getLastEventAt()).isNotNull();
@@ -288,9 +306,9 @@ class ResendWebhookProjectorTest {
 
     @Test
     void clickedStampsRecipientOnly_membershipUnchanged() {
-        Fixture f = seed("click@example.com");
+        Fixture f = seed(fx.email("click"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "click@example.com", "email.clicked", null, Instant.now());
+            f.email(), "email.clicked", null, Instant.now());
         CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
         assertThat(r.getClickedAt()).isNotNull();
         assertThat(r.getLastEventAt()).isNotNull();

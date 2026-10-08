@@ -1,32 +1,30 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.MetaFunnelDto;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
 import com.imin.iminapi.marketing.repository.MetaCapiEventRepository;
 import com.imin.iminapi.marketing.service.MetaConnectionService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
@@ -39,66 +37,44 @@ import static org.assertj.core.api.Assertions.assertThat;
  * generalized from one event to all of an org's active events over a 30-day
  * window and mapped onto Meta's event vocabulary.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MetaOrgFunnelServiceTest {
 
     @Autowired MetaConnectionService service;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
-    @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
     @Autowired MetaCapiEventRepository capiEvents;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
+    private final List<UUID> orgIds = new ArrayList<>();
     private Organization org;
     private User owner;
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = newOrg();
-        owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        owner = fx.owner(org);
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        capiEvents.deleteAll();
-        funnel.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        // Events cascade their funnel beacons and orders; outbox rows carry no foreign key.
+        for (UUID orgId : orgIds) jdbc.update("delete from meta_capi_events where org_id = ?", orgId);
+        OrgRows.delete(jdbc, orgIds);
     }
 
     // ---- fixtures ---------------------------------------------------------
 
     private Organization newOrg() {
-        Organization o = new Organization();
-        o.setName("Org");
-        o.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("hi@test.example");
-        o.setCountry("DE");
-        return orgs.save(o);
+        Organization o = fx.org();
+        orgIds.add(o.getId());
+        return o;
     }
 
-    private UUID newEvent(UUID orgId) {
-        Event e = new Event();
-        e.setOrgId(orgId);
-        e.setName("Night");
-        e.setSlug("night-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.LIVE);
-        e.setStartsAt(Instant.now().plusSeconds(86_400));
-        e.setCreatedBy(owner.getId());
-        e.setCurrency("EUR");
-        return events.save(e).getId();
+    private UUID newEvent(Organization o) {
+        Event e = fx.event(o, owner, EventStatus.LIVE, Instant.now().plusSeconds(86_400));
+        return e.getId();
     }
 
     private void beacon(UUID eventId, String stage, String anon, Instant createdAt) {
@@ -155,8 +131,8 @@ class MetaOrgFunnelServiceTest {
 
     @Test
     void maps_three_stages_and_aggregates_across_all_org_events() {
-        UUID e1 = newEvent(org.getId());
-        UUID e2 = newEvent(org.getId());
+        UUID e1 = newEvent(org);
+        UUID e2 = newEvent(org);
 
         // PAGE_VIEW: 3 distinct sessions across the two events (e1: s1,s2 — e2: s3)
         beacon(e1, FunnelEvent.STAGE_PAGE_VIEW, "s1");
@@ -189,7 +165,7 @@ class MetaOrgFunnelServiceTest {
 
     @Test
     void distinct_sessions_counted_per_stage() {
-        UUID e1 = newEvent(org.getId());
+        UUID e1 = newEvent(org);
         // s1 views twice, s2 once → 2 distinct
         beacon(e1, FunnelEvent.STAGE_PAGE_VIEW, "s1");
         beacon(e1, FunnelEvent.STAGE_PAGE_VIEW, "s1");
@@ -201,13 +177,13 @@ class MetaOrgFunnelServiceTest {
 
     @Test
     void excludes_other_orgs_events() {
-        UUID mine = newEvent(org.getId());
+        UUID mine = newEvent(org);
         beacon(mine, FunnelEvent.STAGE_PAGE_VIEW, "s1");
         order(org.getId(), mine, Instant.now());
 
         // a whole other org with its own event, beacons and orders
         Organization other = newOrg();
-        UUID theirs = newEvent(other.getId());
+        UUID theirs = newEvent(other);
         beacon(theirs, FunnelEvent.STAGE_PAGE_VIEW, "x1");
         beacon(theirs, FunnelEvent.STAGE_PAGE_VIEW, "x2");
         beacon(theirs, FunnelEvent.STAGE_CHECKOUT_START, "x1");
@@ -241,7 +217,7 @@ class MetaOrgFunnelServiceTest {
 
     @Test
     void window_excludes_beacons_and_orders_older_than_30_days() {
-        UUID e1 = newEvent(org.getId());
+        UUID e1 = newEvent(org);
         Instant old = Instant.now().minus(31, ChronoUnit.DAYS);
         Instant fresh = Instant.now().minus(1, ChronoUnit.DAYS);
 
@@ -278,7 +254,7 @@ class MetaOrgFunnelServiceTest {
 
     @Test
     void cross_org_caller_sees_all_zeros() {
-        UUID e1 = newEvent(org.getId());
+        UUID e1 = newEvent(org);
         beacon(e1, FunnelEvent.STAGE_PAGE_VIEW, "s1");
         order(org.getId(), e1, Instant.now());
         capiEvent(org.getId(), MetaCapiEvent.STATUS_SENT, Instant.now());

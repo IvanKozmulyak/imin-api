@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.MetaTestEventResult;
 import com.imin.iminapi.marketing.graph.MetaGraphClient;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
@@ -10,40 +9,55 @@ import com.imin.iminapi.marketing.repository.MetaPixelConnectionRepository;
 import com.imin.iminapi.marketing.service.MetaCapiPoller;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MetaCapiPollerTest {
 
     @Autowired MetaCapiPoller poller;
     @Autowired MetaCapiEventRepository capiRepo;
     @Autowired MetaPixelConnectionRepository connRepo;
-    @MockitoBean MetaGraphClient graphClient;
+    @Autowired MetaGraphClient graphClient;
+    @Autowired JdbcTemplate jdbc;
+
+    private final Set<UUID> orgIds = new LinkedHashSet<>();
+
+    @AfterEach
+    void deleteOwnOutboxRows() {
+        // A backed-off row stays due for the next drain of any later class.
+        for (UUID orgId : orgIds) jdbc.update("delete from meta_capi_events where org_id = ?", orgId);
+    }
 
     private UUID orgWithPixel() {
+        // A cipher-produced value; the poller decrypts before use. Use a real cipher
+        // round-trip so decrypt succeeds — inject via the writer path in real code.
+        return orgWithPixel(encToken("real-token"));
+    }
+
+    private UUID orgWithPixel(String tokenEnc) {
         UUID orgId = UUID.randomUUID();
+        orgIds.add(orgId);
         MetaPixelConnection c = new MetaPixelConnection();
         c.setId(UUID.randomUUID());
         c.setOrgId(orgId);
         c.setEventId(null);
         c.setPixelId("PIX-1");
-        // A cipher-produced value; the poller decrypts before use. Use a real cipher
-        // round-trip so decrypt succeeds — inject via the writer path in real code.
-        c.setCapiAccessTokenEnc(encToken("real-token"));
+        c.setCapiAccessTokenEnc(tokenEnc);
         connRepo.save(c);
         return orgId;
     }
@@ -60,7 +74,8 @@ class MetaCapiPollerTest {
         e.setCurrency("eur");
         e.setEventTime(Instant.now().getEpochSecond());
         e.setStatus(MetaCapiEvent.STATUS_PENDING);
-        e.setNextAttemptAt(Instant.now().minus(1, ChronoUnit.MINUTES));
+        // The drain takes the oldest due rows of every org first; this one sorts ahead of any leftover.
+        e.setNextAttemptAt(Instant.now().minus(3650, ChronoUnit.DAYS));
         return capiRepo.save(e);
     }
 
@@ -83,11 +98,7 @@ class MetaCapiPollerTest {
     void backsOffAndRetriesOnFailure() {
         UUID orgId = orgWithPixel();
         MetaCapiEvent e = pending(orgId);
-        // Seeded next_attempt_at is in the past (now-1m); capture it AS PERSISTED so the
-        // "backed off into the future" check compares two values read through the same DB
-        // representation (H2 TIMESTAMP WITH TIME ZONE shifts an Instant on read; production
-        // Postgres timestamptz round-trips it exactly).
-        Instant scheduledBeforeDrain = capiRepo.findById(e.getId()).orElseThrow().getNextAttemptAt();
+        Instant drainedAt = Instant.now();
         when(graphClient.sendEvents(ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
                 ArgumentMatchers.isNull(), ArgumentMatchers.anyList()))
                 .thenThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.META_UPSTREAM_ERROR, "boom"));
@@ -97,9 +108,8 @@ class MetaCapiPollerTest {
         MetaCapiEvent reloaded = capiRepo.findById(e.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(MetaCapiEvent.STATUS_PENDING);
         assertThat(reloaded.getAttempts()).isEqualTo((short) 1);
-        // Backoff pushed the retry from the past into the future (advanced by ~1m+1m past
-        // the seeded schedule); comparing to the pre-drain value is TZ-shift-immune.
-        assertThat(reloaded.getNextAttemptAt()).isAfter(scheduledBeforeDrain);
+        // Backoff pushed the retry from the past to about a minute after the drain.
+        assertThat(reloaded.getNextAttemptAt()).isAfter(drainedAt);
         assertThat(reloaded.getLastError()).contains("boom");
     }
 
@@ -118,6 +128,21 @@ class MetaCapiPollerTest {
         MetaCapiEvent reloaded = capiRepo.findById(e.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(MetaCapiEvent.STATUS_DEAD);
         assertThat(reloaded.getAttempts()).isEqualTo((short) 5);
+    }
+
+    /** A stored token that no longer decrypts is never sent to Meta; the row backs off like any failure. */
+    @Test
+    void undecryptableTokenIsRetriedNotSent() {
+        UUID orgId = orgWithPixel("not-a-cipher-text");
+        MetaCapiEvent e = pending(orgId);
+
+        poller.drain();
+
+        MetaCapiEvent reloaded = capiRepo.findById(e.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(MetaCapiEvent.STATUS_PENDING);
+        assertThat(reloaded.getAttempts()).isEqualTo((short) 1);
+        assertThat(reloaded.getSentAt()).isNull();
+        assertThat(reloaded.getLastError()).startsWith("Token decrypt failed");
     }
 
     // Helper: encrypt with the same cipher the poller uses (test key from application-test).

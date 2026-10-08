@@ -1,12 +1,10 @@
 package com.imin.iminapi.marketing.service;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
@@ -16,8 +14,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignAiSuggestionsTest {
 
     @Autowired CampaignAiSuggestions suggestions;
@@ -81,5 +78,21 @@ class CampaignAiSuggestionsTest {
         campaigns.delete(campaigns.findById(id).orElseThrow());
 
         assertThat(rows(id)).isZero();
+    }
+
+    /** A duplicate fingerprint must not abort the rest of the batch on Postgres. */
+    @Test
+    void aDuplicateInTheBatch_isSkipped_andTheRestOfTheBatchIsStored() {
+        UUID id = campaign();
+        // Another request already stored this text.
+        jdbc.update("INSERT INTO campaign_ai_suggestions (campaign_id, part, text_sha256) VALUES (?, ?, ?)",
+                id, CampaignAiSuggestions.SUBJECT, CampaignAiSuggestions.fingerprint("Taken"));
+
+        suggestions.record(id, CampaignAiSuggestions.SUBJECT, List.of("First", "Taken", "Last"));
+
+        assertThat(rows(id)).isEqualTo(3);
+        assertThat(suggestions.wasOffered(id, CampaignAiSuggestions.SUBJECT, "First")).isTrue();
+        assertThat(suggestions.wasOffered(id, CampaignAiSuggestions.SUBJECT, "Taken")).isTrue();
+        assertThat(suggestions.wasOffered(id, CampaignAiSuggestions.SUBJECT, "Last")).isTrue();
     }
 }

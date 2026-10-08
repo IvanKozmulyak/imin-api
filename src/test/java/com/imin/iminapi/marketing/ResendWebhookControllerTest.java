@@ -1,63 +1,92 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
-import com.imin.iminapi.marketing.webhook.ResendWebhookProjector;
+import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.UUID;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = "imin.marketing.resend-webhook.secret=whsec_c3VwZXJzZWNyZXRrZXkw") // base64("supersecretkey0")
+/** The signed Resend webhook end to end: signature, dedup claim and the real projector. */
+@IminIntegrationTest
 class ResendWebhookControllerTest {
+
+    private static final String SECRET_B64 = "c3VwZXJzZWNyZXRrZXkw"; // base64("supersecretkey0")
 
     @Autowired MockMvc mvc;
     @Autowired CampaignRecipientRepository recipientRepo;
     @Autowired CampaignRepository campaignRepo;
-    @MockitoBean ResendWebhookProjector projector;
+    @Autowired ResendWebhookProperties webhookProps;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    private static final String SECRET_B64 = "c3VwZXJzZWNyZXRrZXkw";
+    private final List<UUID> orgIds = new ArrayList<>();
 
-    /**
-     * campaign_recipients.campaign_id has a NOT NULL FK to campaigns(id) (V53:7),
-     * enforced under H2 MODE=PostgreSQL, so a recipient can't be saved without a
-     * real parent campaign. Seed one (mirrors the working ResendWebhookProjectorTest
-     * fixture) and return its id for the recipient's campaign_id.
-     */
-    private UUID seedCampaign() {
+    @BeforeEach
+    void signingSecret() {
+        flips.set(webhookProps, "secret", "whsec_" + SECRET_B64);
+    }
+
+    /** The campaigns are left `sending`, which the dispatcher reclaims for every org once stale. */
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** campaign_recipients.campaign_id is a NOT NULL FK, so each recipient gets a real parent campaign. */
+    private CampaignRecipient recipient(String email) {
+        UUID orgId = UUID.randomUUID();
+        orgIds.add(orgId);
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
-        c.setOrgId(UUID.randomUUID());
+        c.setOrgId(orgId);
         c.setChannel("email");
         c.setName("webhook-ctrl-test");
         c.setStatus("sending");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         campaignRepo.save(c);
-        return c.getId();
+
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setEmail(email);
+        r.setStatus("sent");
+        r.setProviderMessageId("msg_" + UUID.randomUUID());
+        return recipientRepo.save(r);
+    }
+
+    private MockHttpServletRequestBuilder signed(String svixId, String body) throws Exception {
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        return post("/api/v1/public/webhooks/resend")
+                .header("svix-id", svixId).header("svix-timestamp", ts)
+                .header("svix-signature", sign(svixId, ts, body))
+                .contentType("application/json").content(body);
     }
 
     private String sign(String id, String ts, String body) throws Exception {
@@ -68,96 +97,73 @@ class ResendWebhookControllerTest {
             mac.doFinal((id + "." + ts + "." + body).getBytes(StandardCharsets.UTF_8)));
     }
 
+    private CampaignRecipient reload(CampaignRecipient r) {
+        return recipientRepo.findById(r.getId()).orElseThrow();
+    }
+
     @Test
-    void validDeliveredWebhookProjectsAnd200() throws Exception {
-        CampaignRecipient r = new CampaignRecipient();
-        r.setId(UUID.randomUUID());
-        r.setCampaignId(seedCampaign());
-        r.setEmail("x@example.com");
-        r.setStatus("sent");
-        r.setProviderMessageId("msg_live_1");
-        recipientRepo.save(r);
+    void validDeliveredWebhookMarksTheRecipientDelivered() throws Exception {
+        String email = fx.email("delivered");
+        CampaignRecipient r = recipient(email);
+        String body = "{\"type\":\"email.delivered\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
+                + "\",\"to\":[\"" + email + "\"]},\"created_at\":\"2026-07-11T00:00:00Z\"}";
 
-        String body = "{\"type\":\"email.delivered\",\"data\":{\"email_id\":\"msg_live_1\",\"to\":[\"x@example.com\"]},\"created_at\":\"2026-07-11T00:00:00Z\"}";
-        String id = "svix_" + UUID.randomUUID();
-        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        mvc.perform(signed("svix_" + UUID.randomUUID(), body)).andExpect(status().isOk());
 
-        mvc.perform(post("/api/v1/public/webhooks/resend")
-                .header("svix-id", id).header("svix-timestamp", ts)
-                .header("svix-signature", sign(id, ts, body))
-                .contentType("application/json").content(body))
-           .andExpect(status().isOk());
-
-        // signature: project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt)
-        Mockito.verify(projector).project(any(), eq(r.getId()), any(),
-            eq("x@example.com"), eq("email.delivered"), eq(null), any());
+        CampaignRecipient after = reload(r);
+        assertThat(after.getStatus()).isEqualTo("delivered");
+        assertThat(after.getDeliveredAt()).isEqualTo(Instant.parse("2026-07-11T00:00:00Z"));
     }
 
     /**
-     * mkt-edge-6 (P2): the handler parsed type/email_id/to/created_at and dropped
-     * {@code data.bounce.type}, so the projector could not tell a permanent bounce from a
-     * full mailbox and suppressed the address platform-wide either way. The classification
-     * has to reach the projector to exist at all.
+     * The handler must pass {@code data.bounce.type} on: an absent type reads as transient, so only a
+     * Permanent bounce reaches the projector as hard_bounce; the suppression is ResendWebhookProjectorTest's.
      */
     @Test
-    void bounceTypeReachesTheProjector() throws Exception {
-        CampaignRecipient r = new CampaignRecipient();
-        r.setId(UUID.randomUUID());
-        r.setCampaignId(seedCampaign());
-        r.setEmail("b@example.com");
-        r.setStatus("sent");
-        r.setProviderMessageId("msg_bounce_1");
-        recipientRepo.save(r);
+    void aPermanentBounceReachesTheProjectorAsAHardBounce() throws Exception {
+        String email = fx.email("bounce");
+        CampaignRecipient r = recipient(email);
+        String body = "{\"type\":\"email.bounced\",\"data\":{\"email_id\":\"" + r.getProviderMessageId() + "\","
+                + "\"to\":[\"" + email + "\"],"
+                + "\"bounce\":{\"type\":\"Permanent\",\"subType\":\"General\",\"message\":\"no such user\"}}}";
 
-        String body = "{\"type\":\"email.bounced\",\"data\":{\"email_id\":\"msg_bounce_1\","
-                + "\"to\":[\"b@example.com\"],"
-                + "\"bounce\":{\"type\":\"Transient\",\"subType\":\"MailboxFull\",\"message\":\"full\"}}}";
-        String id = "svix_" + UUID.randomUUID();
-        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        mvc.perform(signed("svix_" + UUID.randomUUID(), body)).andExpect(status().isOk());
 
-        mvc.perform(post("/api/v1/public/webhooks/resend")
-                .header("svix-id", id).header("svix-timestamp", ts)
-                .header("svix-signature", sign(id, ts, body))
-                .contentType("application/json").content(body))
-           .andExpect(status().isOk());
-
-        Mockito.verify(projector).project(any(), eq(r.getId()), any(),
-            eq("b@example.com"), eq("email.bounced"), eq("Transient"), any());
+        assertThat(reload(r).getErrorCode()).isEqualTo("hard_bounce");
     }
 
     @Test
-    void badSignatureIs401AndNoProjection() throws Exception {
-        String body = "{\"type\":\"email.delivered\",\"data\":{\"email_id\":\"msg_live_1\"}}";
+    void badSignatureIs401AndLeavesTheRecipientUnchanged() throws Exception {
+        String email = fx.email("forged");
+        CampaignRecipient r = recipient(email);
+        String body = "{\"type\":\"email.delivered\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
+                + "\",\"to\":[\"" + email + "\"]}}";
+
         mvc.perform(post("/api/v1/public/webhooks/resend")
-                .header("svix-id", "svix_x").header("svix-timestamp",
-                     String.valueOf(System.currentTimeMillis() / 1000L))
+                .header("svix-id", "svix_" + UUID.randomUUID())
+                .header("svix-timestamp", String.valueOf(System.currentTimeMillis() / 1000L))
                 .header("svix-signature", "v1,deadbeef")
                 .contentType("application/json").content(body))
            .andExpect(status().isUnauthorized());
-        Mockito.verifyNoInteractions(projector);
+
+        CampaignRecipient after = reload(r);
+        assertThat(after.getStatus()).isEqualTo("sent");
+        assertThat(after.getDeliveredAt()).isNull();
     }
 
     @Test
-    void duplicateEventIsAckedWithoutSecondProjection() throws Exception {
-        CampaignRecipient r = new CampaignRecipient();
-        r.setId(UUID.randomUUID());
-        r.setCampaignId(seedCampaign());
-        r.setEmail("d@example.com");
-        r.setStatus("sent");
-        r.setProviderMessageId("msg_dup_1");
-        recipientRepo.save(r);
+    void aReplayedSvixIdIsAckedWithoutProjectingAgain() throws Exception {
+        String email = fx.email("replay");
+        CampaignRecipient r = recipient(email);
+        Instant first = Instant.parse("2026-07-11T10:00:00Z");
+        String svixId = "svix_dup_" + UUID.randomUUID();
+        String body = "{\"type\":\"email.opened\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
+                + "\",\"to\":[\"" + email + "\"]},\"created_at\":\"%s\"}";
 
-        String body = "{\"type\":\"email.opened\",\"data\":{\"email_id\":\"msg_dup_1\",\"to\":[\"d@example.com\"]}}";
-        String id = "svix_dup_" + UUID.randomUUID();
-        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
-        var req = post("/api/v1/public/webhooks/resend")
-                .header("svix-id", id).header("svix-timestamp", ts)
-                .header("svix-signature", sign(id, ts, body))
-                .contentType("application/json").content(body);
+        mvc.perform(signed(svixId, body.formatted(first))).andExpect(status().isOk());
+        // Same delivery id, re-signed, with a later timestamp: a second projection would move opened_at.
+        mvc.perform(signed(svixId, body.formatted(first.plus(1, ChronoUnit.HOURS)))).andExpect(status().isOk());
 
-        mvc.perform(req).andExpect(status().isOk());
-        mvc.perform(req).andExpect(status().isOk()); // replay
-        Mockito.verify(projector, Mockito.times(1)).project(
-                any(), any(), any(), any(), any(), any(), any());
+        assertThat(reload(r).getOpenedAt()).isEqualTo(first);
     }
 }

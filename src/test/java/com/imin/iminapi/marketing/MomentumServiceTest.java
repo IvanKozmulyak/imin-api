@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
@@ -10,23 +9,25 @@ import com.imin.iminapi.marketing.service.MomentumThresholds;
 import com.imin.iminapi.marketing.repository.CampaignRepository; // Phase 2
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MomentumServiceTest {
 
     @Autowired MomentumService service;
@@ -34,27 +35,22 @@ class MomentumServiceTest {
     @Autowired CampaignRepository campaigns;
     @Autowired MomentumTestSupport support; // reused seeder from Task 6
     @Autowired MomentumThresholds thresholds;
-    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
 
-    // Shared H2 context — wipe momentum_suggestions + campaigns + the seeded fixtures,
-    // FK-safe, before and after each test (audience convention) so list/approve assertions
-    // are not polluted by rows leaked from MomentumRepositoryTest/MomentumEvaluatorTest.
-    @BeforeEach
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    /** Seeded events are live and on sale, so the evaluator's pass would otherwise keep visiting them. */
     @AfterEach
-    void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from momentum_suggestions");
-            s.execute("delete from campaigns");
-            s.execute("delete from orders");
-            s.execute("delete from ticket_tiers");
-            s.execute("delete from events");
-            s.execute("delete from segments");
-            s.execute("delete from users");
-            s.execute("delete from organizations");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
+    void deleteOwnRows() {
+        for (UUID orgId : orgIds) jdbc.update("delete from momentum_suggestions where org_id = ?", orgId);
+        CampaignRows.delete(jdbc, orgIds);
+        OrgRows.delete(jdbc, orgIds);
+    }
+
+    private UUID liveEvent(int sold, int capacity, Instant onSaleAt, Instant startsAt) {
+        UUID event = support.seedLiveEvent(sold, capacity, onSaleAt, startsAt);
+        orgIds.add(support.orgIdOf(event));
+        return event;
     }
 
     private MomentumSuggestion seedSuggestion(UUID orgId, UUID eventId) {
@@ -89,7 +85,7 @@ class MomentumServiceTest {
 
     @Test
     void stateReturnsRealCountersAndThresholds() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now().minusSeconds(3600),
+        UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600),
                 Instant.now().plusSeconds(864000));
         UUID org = support.orgIdOf(event);
         // 1 live 'suggested' → waiting=1, and this org's seeded live event is a Momentum
@@ -115,7 +111,7 @@ class MomentumServiceTest {
 
     @Test
     void stateLogIsNewestFirstAndMapsIconToneText() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now().minusSeconds(3600),
+        UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600),
                 Instant.now().plusSeconds(864000));
         UUID org = support.orgIdOf(event);
         String eventName = support.eventNameOf(event);
@@ -151,7 +147,7 @@ class MomentumServiceTest {
 
     @Test
     void stateDoesNotLeakAcrossOrgs() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now().minusSeconds(3600),
+        UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600),
                 Instant.now().plusSeconds(864000));
         UUID org = support.orgIdOf(event);
         seedSuggestion(org, event);
@@ -169,6 +165,7 @@ class MomentumServiceTest {
     @Test
     void stateLogFallsBackToEventIdPrefixWhenEventGone() {
         UUID org = UUID.randomUUID();
+        orgIds.add(org);
         UUID missingEvent = UUID.randomUUID();
         seedActed(org, missingEvent, "slump", "dismissed", Instant.now().minusSeconds(86400));
 
@@ -180,7 +177,7 @@ class MomentumServiceTest {
 
     @Test
     void listReturnsOrgSuggestions() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         seedSuggestion(support.orgIdOf(event), event);
         AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
         List<MomentumSuggestionDto> out = service.list(principal, "suggested");
@@ -190,7 +187,7 @@ class MomentumServiceTest {
 
     @Test
     void approveCreatesMomentumCampaignAndReturnsIt() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
         AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
 
@@ -205,52 +202,32 @@ class MomentumServiceTest {
         assertThat(campaigns.findById(reloaded.getCampaignId())).isPresent();
     }
 
-    @Test
-    void approve_marksTheModelWrittenSubjectAndBodyAsAiGenerated() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+    /** Only the parts the model actually wrote are marked AI-generated, on the DTO and the stored campaign. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "subject and body | '{\"subject\":\"Announcing\",\"preheader\":\"p\",\"bodyMd\":\"b\",\"segmentId\":null,\"posterUrl\":null,\"why\":\"low sales\"}' | true  | true",
+            "empty draft      | '{}'                                                                                                                                | false | false",
+            "preheader only   | '{\"preheader\":\"p\"}'                                                                                                          | false | true",
+    })
+    void approve_marksOnlyTheModelWrittenParts(String label, String draft, boolean subjectAi, boolean bodyAi) {
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        s.setDraftPayload(draft);
+        suggestions.save(s);
         AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
 
         var campaign = service.approve(principal, s.getId());
 
-        assertThat(campaign.subjectAiGenerated()).isTrue();
-        assertThat(campaign.bodyAiGenerated()).isTrue();
+        assertThat(campaign.subjectAiGenerated()).isEqualTo(subjectAi);
+        assertThat(campaign.bodyAiGenerated()).isEqualTo(bodyAi);
         var saved = campaigns.findById(campaign.id()).orElseThrow();
-        assertThat(saved.isSubjectAiGenerated()).isTrue();
-        assertThat(saved.isBodyAiGenerated()).isTrue();
-    }
-
-    @Test
-    void approve_withAnEmptyDraft_marksNothing() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
-        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
-        s.setDraftPayload("{}");
-        suggestions.save(s);
-        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
-
-        var campaign = service.approve(principal, s.getId());
-
-        assertThat(campaign.subjectAiGenerated()).isFalse();
-        assertThat(campaign.bodyAiGenerated()).isFalse();
-    }
-
-    @Test
-    void approve_withOnlyAPreheader_marksTheBody() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
-        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
-        s.setDraftPayload("{\"preheader\":\"p\"}");
-        suggestions.save(s);
-        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
-
-        var campaign = service.approve(principal, s.getId());
-
-        assertThat(campaign.subjectAiGenerated()).isFalse();
-        assertThat(campaign.bodyAiGenerated()).isTrue();
+        assertThat(saved.isSubjectAiGenerated()).isEqualTo(subjectAi);
+        assertThat(saved.isBodyAiGenerated()).isEqualTo(bodyAi);
     }
 
     @Test
     void dismissMarksDismissed() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
         AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
         service.dismiss(principal, s.getId());
@@ -265,7 +242,7 @@ class MomentumServiceTest {
      */
     @Test
     void approveClampsOverlongModelCopyToTheColumnWidths() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
         s.setDraftPayload("{\"subject\":\"" + "S".repeat(400) + "\",\"preheader\":\""
                 + "P".repeat(400) + "\",\"bodyMd\":\"b\",\"segmentId\":null}");
@@ -287,7 +264,7 @@ class MomentumServiceTest {
      */
     @Test
     void dismissRefusesASuggestionThatWasAlreadyApproved() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
         AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
         service.approve(principal, s.getId());
@@ -300,7 +277,7 @@ class MomentumServiceTest {
 
     @Test
     void approveFromAnotherOrgIs404() {
-        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
         AuthPrincipal otherOrg = support.principalFor(UUID.randomUUID());
         assertThatThrownBy(() -> service.approve(otherOrg, s.getId()))

@@ -1,14 +1,15 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.webhook.ProviderEventDedupService;
 import com.imin.iminapi.service.retention.PersonalDataRetentionSweeper;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,17 +20,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the complaint-rate breaker counts rows, it does not open them. It was never
  * purged and no erasure request reached it.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ProviderEventPayloadRetentionTest {
 
     @Autowired ProviderEventDedupService dedup;
     @Autowired JdbcTemplate jdbc;
     @Autowired PersonalDataRetentionSweeper sweeper;
 
+    private final List<String> eventIds = new ArrayList<>();
+
+    @AfterEach
+    void deleteOwnClaims() {
+        for (String id : eventIds) jdbc.update("delete from provider_events where provider_event_id = ?", id);
+    }
+
+    private String own(String prefix) {
+        String id = prefix + UUID.randomUUID();
+        eventIds.add(id);
+        return id;
+    }
+
     @Test
     void claiming_an_event_stores_the_ids_but_not_the_body() {
-        String eventId = "svix_" + UUID.randomUUID();
+        String eventId = own("svix_");
 
         assertThat(dedup.tryClaim("resend", eventId, "msg_abc", null, null, "email.delivered")).isTrue();
 
@@ -42,20 +55,16 @@ class ProviderEventPayloadRetentionTest {
         assertThat(row.get("provider_message_id")).isEqualTo("msg_abc");
     }
 
-    @Test
-    void the_dedup_contract_is_unchanged() {
-        String eventId = "svix_" + UUID.randomUUID();
-        assertThat(dedup.tryClaim("resend", eventId, "m", null, null, "email.opened")).isTrue();
-        assertThat(dedup.tryClaim("resend", eventId, "m", null, null, "email.opened")).isFalse();
-    }
-
     /** Rows written before this change still hold the bodies; the sweep clears them. */
     @Test
     void the_sweeper_clears_bodies_already_on_disk() {
-        String eventId = "legacy_" + UUID.randomUUID();
+        String eventId = own("legacy_");
         jdbc.update("INSERT INTO provider_events (id, provider, provider_event_id, type, payload) "
-                    + "VALUES (random_uuid(), 'resend', ?, 'email.bounced', ?)",
-                eventId, "{\"to\":\"ada@example.com\"}");
+                    + "VALUES (?, 'resend', ?, 'email.bounced', ?)",
+                UUID.randomUUID(), eventId, "{\"to\":\"ada@example.com\"}");
+        // One context serves the run: release the lock an earlier sweep left, or this call is a no-op.
+        jdbc.update("update shedlock set lock_until = locked_at where name = ?",
+                "PersonalDataRetentionSweeper.webhookBodies");
 
         sweeper.clearRetainedWebhookBodies();
 

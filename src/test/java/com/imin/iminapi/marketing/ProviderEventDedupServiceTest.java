@@ -1,37 +1,53 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.webhook.ProviderEventDedupService;
-import org.junit.jupiter.api.Test;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ProviderEventDedupServiceTest {
 
     @Autowired ProviderEventDedupService dedup;
+    @Autowired JdbcTemplate jdbc;
 
-    @Test
-    void firstClaimSucceedsReplayReturnsFalse() {
-        String eventId = "svix_" + UUID.randomUUID();
-        boolean first = dedup.tryClaim("resend", eventId, "msg_abc", null, null, "email.delivered");
-        boolean replay = dedup.tryClaim("resend", eventId, "msg_abc", null, null, "email.delivered");
-        assertThat(first).isTrue();
-        assertThat(replay).isFalse();
+    private final List<String> eventIds = new ArrayList<>();
+
+    @AfterEach
+    void deleteOwnClaims() {
+        for (String id : eventIds) jdbc.update("delete from provider_events where provider_event_id = ?", id);
     }
 
-    @Test
-    void blankEventIdIsTreatedAsFreshEachTime() {
-        // Defensive: no id can't be deduped — mirrors WebhookEventDedupService.
-        boolean a = dedup.tryClaim("resend", "  ", "m1", null, null, "email.opened");
-        boolean b = dedup.tryClaim("resend", "", "m1", null, null, "email.opened");
-        assertThat(a).isTrue();
-        assertThat(b).isTrue();
+    /** The claim is unique per (provider, event id); an event without an id cannot be deduped. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "same provider replays     | resend | svix_  | resend | svix_  | false",
+            "same id, another provider | resend | shared | bird   | shared | true",
+            "blank id                  | resend | '  '   | resend | ''     | true",
+    })
+    void secondClaim(String label, String firstProvider, String firstId,
+                     String secondProvider, String secondId, boolean secondIsFresh) {
+        String a = unique(firstId);
+        String b = firstId.equals(secondId) ? a : unique(secondId);
+
+        assertThat(dedup.tryClaim(firstProvider, a, "msg_abc", null, null, "email.delivered")).isTrue();
+        assertThat(dedup.tryClaim(secondProvider, b, "msg_abc", null, null, "email.delivered"))
+                .isEqualTo(secondIsFresh);
+    }
+
+    private String unique(String id) {
+        if (id.isBlank()) return id;
+        String own = id + UUID.randomUUID();
+        eventIds.add(own);
+        return own;
     }
 }

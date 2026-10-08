@@ -5,22 +5,21 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.marketing.service.MomentumMetrics;
 import com.imin.iminapi.marketing.service.MomentumService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,8 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * per-day ticket sales — including a declining one, which is the case the deleted FE
  * fabrication was structurally unable to draw.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MomentumReadModelTest {
 
     @Autowired MomentumService service;
@@ -45,29 +43,21 @@ class MomentumReadModelTest {
     @Autowired SegmentRepository segments;
     @Autowired ConsumerRepository consumers;
     @Autowired MembershipRepository memberships;
-    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
 
-    // Shared H2 context — same FK-safe wipe convention as the sibling Momentum tests.
-    // tickets cascade from orders (V24: tickets.order_id ... ON DELETE CASCADE).
-    @BeforeEach
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    /** Seeded events are live and on sale, so the evaluator's pass would otherwise keep visiting them. */
     @AfterEach
-    void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from momentum_suggestions");
-            s.execute("delete from campaigns");
-            s.execute("delete from tickets");
-            s.execute("delete from orders");
-            s.execute("delete from ticket_tiers");
-            s.execute("delete from events");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-            s.execute("delete from segments");
-            s.execute("delete from users");
-            s.execute("delete from organizations");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
+    void deleteOwnRows() {
+        for (UUID orgId : orgIds) jdbc.update("delete from momentum_suggestions where org_id = ?", orgId);
+        OrgRows.delete(jdbc, orgIds);
+    }
+
+    private UUID liveEvent(int sold, int capacity, Instant onSaleAt, Instant startsAt) {
+        UUID event = support.seedLiveEvent(sold, capacity, onSaleAt, startsAt);
+        orgIds.add(support.orgIdOf(event));
+        return event;
     }
 
     /** Persist a suggestion whose snapshot is built from REAL seeded ticket rows. */
@@ -100,7 +90,7 @@ class MomentumReadModelTest {
 
     @Test
     void eventNameIsResolvedLiveAndSurvivesARename() {
-        UUID event = support.seedLiveEvent(487, 600, Instant.now().minus(Duration.ofDays(30)),
+        UUID event = liveEvent(487, 600, Instant.now().minus(Duration.ofDays(30)),
                 Instant.now().plus(Duration.ofHours(64)));
         UUID org = support.orgIdOf(event);
         seed(org, event, "urgency_72h", 487, 600, Instant.now().minus(Duration.ofDays(30)),
@@ -122,7 +112,7 @@ class MomentumReadModelTest {
 
     @Test
     void eventNameIsNullRatherThanInventedWhenTheEventIsGone() {
-        UUID event = support.seedLiveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
+        UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)));
         UUID org = support.orgIdOf(event);
         // momentum_suggestions.event_id has no FK (V58), so an orphan row is representable.
@@ -137,7 +127,7 @@ class MomentumReadModelTest {
 
     @Test
     void smsLockedIsTrueAtZeroOptedInPhonesAndFalseAboveZero() {
-        UUID event = support.seedLiveEvent(487, 600, Instant.now().minus(Duration.ofDays(30)),
+        UUID event = liveEvent(487, 600, Instant.now().minus(Duration.ofDays(30)),
                 Instant.now().plus(Duration.ofHours(64)));
         UUID org = support.orgIdOf(event);
         seed(org, event, "urgency_72h", 487, 600, Instant.now().minus(Duration.ofDays(30)),
@@ -177,17 +167,18 @@ class MomentumReadModelTest {
 
     @Test
     void segmentLabelResolvesTheDraftSegmentAndIsNullWhenAbsent() {
-        UUID event = support.seedLiveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
+        UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)));
         UUID org = support.orgIdOf(event);
-        seed(org, event, "launch_push", 10, 100, Instant.now().minus(Duration.ofDays(5)),
-                Instant.now().plus(Duration.ofDays(30)), repeatSegmentId(org), List.of());
+        MomentumSuggestion withSegment = seed(org, event, "launch_push", 10, 100,
+                Instant.now().minus(Duration.ofDays(5)), Instant.now().plus(Duration.ofDays(30)),
+                repeatSegmentId(org), List.of());
 
         assertThat(service.list(support.principalFor(org), "suggested").get(0).segmentLabel())
                 .isEqualTo("Repeat");
 
         // A draft with no segment has no label to show — null, never a stand-in string.
-        suggestions.deleteAll();
+        suggestions.deleteById(withSegment.getId());
         seed(org, event, "launch_push", 10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)), null, List.of());
         assertThat(service.list(support.principalFor(org), "suggested").get(0).segmentLabel()).isNull();
@@ -199,7 +190,7 @@ class MomentumReadModelTest {
     void sparkCarriesRealPerDaySalesFromTheTicketsTable() {
         Instant onSale = Instant.now().minus(Duration.ofDays(30));
         Instant starts = Instant.now().plus(Duration.ofHours(64));
-        UUID event = support.seedLiveEvent(21, 600, onSale, starts);
+        UUID event = liveEvent(21, 600, onSale, starts);
         UUID org = support.orgIdOf(event);
 
         // Real ticket rows: 4 days of sales, oldest → newest.
@@ -225,7 +216,7 @@ class MomentumReadModelTest {
         // +1h of slack: daysOut floors the duration, and the clock advances between seeding
         // startsAt here and computing the metrics below — exactly 20d would round to 19.
         Instant starts = Instant.now().plus(Duration.ofDays(20)).plus(Duration.ofHours(1));
-        UUID event = support.seedLiveEvent(97, 280, onSale, starts);
+        UUID event = liveEvent(97, 280, onSale, starts);
         UUID org = support.orgIdOf(event);
 
         support.seedDailyTickets(event, 9, 14, 11, 16, 13, 10, 8, 6, 5, 5);
@@ -248,7 +239,7 @@ class MomentumReadModelTest {
     void sparkExcludesRefundedTicketsSoItMatchesTheSoldScalar() {
         Instant onSale = Instant.now().minus(Duration.ofDays(30));
         Instant starts = Instant.now().plus(Duration.ofDays(20));
-        UUID event = support.seedLiveEvent(10, 280, onSale, starts);
+        UUID event = liveEvent(10, 280, onSale, starts);
         UUID org = support.orgIdOf(event);
 
         support.seedDailyTickets(event, 5, 5);
@@ -266,7 +257,7 @@ class MomentumReadModelTest {
     void sparkIsNullNotFabricatedWhenTheSnapshotHasNoSeries() {
         // A row written before the series existed (legacy snapshot). The card must lose the
         // chart, NOT gain a curve reconstructed from sellThroughPct.
-        UUID event = support.seedLiveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
+        UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)));
         UUID org = support.orgIdOf(event);
         MomentumSuggestion s = new MomentumSuggestion();
@@ -292,7 +283,7 @@ class MomentumReadModelTest {
 
     @Test
     void malformedSnapshotDegradesToNullProseInsteadOf500ingTheList() {
-        UUID event = support.seedLiveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
+        UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)));
         UUID org = support.orgIdOf(event);
         MomentumSuggestion s = new MomentumSuggestion();
