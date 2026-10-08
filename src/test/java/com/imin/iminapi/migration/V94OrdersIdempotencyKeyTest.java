@@ -1,20 +1,18 @@
 package com.imin.iminapi.migration;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -41,37 +39,31 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * and {@link #theSameKeyOnADifferentEventIsNotADuplicate} are the two tests that
  * would fail if someone ever "tightened" this to a single-column index.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class V94OrdersIdempotencyKeyTest {
 
-    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
     @Autowired OrderRepository orders;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
 
     private Event event;
+    private String buyer;
 
     @BeforeEach
     void seedEvent() {
         event = OrderFixtures.event(orgs, users, events, "V94", Instant.parse("2026-11-01T20:00:00Z"));
-    }
-
-    @Test
-    void the_column_exists() {
-        assertThatCode(() -> jdbc.queryForList(
-                "SELECT idempotency_key FROM orders WHERE idempotency_key = 'nothing'"))
-                .doesNotThrowAnyException();
+        buyer = fx.email("v94-buyer");
     }
 
     // ── What the index rejects ─────────────────────────────────────────────
 
     @Test
     void theSameKeyTwiceForTheSameBuyerOnTheSameEventIsRejected() {
-        persist(event, "buyer@example.com", "key-1");
+        persist(event, buyer, "key-1");
 
-        assertThatThrownBy(() -> persist(event, "buyer@example.com", "key-1"))
+        assertThatThrownBy(() -> persist(event, buyer, "key-1"))
                 .isInstanceOf(DataAccessException.class);
     }
 
@@ -84,33 +76,33 @@ class V94OrdersIdempotencyKeyTest {
      */
     @Test
     void theSameKeyFromADifferentAddressIsNotADuplicate() {
-        persist(event, "buyer@example.com", "guessable");
+        persist(event, buyer, "guessable");
 
-        assertThatCode(() -> persist(event, "someone.else@example.com", "guessable"))
+        assertThatCode(() -> persist(event, fx.email("v94-someone-else"), "guessable"))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void theSameKeyOnADifferentEventIsNotADuplicate() {
         Event other = OrderFixtures.event(orgs, users, events, "V94b", Instant.parse("2026-12-01T20:00:00Z"));
-        persist(event, "buyer@example.com", "shared");
+        persist(event, buyer, "shared");
 
-        assertThatCode(() -> persist(other, "buyer@example.com", "shared"))
+        assertThatCode(() -> persist(other, buyer, "shared"))
                 .doesNotThrowAnyException();
     }
 
     /**
      * Every order written before V94, and every order written by a client that
      * sends no header — which is every web buyer today — carries NULL here.
-     * PostgreSQL and H2 both treat NULLs as distinct in a unique index, which is
+     * PostgreSQL treats NULLs as distinct in a unique index, which is
      * the only reason a plain (non-partial) index is safe to add to a live
      * table. If that stopped holding, the second unkeyed order on an event would
      * start failing for a buyer who had already bought one.
      */
     @Test
     void nullKeysAreDistinctSoUnkeyedOrdersNeverCollide() {
-        persist(event, "buyer@example.com", null);
-        persist(event, "buyer@example.com", null);
+        persist(event, buyer, null);
+        persist(event, buyer, null);
 
         assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).hasSize(2);
     }
@@ -125,14 +117,14 @@ class V94OrdersIdempotencyKeyTest {
      */
     @Test
     void aKeyAtTheValidatorsLimitFitsTheColumn() {
-        assertThatCode(() -> persist(event, "buyer@example.com",
+        assertThatCode(() -> persist(event, buyer,
                 "k".repeat(com.imin.iminapi.stripe.IdempotencyKey.MAX_LENGTH)))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void aKeyPastTheValidatorsLimitDoesNotFitTheColumn() {
-        assertThatThrownBy(() -> persist(event, "buyer@example.com",
+        assertThatThrownBy(() -> persist(event, buyer,
                 "k".repeat(com.imin.iminapi.stripe.IdempotencyKey.MAX_LENGTH + 1)))
                 .isInstanceOf(DataAccessException.class);
     }

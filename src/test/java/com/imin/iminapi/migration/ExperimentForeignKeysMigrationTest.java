@@ -1,5 +1,6 @@
 package com.imin.iminapi.migration;
 
+import com.imin.iminapi.support.SharedPostgres;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -15,10 +16,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * V154 on a fresh database: stops at V153, seeds rows the new foreign keys would reject next to rows they accept,
  * then applies V154. It must drop exactly the orphans and leave the keys enforced.
  */
-abstract class ExperimentForeignKeysMigrationScenarios {
+class ExperimentForeignKeysMigrationTest {
 
     /** A new, empty database per call. */
-    abstract DataSource freshDatabase();
+    private static DataSource freshDatabase() {
+        return SharedPostgres.freshDatabase("v154");
+    }
 
     private static void migrate(DataSource ds, String target) {
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").target(target).load().migrate();

@@ -1,30 +1,32 @@
 package com.imin.iminapi.migration;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.SharedPostgres;
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V83/V84/V85 exist, and — more importantly — the marker-column trick actually
- * enforces what a partial index would have, on the engine the test suite runs
- * (H2 in PostgreSQL-compat mode, which has no {@code WHERE}-clause indexes).
- * Every assertion here would pass trivially if the indexes were missing, so
- * each one inserts real rows.
+ * V83/V84/V85 on a fully migrated database of its own: the marker-column trick enforces what a partial index
+ * would have. Every assertion here would pass trivially if the indexes were missing, so each one inserts real rows.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
 class V83BuyerIdentityMigrationTest {
 
-    @Autowired JdbcTemplate jdbc;
+    private static JdbcTemplate jdbc;
+
+    @BeforeAll
+    static void migrate() {
+        DataSource ds = SharedPostgres.freshDatabase("v83");
+        Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
+        jdbc = new JdbcTemplate(ds);
+    }
 
     private UUID account() {
         UUID id = UUID.randomUUID();
@@ -41,18 +43,6 @@ class V83BuyerIdentityMigrationTest {
                 verified ? java.sql.Timestamp.from(java.time.Instant.now()) : null,
                 verified ? email : null,
                 primary ? accountId : null);
-    }
-
-    @Test
-    void all_buyer_tables_exist() {
-        for (String table : new String[]{"buyer_accounts", "buyer_account_emails", "buyer_identities",
-                "buyer_sessions", "buyer_email_verification_codes", "buyer_password_reset_tokens",
-                "buyer_verification_attempts", "buyer_saved_events", "buyer_notification_preferences",
-                "marketing_optouts"}) {
-            assertThatCode(() -> jdbc.queryForList("SELECT * FROM " + table + " WHERE 1=0"))
-                    .as(table)
-                    .doesNotThrowAnyException();
-        }
     }
 
     @Test

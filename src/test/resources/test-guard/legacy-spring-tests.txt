@@ -6,16 +6,6 @@ com.imin.iminapi.config.AsyncConfigTest
 com.imin.iminapi.config.OpenEndpointRateLimitTest
 com.imin.iminapi.config.SentryScrubberTest
 com.imin.iminapi.config.TestProfileInfraTest
-com.imin.iminapi.migration.ConsentConfirmationMigrationPostgresTest
-com.imin.iminapi.migration.ConsentConfirmationMigrationScenarios
-com.imin.iminapi.migration.ConsentConfirmationMigrationTest
-com.imin.iminapi.migration.EventTimezoneBackfillMigrationTest
-com.imin.iminapi.migration.V104OrdersStripeSessionIdIndexTest
-com.imin.iminapi.migration.V38BrandBookMigrationTest
-com.imin.iminapi.migration.V39DjPhotoMigrationTest
-com.imin.iminapi.migration.V83BuyerIdentityMigrationTest
-com.imin.iminapi.migration.V86OrdersEmailNormalizedTest
-com.imin.iminapi.migration.V94OrdersIdempotencyKeyTest
 com.imin.iminapi.model.BrandColumnsPersistenceTest
 com.imin.iminapi.model.ConceptCascadePersistenceTest
 com.imin.iminapi.model.PosterVariantVerdictPersistenceTest

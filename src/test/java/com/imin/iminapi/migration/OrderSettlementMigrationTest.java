@@ -1,5 +1,6 @@
 package com.imin.iminapi.migration;
 
+import com.imin.iminapi.support.SharedPostgres;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,10 +15,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** V174 on a database seeded at V172: EUR orders settle 1:1, others stay unstamped, ck_orders_settlement holds. */
-abstract class OrderSettlementMigrationScenarios {
+class OrderSettlementMigrationTest {
 
     /** A new, empty database per call. */
-    abstract DataSource freshDatabase();
+    private static DataSource freshDatabase() {
+        return SharedPostgres.freshDatabase("settle");
+    }
 
     private JdbcTemplate jdbc;
     private UUID org;
