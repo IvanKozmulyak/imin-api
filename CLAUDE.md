@@ -132,7 +132,7 @@ getters/records/DTO mapping, enum/constant/yaml echoes, "source file contains X"
 - **Main** `@IminIntegrationTest` — ~95% of integration tests.
 - **Features-off / prod-config** (only if needed) — full flows where a bean is absent by property or a value is captured at startup and cannot be flipped at runtime.
 - **Reserve** — only by explicit decision, reason in code.
-Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). Migration tests run without Spring: `SharedPostgres.freshDatabase(prefix)` gives each test its own database on the shared container (Flyway + JDBC); re-runs of a migration's data statements over seeded rows use `@IminIntegrationTest` + `@Transactional` rollback.
+Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). Migration tests run without Spring: `SharedPostgres.migratedDatabase(prefix, version)` copies a once-per-run template migrated to that version into a fresh database on the shared container (Flyway + JDBC), and `drop` removes it after the test; re-runs of a migration's data statements over seeded rows use `@IminIntegrationTest` + `@Transactional` rollback.
 
 ### Writing an integration test
 - Annotate the class `@IminIntegrationTest` and add nothing that changes the context: no `@MockitoBean`/`@MockitoSpyBean`/`@TestBean`, `@TestPropertySource`/`@SpringBootTest(properties=)`, `@DynamicPropertySource`, `@Import`, `@DirtiesContext`, `@ActiveProfiles`, nested `@TestConfiguration`/`@Configuration`, slice or own container (`@Testcontainers`/`@Container`). `SpringContextGuardTest` fails the build otherwise.

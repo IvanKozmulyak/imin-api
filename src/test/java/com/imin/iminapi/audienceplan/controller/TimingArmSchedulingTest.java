@@ -45,6 +45,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
 import java.time.Clock;
@@ -85,6 +86,7 @@ class TimingArmSchedulingTest {
     @Autowired TicketTierRepository tierRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
+    @Autowired TransactionTemplate tx;
     @Autowired CampaignRepository campaignRepo;
     @Autowired CampaignRecipientRepository recipientRepo;
     @Autowired RecipientMaterializer materializer;
@@ -126,7 +128,7 @@ class TimingArmSchedulingTest {
             jdbc.update("delete from audience_plans where org_id = ?", org);
             List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, org);
             jdbc.update("delete from memberships where org_id = ?", org);
-            for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
+            jdbc.batchUpdate("delete from consumers where consumer_id = ?", consumers.stream().map(c -> new Object[] {c}).toList());
             jdbc.update("delete from ticket_tiers where event_id in (select id from events where org_id = ?)", org);
             jdbc.update("delete from events where org_id = ?", org);
             jdbc.update("delete from users where org_id = ?", org);
@@ -608,17 +610,20 @@ class TimingArmSchedulingTest {
         return userRepo.save(u).getId();
     }
 
+    /** The same entities as one save each, in one transaction instead of a commit per row. */
     private List<UUID> members(UUID orgId, int n) {
-        List<UUID> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            Consumer c = new Consumer();
-            c.setNormalizedEmail("timing-" + UUID.randomUUID() + "@example.com");
-            Membership m = new Membership();
-            m.setOrgId(orgId);
-            m.setConsumerId(consumerRepo.save(c).getConsumerId());
-            out.add(membershipRepo.save(m).getMembershipId());
-        }
-        return out;
+        return tx.execute(s -> {
+            List<UUID> out = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                Consumer c = new Consumer();
+                c.setNormalizedEmail("timing-" + UUID.randomUUID() + "@example.com");
+                Membership m = new Membership();
+                m.setOrgId(orgId);
+                m.setConsumerId(consumerRepo.save(c).getConsumerId());
+                out.add(membershipRepo.save(m).getMembershipId());
+            }
+            return out;
+        });
     }
 
     /** A live house night {@code days} out (20:00 Paris) with the given enabled tiers. */

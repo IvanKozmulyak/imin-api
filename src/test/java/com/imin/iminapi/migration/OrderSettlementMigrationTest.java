@@ -2,6 +2,7 @@ package com.imin.iminapi.migration;
 
 import com.imin.iminapi.support.SharedPostgres;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -17,11 +18,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** V174 on a database seeded at V172: EUR orders settle 1:1, others stay unstamped, ck_orders_settlement holds. */
 class OrderSettlementMigrationTest {
 
-    /** A new, empty database per call. */
-    private static DataSource freshDatabase() {
-        return SharedPostgres.freshDatabase("settle");
-    }
-
+    private DataSource ds;
     private JdbcTemplate jdbc;
     private UUID org;
     private UUID event;
@@ -32,8 +29,7 @@ class OrderSettlementMigrationTest {
 
     @BeforeEach
     void seedAtV172ThenMigrate() {
-        DataSource ds = freshDatabase();
-        Flyway.configure().dataSource(ds).locations("classpath:db/migration").target("172").load().migrate();
+        ds = SharedPostgres.migratedDatabase("settle", "172");
         jdbc = new JdbcTemplate(ds);
 
         org = UUID.randomUUID();
@@ -50,6 +46,11 @@ class OrderSettlementMigrationTest {
         usd = order("usd", 1_149, 149);
 
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
+    }
+
+    @AfterEach
+    void dropDatabase() {
+        if (ds != null) SharedPostgres.drop(ds);
     }
 
     private UUID order(String currency, long total, long fee) {

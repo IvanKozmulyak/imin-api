@@ -26,6 +26,7 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
@@ -122,7 +123,7 @@ class AudiencePlanListIntegrationTest {
             jdbc.update("delete from audience_plans where org_id = ?", org);
             List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, org);
             jdbc.update("delete from memberships where org_id = ?", org);
-            for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
+            jdbc.batchUpdate("delete from consumers where consumer_id = ?", consumers.stream().map(c -> new Object[] {c}).toList());
             jdbc.update("delete from event_outcomes where event_id in (select id from events where org_id = ?)", org);
             jdbc.update("delete from ticket_tiers where event_id in (select id from events where org_id = ?)", org);
             jdbc.update("delete from events where org_id = ?", org);
@@ -415,7 +416,8 @@ class AudiencePlanListIntegrationTest {
 
             Future<Refresh> refreshed = pool.submit(() -> planService.refresh(e.getId()));
             Future<String> got = pool.submit(() -> id(getPlan(e)));
-            Thread.sleep(300);
+            PgLocks.awaitLockWaits(jdbc, "^\\s*select .*pg_advisory_xact_lock", 2,
+                    "refresh and first GET wait for the first-plan lock");
             assertThat(refreshed.isDone()).as("refresh waits for the first-plan lock").isFalse();
             assertThat(got.isDone()).as("first GET waits for the first-plan lock").isFalse();
             release.countDown();

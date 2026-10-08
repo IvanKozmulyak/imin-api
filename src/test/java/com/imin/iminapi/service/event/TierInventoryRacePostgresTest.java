@@ -18,6 +18,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import com.stripe.StripeClient;
 import com.stripe.param.ProductCreateParams;
 import com.stripe.service.ProductService;
@@ -225,7 +226,7 @@ class TierInventoryRacePostgresTest {
             assertThat(deleted.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<UUID> buyer = pool.submit(this::reserveTwo);
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "reserve waits for the organizer's tier lock");
             assertThat(buyer.isDone()).as("reserve waits for the organizer's tier lock").isFalse();
 
             release.countDown();
@@ -261,7 +262,7 @@ class TierInventoryRacePostgresTest {
             assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> tierService.delete(principal, eventId, tierId));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "delete waits for the buyer's tier lock");
             assertThat(organizer.isDone()).as("delete waits for the buyer's tier lock").isFalse();
 
             release.countDown();
@@ -309,7 +310,7 @@ class TierInventoryRacePostgresTest {
 
             Future<?> organizer = pool.submit(() -> eventService.patch(principal, eventId, null,
                     eventPatch(null, List.of(embedded(tierA, "A2", null), embedded(tierB, "B2", null)))));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
 
             refundLike.get(10, TimeUnit.SECONDS);
@@ -342,7 +343,7 @@ class TierInventoryRacePostgresTest {
 
             Future<?> organizer = pool.submit(() -> eventService.patch(principal, eventId, null,
                     eventPatch(newSlug, List.of(embedded(tierId, "Renamed", null)))));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
 
             checkout.get(10, TimeUnit.SECONDS);
@@ -376,7 +377,7 @@ class TierInventoryRacePostgresTest {
             assertThat(syncEntered.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<UUID> buyer = pool.submit(this::reserveTwo);
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "reserve waits for the organizer's tier lock");
             assertThat(buyer.isDone()).as("reserve waits for the organizer's tier lock").isFalse();
 
             gate.countDown();
@@ -436,7 +437,7 @@ class TierInventoryRacePostgresTest {
             assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(organizerWrite);
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the organizer waits for the buyer's tier lock");
             assertThat(organizer.isDone()).as("the organizer waits for the buyer's tier lock").isFalse();
 
             release.countDown();
@@ -468,7 +469,7 @@ class TierInventoryRacePostgresTest {
             assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(organizerWrite);
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
             buyer.get(10, TimeUnit.SECONDS);
 

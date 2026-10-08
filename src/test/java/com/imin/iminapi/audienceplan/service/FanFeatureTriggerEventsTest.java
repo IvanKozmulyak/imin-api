@@ -167,11 +167,12 @@ class FanFeatureTriggerEventsTest {
     }
 
     /**
-     * The drain is the proof; the poll is margin for the commit rows, and a rollback row watches for one second.
+     * The drain is the proof: dispatch submits on the committing thread, so any recompute is done once it returns.
+     * The poll is margin for the commit rows; a rollback row re-reads for 100 ms.
      */
     private int awaitFeatureRows(UUID membershipId, boolean expectRow) {
         AsyncDrain.drain(liveExecutor);
-        long deadline = System.nanoTime() + (expectRow ? 10_000_000_000L : 1_000_000_000L);
+        long deadline = System.nanoTime() + (expectRow ? 10_000_000_000L : 100_000_000L);
         int rows;
         do {
             rows = jdbc.queryForObject("select count(*) from fan_features where membership_id = ?", Integer.class,

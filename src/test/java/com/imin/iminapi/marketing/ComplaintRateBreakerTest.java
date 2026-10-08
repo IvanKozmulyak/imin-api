@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.LinkedHashSet;
@@ -27,6 +28,7 @@ class ComplaintRateBreakerTest {
     @Autowired OrganizationRepository orgs;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired TransactionTemplate tx;
 
     private final Set<UUID> campaignIds = new LinkedHashSet<>();
 
@@ -48,6 +50,13 @@ class ComplaintRateBreakerTest {
         providerEvents.save(e);
     }
 
+    /** {@code n} events committed together: the same rows as one save each, without a commit per row. */
+    private void events(UUID campaignId, String type, int n) {
+        tx.executeWithoutResult(s -> {
+            for (int i = 0; i < n; i++) event(campaignId, type);
+        });
+    }
+
     private Organization seedOrg() {
         Organization o = fx.org();
         o.setTimezone("Europe/Kyiv");
@@ -58,8 +67,8 @@ class ComplaintRateBreakerTest {
     void tripsWhenComplaintRateExceedsThresholdAboveFloor() {
         Organization o = seedOrg();
         UUID campaignId = UUID.randomUUID();
-        for (int i = 0; i < 2000; i++) event(campaignId, "email.delivered");
-        for (int i = 0; i < 5; i++) event(campaignId, "email.complained"); // 0.25% > 0.1%
+        events(campaignId, "email.delivered", 2000);
+        events(campaignId, "email.complained", 5); // 0.25% > 0.1%
         breaker.evaluate(campaignId, o.getId());
         assertThat(orgs.findById(o.getId()).orElseThrow().getMarketingPausedAt()).isNotNull();
     }
@@ -79,7 +88,7 @@ class ComplaintRateBreakerTest {
     void doesNotTripBelowRateThreshold() {
         Organization o = seedOrg();
         UUID campaignId = UUID.randomUUID();
-        for (int i = 0; i < 5000; i++) event(campaignId, "email.delivered");
+        events(campaignId, "email.delivered", 5000);
         event(campaignId, "email.complained"); // 0.02% < 0.1%
         breaker.evaluate(campaignId, o.getId());
         assertThat(orgs.findById(o.getId()).orElseThrow().getMarketingPausedAt()).isNull();

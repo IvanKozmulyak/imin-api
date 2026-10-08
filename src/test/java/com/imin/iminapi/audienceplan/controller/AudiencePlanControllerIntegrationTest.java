@@ -21,6 +21,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
@@ -110,7 +111,7 @@ class AudiencePlanControllerIntegrationTest {
             jdbc.update("delete from audience_plans where org_id = ?", org);
             List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, org);
             jdbc.update("delete from memberships where org_id = ?", org);
-            for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
+            jdbc.batchUpdate("delete from consumers where consumer_id = ?", consumers.stream().map(c -> new Object[] {c}).toList());
             jdbc.update("delete from ticket_tiers where event_id in (select id from events where org_id = ?)", org);
             jdbc.update("delete from events where org_id = ?", org);
             jdbc.update("delete from users where org_id = ?", org);
@@ -775,7 +776,8 @@ class AudiencePlanControllerIntegrationTest {
 
             Future<String> posted = pool.submit(() -> id(postPlan(e, "{\"targetPct\":90}")));
             Future<String> refreshed = pool.submit(() -> id(getPlan(e, null)));
-            Thread.sleep(300);
+            PgLocks.awaitLockWaits(jdbc, "^\\s*select .* from audience_plans .* for update", 2,
+                    "POST and stale GET wait for the row lock");
             assertThat(posted.isDone()).as("POST waits for the row lock").isFalse();
             assertThat(refreshed.isDone()).as("stale GET waits for the row lock").isFalse();
             release.countDown();

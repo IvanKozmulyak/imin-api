@@ -2,6 +2,8 @@ package com.imin.iminapi.migration;
 
 import com.imin.iminapi.support.SharedPostgres;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,14 +15,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V154 on a fresh database: stops at V153, seeds rows the new foreign keys would reject next to rows they accept,
+ * V154 on a database of its own: stops at V153, seeds rows the new foreign keys would reject next to rows they accept,
  * then applies V154. It must drop exactly the orphans and leave the keys enforced.
  */
 class ExperimentForeignKeysMigrationTest {
 
-    /** A new, empty database per call. */
-    private static DataSource freshDatabase() {
-        return SharedPostgres.freshDatabase("v154");
+    private DataSource ds;
+
+    @BeforeAll
+    static void buildTemplates() {
+        SharedPostgres.buildTemplates("153", "latest");
+    }
+
+    /** A new database of this test's own, migrated to {@code target}. */
+    private DataSource databaseAt(String target) {
+        ds = SharedPostgres.migratedDatabase("v154", target);
+        return ds;
+    }
+
+    @AfterEach
+    void dropDatabase() {
+        if (ds != null) SharedPostgres.drop(ds);
     }
 
     private static void migrate(DataSource ds, String target) {
@@ -29,9 +44,7 @@ class ExperimentForeignKeysMigrationTest {
 
     @Test
     void anEmptyDatabase_migratesAndEnforcesTheKeys() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "latest");
-        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        JdbcTemplate jdbc = new JdbcTemplate(databaseAt("latest"));
 
         assertThatThrownBy(() -> jdbc.update("insert into audience_experiments (id, org_id, event_id, arm, members, seed)"
                 + " values (?, ?, ?, 'launch', 0, 1)", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID()))
@@ -40,8 +53,7 @@ class ExperimentForeignKeysMigrationTest {
 
     @Test
     void orphanRows_areDropped_andEveryValidRowSurvives() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "153");
+        DataSource ds = databaseAt("153");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
 
         UUID org = UUID.randomUUID();

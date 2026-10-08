@@ -1,7 +1,7 @@
 package com.imin.iminapi.migration;
 
 import com.imin.iminapi.support.SharedPostgres;
-import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -18,13 +18,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** ck_events_venue_coords_valid on a fresh, fully migrated database: a pair or nothing, inside the globe. */
 class VenueCoordsConstraintTest {
 
+    private DataSource ds;
     private JdbcTemplate jdbc;
     private UUID event;
 
     @BeforeEach
     void migrateAndSeed() {
-        DataSource ds = SharedPostgres.freshDatabase("coords");
-        Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
+        ds = SharedPostgres.migratedDatabase("coords", "latest");
         jdbc = new JdbcTemplate(ds);
 
         UUID org = UUID.randomUUID();
@@ -35,6 +35,11 @@ class VenueCoordsConstraintTest {
         jdbc.update("insert into users (id, org_id, email, email_lower, role) values (?, ?, 'u@example.com', 'u@example.com', 'OWNER')",
                 user, org);
         jdbc.update("insert into events (id, org_id, slug, created_by) values (?, ?, ?, ?)", event, org, "coords-" + event, user);
+    }
+
+    @AfterEach
+    void dropDatabase() {
+        if (ds != null) SharedPostgres.drop(ds);
     }
 
     private int setCoords(Double lat, Double lon) {

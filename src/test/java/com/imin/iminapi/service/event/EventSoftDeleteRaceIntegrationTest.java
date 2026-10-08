@@ -14,6 +14,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -143,7 +144,7 @@ class EventSoftDeleteRaceIntegrationTest {
             assertThat(deleted.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<?> write = pool.submit(writer);
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "the writer waits for the delete's row lock");
             assertThat(write.isDone()).as("the writer waits for the delete's row lock").isFalse();
 
             release.countDown();

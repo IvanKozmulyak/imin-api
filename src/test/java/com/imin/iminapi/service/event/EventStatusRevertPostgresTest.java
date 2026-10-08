@@ -23,6 +23,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import com.imin.iminapi.support.PausableMediaStorage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -156,7 +157,7 @@ class EventStatusRevertPostgresTest {
             assertThat(swept.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<Object> write = pool.submit(() -> run(writer));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "the writer waits for the sweep's row lock");
             assertThat(write.isDone()).as("the writer waits for the sweep's row lock").isFalse();
 
             release.countDown();
@@ -189,7 +190,7 @@ class EventStatusRevertPostgresTest {
             assertThat(written.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<Integer> sweep = pool.submit(() -> events.markLivePast(now(), now()));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "the sweep waits for the writer's row lock");
             assertThat(sweep.isDone()).as("the sweep waits for the writer's row lock").isFalse();
 
             release.countDown();
@@ -221,7 +222,7 @@ class EventStatusRevertPostgresTest {
             assertThat(swept.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<?> unpublish = pool.submit(() -> eventService.unpublish(principal, eventId));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "unpublish waits for the sweep's row lock");
             assertThat(unpublish.isDone()).as("unpublish waits for the sweep's row lock").isFalse();
 
             release.countDown();
@@ -256,7 +257,7 @@ class EventStatusRevertPostgresTest {
             assertThat(unpublished.await(10, TimeUnit.SECONDS)).isTrue();
 
             Future<Integer> sweep = pool.submit(() -> events.markLivePast(now(), now()));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "the sweep waits for the unpublish's row lock");
             assertThat(sweep.isDone()).as("the sweep waits for the unpublish's row lock").isFalse();
 
             release.countDown();

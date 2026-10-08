@@ -135,7 +135,7 @@ class SummarizerFlowTest {
         jdbc.update("delete from audience_plans where org_id = ?", orgId);
         List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, orgId);
         jdbc.update("delete from memberships where org_id = ?", orgId);
-        for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
+        jdbc.batchUpdate("delete from consumers where consumer_id = ?", consumers.stream().map(c -> new Object[] {c}).toList());
         jdbc.update("delete from ticket_tiers where event_id in (select id from events where org_id = ?)", orgId);
         jdbc.update("delete from events where org_id = ?", orgId);
         jdbc.update("delete from users where org_id = ?", orgId);

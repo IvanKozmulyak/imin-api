@@ -1,7 +1,7 @@
 package com.imin.iminapi.migration;
 
 import com.imin.iminapi.support.SharedPostgres;
-import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -19,13 +19,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class V83BuyerIdentityMigrationTest {
 
+    private static DataSource ds;
     private static JdbcTemplate jdbc;
 
     @BeforeAll
     static void migrate() {
-        DataSource ds = SharedPostgres.freshDatabase("v83");
-        Flyway.configure().dataSource(ds).locations("classpath:db/migration").load().migrate();
+        ds = SharedPostgres.migratedDatabase("v83", "latest");
         jdbc = new JdbcTemplate(ds);
+    }
+
+    @AfterAll
+    static void dropDatabase() {
+        if (ds != null) SharedPostgres.drop(ds);
     }
 
     private UUID account() {

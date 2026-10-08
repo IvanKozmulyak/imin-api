@@ -4,6 +4,8 @@ import com.imin.iminapi.predictor.service.PredictorAlertStore;
 import com.imin.iminapi.support.SharedPostgres;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -16,6 +18,7 @@ import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,33 +33,45 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events;
+ * V162 on a database of its own per test: the date-check tables, the ledger CHECKs and the events link; V165 open events;
  * V167 radar runs; V168 predictor alerts; V169 Radar mute and run-time snapshots; V173 web research state.
  */
 class DateCheckMigrationTest {
 
     private static final OffsetDateTime NOW = OffsetDateTime.of(2026, 9, 30, 12, 0, 0, 0, ZoneOffset.UTC);
 
-    /** A new, empty database per call. */
-    private static DataSource freshDatabase() {
-        return SharedPostgres.freshDatabase("v162");
+    private final List<DataSource> databases = new ArrayList<>();
+
+    @BeforeAll
+    static void buildTemplates() {
+        SharedPostgres.buildTemplates("161", "166", "168", "171", "latest");
+    }
+
+    /** A new database of this test's own, migrated to {@code target}. */
+    private DataSource databaseAt(String target) {
+        DataSource ds = SharedPostgres.migratedDatabase("v162", target);
+        databases.add(ds);
+        return ds;
+    }
+
+    @AfterEach
+    void dropDatabases() {
+        databases.forEach(SharedPostgres::drop);
     }
 
     private static void migrate(DataSource ds, String target) {
         Flyway.configure().dataSource(ds).locations("classpath:db/migration").target(target).load().migrate();
     }
 
-    private static JdbcTemplate latest(DataSource ds) {
-        migrate(ds, "latest");
-        return new JdbcTemplate(ds);
+    private JdbcTemplate latest() {
+        return new JdbcTemplate(databaseAt("latest"));
     }
 
     // ---- upgrades over existing rows -----------------------------------------------------
 
     @Test
     void existingLedgerRowsUnaffected() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "161");
+        DataSource ds = databaseAt("161");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID org = org(jdbc);
         UUID event = event(jdbc, org);
@@ -92,8 +107,7 @@ class DateCheckMigrationTest {
 
     @Test
     void existingDateChecksKeepResearchOff() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "171");
+        DataSource ds = databaseAt("171");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID dc = dateCheck(jdbc, org(jdbc), Map.of());
 
@@ -108,8 +122,7 @@ class DateCheckMigrationTest {
 
     @Test
     void existingDateChecksBecomeOrganizerRuns() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "166");
+        DataSource ds = databaseAt("166");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID dc = dateCheck(jdbc, org(jdbc), Map.of());
 
@@ -125,8 +138,7 @@ class DateCheckMigrationTest {
 
     @Test
     void radarRowsBackfillTheirVerdicts() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "168");
+        DataSource ds = databaseAt("168");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID org = org(jdbc);
         UUID event = event(jdbc, org);
@@ -150,8 +162,7 @@ class DateCheckMigrationTest {
 
     @Test
     void radarRowWithStaleBaselineBackfillsNoBefore() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "168");
+        DataSource ds = databaseAt("168");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID org = org(jdbc);
         UUID event = event(jdbc, org);
@@ -172,8 +183,7 @@ class DateCheckMigrationTest {
 
     @Test
     void eventsStartUnmuted() {
-        DataSource ds = freshDatabase();
-        migrate(ds, "168");
+        DataSource ds = databaseAt("168");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         UUID event = event(jdbc, org(jdbc));
 
@@ -294,7 +304,7 @@ class DateCheckMigrationTest {
     @ParameterizedTest
     @MethodSource("checks")
     void namedConstraintsRejectOutOfDomainValues(CheckCase c) {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         assertThatCode(() -> c.insert().apply(jdbc, Map.of())).as("valid sibling").doesNotThrowAnyException();
         assertThatThrownBy(() -> c.insert().apply(jdbc, c.bad()))
                 .isInstanceOf(DataIntegrityViolationException.class)
@@ -349,7 +359,7 @@ class DateCheckMigrationTest {
     @ParameterizedTest
     @MethodSource("accepted")
     void valuesInsideTheDomainAreAccepted(AcceptCase c) {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         Map<String, Object> values = c.values().apply(jdbc);
         UUID id = c.insert().apply(jdbc, values);
         Map<String, Object> row = jdbc.queryForMap("select * from " + c.table() + " where id = ?", id);
@@ -469,7 +479,7 @@ class DateCheckMigrationTest {
     @ParameterizedTest
     @MethodSource("uniqueKeys")
     void uniqueKeysRejectOnlyTheDuplicate(UniqueCase c) {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UniqueProbe probe = c.setup().apply(jdbc);
         assertThatThrownBy(probe.duplicate())
                 .isInstanceOf(DataIntegrityViolationException.class)
@@ -484,7 +494,7 @@ class DateCheckMigrationTest {
 
     @Test
     void predictorAlertClaimSqlKeepsTheFirstRow() {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UUID event = event(jdbc, org(jdbc));
         LocalDate day = LocalDate.of(2026, 10, 1);
         UUID first = UUID.randomUUID();
@@ -500,7 +510,7 @@ class DateCheckMigrationTest {
 
     @Test
     void predictorAlertFollowsItsEventAndCheck() {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UUID org = org(jdbc);
         UUID gone = event(jdbc, org);
         UUID kept = event(jdbc, org);
@@ -518,7 +528,7 @@ class DateCheckMigrationTest {
 
     @Test
     void orgDeleteCascadesDateCheckTree() {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UUID org = org(jdbc);
         UUID otherOrg = org(jdbc);
         UUID dc = dateCheck(jdbc, org, Map.of());
@@ -535,7 +545,7 @@ class DateCheckMigrationTest {
 
     @Test
     void deletingDateCheckNullsEventLink() {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UUID org = org(jdbc);
         UUID event = event(jdbc, org);
         UUID dc = dateCheck(jdbc, org, Map.of());
@@ -549,7 +559,7 @@ class DateCheckMigrationTest {
 
     @Test
     void deletingEventNullsDateCheckLink() {
-        JdbcTemplate jdbc = latest(freshDatabase());
+        JdbcTemplate jdbc = latest();
         UUID org = org(jdbc);
         UUID event = event(jdbc, org);
         UUID dc = dateCheck(jdbc, org, Map.of("event_id", event));

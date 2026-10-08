@@ -16,6 +16,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgLocks;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -136,7 +137,7 @@ class UnpublishCheckoutRacePostgresTest {
                 cached.set(events.findById(eventId).orElseThrow());
                 return inventoryService.reserve(tierA, 2, Instant.now().plus(30, ChronoUnit.MINUTES), null);
             }));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "reserve waits for unpublish's tier lock");
             assertThat(buyer.isDone()).as("reserve waits for unpublish's tier lock").isFalse();
 
             release.countDown();
@@ -177,7 +178,7 @@ class UnpublishCheckoutRacePostgresTest {
             assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> eventService.unpublish(principal, eventId));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "unpublish waits for the buyer's tier lock");
             assertThat(organizer.isDone()).as("unpublish waits for the buyer's tier lock").isFalse();
 
             release.countDown();
@@ -212,7 +213,7 @@ class UnpublishCheckoutRacePostgresTest {
             assertThat(issued.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> eventService.unpublish(principal, eventId));
-            Thread.sleep(500);
+            PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "unpublish waits for the free order's tier lock");
             assertThat(organizer.isDone()).as("unpublish waits for the free order's tier lock").isFalse();
 
             release.countDown();
