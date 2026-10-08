@@ -1,45 +1,70 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
-import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EmailChannelSenderTest {
 
     @Autowired EmailChannelSender sender;
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
-    @Autowired MarketingEmailProperties marketingProps;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final Set<String> ownAddresses = new HashSet<>();
+
+    /** The campaigns are left 'sending', which the global claim would reclaim once stale. */
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** The one email this test's campaign handed to the provider. */
+    @SuppressWarnings("unchecked")
+    private CampaignEmailProvider.OutgoingEmail sentEmail() {
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
+        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        List<CampaignEmailProvider.OutgoingEmail> mine = captor.getAllValues().stream().flatMap(List::stream)
+                .filter(e -> ownAddresses.contains(e.to())).toList();
+        assertThat(mine).hasSize(1);
+        return mine.get(0);
+    }
 
     private Campaign campaignWithPending(int n) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(UUID.randomUUID());
+        orgIds.add(c.getOrgId());
         c.setChannel("email");
         c.setName("Blast");
         c.setStatus("sending");
@@ -55,19 +80,13 @@ class EmailChannelSenderTest {
             CampaignRecipient r = new CampaignRecipient();
             r.setId(UUID.randomUUID());
             r.setCampaignId(c.getId());
-            // membership_id is UUID REFERENCES memberships(membership_id) ON DELETE SET NULL (V53).
-            // H2 (MODE=PostgreSQL) ENFORCES this FK: a random membership_id with no memberships
-            // row fails at flush with "Referential integrity constraint violation … FOREIGN
-            // KEY(membership_id) REFERENCES public.memberships(membership_id) [23506-240]". The
-            // FK permits NULL and the sender reads r.getEmail() only (never a real membership),
-            // so leave membership_id null. The sender only SIGNS the unsubscribe token
-            // (tokens.sign(orgId, null, campaignId, "email") → payload "orgId:null:campaignId:email",
-            // signs without error since it never parses the UUID); it never verifies it during
-            // send, so a null membershipId is safe for this test.
+            // membership_id is an FK to memberships (V53) that permits NULL; the sender reads the email
+            // column only and merely signs the unsubscribe token, so no membership is needed here.
             r.setMembershipId(null);
-            r.setEmail("r" + i + "@example.com");
+            r.setEmail(fx.email("r" + i));
             r.setStatus("pending");
             recipients.save(r);
+            ownAddresses.add(r.getEmail());
         }
         return c;
     }
@@ -86,7 +105,6 @@ class EmailChannelSenderTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void batchSendRendersThroughTheBrandedShellNotBareText() {
         // Regression for the test-send bug's sibling path: the batch sender must render each
         // recipient's email through CampaignEmailRenderer (branded HTML shell + mandatory
@@ -96,17 +114,13 @@ class EmailChannelSenderTest {
 
         sender.sendNextBatch(c);
 
-        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
-                ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(captor.capture());
-        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        CampaignEmailProvider.OutgoingEmail sent = sentEmail();
         assertThat(sent.html()).contains("<!DOCTYPE html>");
         assertThat(sent.html()).contains("<strong>there</strong>"); // markdown was rendered
         assertThat(sent.html().toLowerCase()).contains("unsubscribe");
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void aiGeneratedCampaign_handsTheDisclosureToTheProvider_andMarksTheHtml() {
         Campaign c = campaignWithPending(1);
         c.setSubjectAiGenerated(true);
@@ -115,27 +129,20 @@ class EmailChannelSenderTest {
 
         sender.sendNextBatch(c);
 
-        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
-                ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(captor.capture());
-        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        CampaignEmailProvider.OutgoingEmail sent = sentEmail();
         assertThat(sent.ai().subject()).isTrue();
         assertThat(sent.ai().body()).isFalse();
         assertThat(sent.html()).contains("<meta name=\"imin-ai-generated\" content=\"subject\"/>");
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void humanWrittenCampaign_sendsNoDisclosure() {
         Campaign c = campaignWithPending(1);
         when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
 
         sender.sendNextBatch(c);
 
-        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
-                ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(captor.capture());
-        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        CampaignEmailProvider.OutgoingEmail sent = sentEmail();
         assertThat(sent.ai().any()).isFalse();
         assertThat(sent.html()).doesNotContain("ai-disclosure");
     }

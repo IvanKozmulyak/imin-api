@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
@@ -8,14 +7,13 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -31,17 +29,10 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
 /**
- * mkt-core-1 (P0): a crash part-way through a campaign drive must not un-record the
- * emails that already left. Emails are irreversible one batch at a time, so every
- * batch's recipient statuses have to be committed before the next batch is claimed —
- * otherwise the dispatcher's automatic re-claim re-materialises and re-sends the whole
- * audience.
- *
- * <p>The claim is global (LIMIT 10), so campaigns other classes leave due are cleared before and after the test;
- * otherwise their batches take the provider mock's calls and the crash lands on the wrong campaign.
+ * A crash mid-drive must not un-record the batches that already left, or the re-claim re-sends them. The crash
+ * counts only this test's batches: the global claim may also drain another class's leftover campaign.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignSendCrashResumeTest {
 
     private static final int TOTAL = 150; // two batches: 100 + 50
@@ -51,33 +42,24 @@ class CampaignSendCrashResumeTest {
     @Autowired CampaignRecipientRepository recipients;
     @Autowired OrganizationRepository orgs;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired IminFixtures fx;
 
-    @BeforeEach
-    void clearBefore() {
-        clearCampaigns();
-    }
+    private final List<UUID> orgIds = new ArrayList<>();
 
     @AfterEach
-    void clearAfter() {
-        clearCampaigns();
-    }
-
-    private void clearCampaigns() {
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
     /** Org whose local time is ~noon right now, so quiet hours never gate the dispatcher. */
     private Organization awakeOrg() {
         int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
-        Organization o = new Organization();
-        o.setName("Crash Org");
-        o.setSlug("crash-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("crash@test.com");
-        o.setCountry("DE");
+        Organization o = fx.org();
         o.setTimezone(ZoneOffset.ofHours(12 - hourNowUtc).getId());
-        return orgs.save(o);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
     private Campaign dueCampaignWith(int pending, String emailTag) {
@@ -87,7 +69,8 @@ class CampaignSendCrashResumeTest {
         c.setChannel("email");
         c.setName("Crash blast");
         c.setStatus("scheduled");
-        c.setScheduledAt(Instant.now().minus(1, ChronoUnit.MINUTES));
+        // Sorts ahead of other tests' campaigns in the global, LIMIT 10 claim.
+        c.setScheduledAt(Instant.now().minus(3650, ChronoUnit.DAYS));
         c.setSubject("Subject");
         c.setBodyMd("Body");
         Instant now = Instant.now();
@@ -98,10 +81,9 @@ class CampaignSendCrashResumeTest {
             CampaignRecipient r = new CampaignRecipient();
             r.setId(UUID.randomUUID());
             r.setCampaignId(c.getId());
-            // membership_id stays null: H2 enforces the FK to memberships (see
-            // EmailChannelSenderTest) and the sender only reads the email column.
+            // No membership: the sender only reads the email column.
             r.setMembershipId(null);
-            r.setEmail(emailTag + "-" + i + "@example.com");
+            r.setEmail(emailTag + "-" + i + "@example.test");
             r.setStatus("pending");
             recipients.save(r);
         }
@@ -110,15 +92,16 @@ class CampaignSendCrashResumeTest {
 
     @Test
     void crashAfterFirstBatchDoesNotResendAlreadySentRecipients() {
-        String tag = "crash" + UUID.randomUUID().toString().substring(0, 8);
+        String tag = "crash-" + UUID.randomUUID();
         Campaign c = dueCampaignWith(TOTAL, tag);
 
         AtomicInteger calls = new AtomicInteger();
         List<String> addressed = Collections.synchronizedList(new ArrayList<>());
         when(provider.sendBatch(anyList())).thenAnswer(inv -> {
             List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
-            // Second call = the pod dies after batch 1's emails have irreversibly left.
-            if (calls.incrementAndGet() == 2) throw new RuntimeException("pod restart mid-send");
+            boolean ours = batch.stream().anyMatch(e -> e.to().startsWith(tag));
+            // Our second batch = the pod dies after batch 1's emails have irreversibly left.
+            if (ours && calls.incrementAndGet() == 2) throw new RuntimeException("pod restart mid-send");
             batch.forEach(e -> addressed.add(e.to()));
             return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
         });

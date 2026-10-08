@@ -1,6 +1,12 @@
 package com.imin.iminapi.marketing.email;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.util.stream.Stream;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MarketingEmailPropertiesTest {
@@ -33,51 +39,29 @@ class MarketingEmailPropertiesTest {
         assertThat(p.unsubscribeUrl("t")).doesNotContain("localhost");
     }
 
-    private static MarketingEmailProperties imin() {
+    /** The per-organizer From header on the configured address, safe against header injection. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("organizerHeaders")
+    void fromHeaderForOrganizer(String name, String fromAddress, String organizer, String expected) {
         MarketingEmailProperties p = new MarketingEmailProperties();
-        p.setFromAddress("hello@imin.support");
-        p.setFromName("imin");
-        return p;
+        p.setFromAddress(fromAddress);
+        if (!fromAddress.isEmpty()) p.setFromName("imin");
+        assertThat(p.fromHeader(organizer)).isEqualTo(expected);
     }
 
-    @Test
-    void fromHeaderForOrganizer_isOrganizerViaIminOnTheConfiguredAddress() {
-        assertThat(imin().fromHeader("Night Org")).isEqualTo("\"Night Org via IMIN\" <hello@imin.support>");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_escapesQuotesAndBackslashes() {
-        assertThat(imin().fromHeader("The \"Best\" \\ Club"))
-                .isEqualTo("\"The \\\"Best\\\" \\\\ Club via IMIN\" <hello@imin.support>");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_stripsLineBreaks() {
-        assertThat(imin().fromHeader("Night\r\nBcc: x@y.z"))
-                .isEqualTo("\"Night  Bcc: x@y.z via IMIN\" <hello@imin.support>");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_blankOrganizerFallsBackToConfiguredHeader() {
-        assertThat(imin().fromHeader(" ")).isEqualTo("imin <hello@imin.support>");
-        assertThat(imin().fromHeader(null)).isEqualTo("imin <hello@imin.support>");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_blankAddressFallsBackToConfiguredHeader() {
-        MarketingEmailProperties p = new MarketingEmailProperties();
-        p.setFromAddress("");
-        assertThat(p.fromHeader("Night Org")).isEqualTo("");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_stripsUnicodeSeparatorsAndBidiOverrides() {
-        assertThat(imin().fromHeader("Night\u2028Bcc\u2029x\u202E\u200F"))
-                .isEqualTo("\"Night Bcc x via IMIN\" <hello@imin.support>");
-    }
-
-    @Test
-    void fromHeaderForOrganizer_onlyFormatCharactersFallsBackToConfiguredHeader() {
-        assertThat(imin().fromHeader("\u202E\u200B")).isEqualTo("imin <hello@imin.support>");
+    static Stream<Arguments> organizerHeaders() {
+        String imin = "hello@imin.support";
+        return Stream.of(
+                Arguments.of("organizer via IMIN", imin, "Night Org", "\"Night Org via IMIN\" <hello@imin.support>"),
+                Arguments.of("quotes and backslashes escaped", imin, "The \"Best\" \\ Club",
+                        "\"The \\\"Best\\\" \\\\ Club via IMIN\" <hello@imin.support>"),
+                Arguments.of("line breaks stripped", imin, "Night\r\nBcc: x@y.z",
+                        "\"Night  Bcc: x@y.z via IMIN\" <hello@imin.support>"),
+                Arguments.of("blank organizer falls back", imin, " ", "imin <hello@imin.support>"),
+                Arguments.of("null organizer falls back", imin, null, "imin <hello@imin.support>"),
+                Arguments.of("blank address falls back", "", "Night Org", ""),
+                Arguments.of("unicode separators and bidi overrides stripped", imin, "Night\u2028Bcc\u2029x\u202E\u200F",
+                        "\"Night Bcc x via IMIN\" <hello@imin.support>"),
+                Arguments.of("only format characters falls back", imin, "\u202E\u200B", "imin <hello@imin.support>"));
     }
 }

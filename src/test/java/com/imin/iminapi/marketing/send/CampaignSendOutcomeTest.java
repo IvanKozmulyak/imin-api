@@ -9,14 +9,19 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,12 +42,23 @@ class CampaignSendOutcomeTest {
     @Autowired CampaignService campaignService;
     @Autowired IminFixtures fx;
     @Autowired AuditRows audit;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    /** Both tests leave a failed or re-scheduled campaign, which the global claim would pick up later. */
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
 
     private Organization awakeOrg() {
         int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
         Organization o = fx.org();
         o.setTimezone(ZoneOffset.ofHours(12 - hourNowUtc).getId());
-        return orgs.save(o);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
     /** A due campaign whose recipients have already burned their full attempt budget. */

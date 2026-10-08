@@ -1,55 +1,75 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/** One dispatcher tick through the real send unit, materializer and sender. */
+@IminIntegrationTest
 class CampaignDispatcherTest {
 
     @Autowired CampaignDispatcher dispatcher;
     @Autowired CampaignRepository campaigns;
+    @Autowired CampaignRecipientRepository recipients;
     @Autowired OrganizationRepository orgs;
-    @MockitoBean RecipientMaterializer materializer;
-    @MockitoBean EmailChannelSender sender;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    /**
-     * A real, non-paused org whose timezone puts local time near noon RIGHT NOW, so the
-     * dispatcher's quiet-hours gate (22:00–09:00 org-local) never drops these campaigns
-     * regardless of when the suite runs. The dispatcher now resolves the org per campaign,
-     * so a random non-existent org_id would be skipped as "org gone".
-     */
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    @BeforeEach
+    void stubProvider() {
+        when(provider.sendBatch(anyList())).thenAnswer(inv ->
+                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+    }
+
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** runOnce reads Instant.now(): an offset that puts the org's local time near noon right now. */
     private Organization awakeOrg() {
-        int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
-        // offset that shifts current UTC hour to ~12:00 local, clamped to valid ±18h range
-        int offset = 12 - hourNowUtc;
-        Organization o = new Organization();
-        o.setName("Disp Org");
-        o.setSlug("disp-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail("disp@test.com");
-        o.setCountry("DE");
-        o.setTimezone(ZoneOffset.ofHours(offset).getId()); // e.g. "+03:00"
-        return orgs.save(o);
+        Organization o = fx.org();
+        o.setTimezone(ZoneOffset.ofHours(12 - Instant.now().atZone(ZoneOffset.UTC).getHour()).getId());
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
     private Campaign scheduled(Instant at) {
+        return scheduled(at, "pending");
+    }
+
+    /** A campaign with one recipient row, so the materializer no-ops and the sender drives it. */
+    private Campaign scheduled(Instant at, String rowStatus) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(awakeOrg().getId());
@@ -61,41 +81,59 @@ class CampaignDispatcherTest {
         c.setBodyMd("B");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
-        return campaigns.save(c);
+        campaigns.save(c);
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setEmail(fx.email("disp"));
+        r.setStatus(rowStatus);
+        recipients.save(r);
+        return c;
     }
 
-    @Test
-    void claimsDueScheduledCampaignAndDrivesToSent() {
-        Campaign c = scheduled(Instant.now().minus(1, ChronoUnit.MINUTES));
-        when(sender.sendNextBatch(any())).thenReturn(false); // no more pending → done
+    private Campaign reload(Campaign c) {
+        return campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
+    }
+
+    /** A drained campaign ends sent, also when every recipient was skipped at materialisation and none failed. */
+    @ParameterizedTest(name = "recipient {0}")
+    @CsvSource({"pending, 1", "skipped, 0"})
+    void claimsDueScheduledCampaignAndDrivesToSent(String rowStatus, long sent) {
+        Campaign c = scheduled(Instant.now().minus(3650, ChronoUnit.DAYS), rowStatus);
 
         dispatcher.runOnce();
 
-        Campaign after = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
+        Campaign after = reload(c);
         assertThat(after.getStatus()).isEqualTo("sent");
         assertThat(after.getSentAt()).isNotNull();
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(sent);
     }
 
     @Test
     void ignoresFutureScheduledCampaign() {
-        Campaign c = scheduled(Instant.now().plus(1, ChronoUnit.HOURS));
+        Campaign due = scheduled(Instant.now().minus(3650, ChronoUnit.DAYS));
+        Campaign future = scheduled(Instant.now().plus(1, ChronoUnit.HOURS));
+
         dispatcher.runOnce();
-        Campaign after = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo("scheduled");
+
+        assertThat(reload(future).getStatus()).isEqualTo("scheduled");
+        assertThat(recipients.countByCampaignIdAndStatus(future.getId(), "pending")).isEqualTo(1L);
+        assertThat(reload(due).getStatus()).isEqualTo("sent");
     }
 
     @Test
-    void midDriveCrash_doesNotCommitSentStatus() {
-        Campaign c = scheduled(Instant.now().minus(1, ChronoUnit.MINUTES));
-        // Sender throws after processOne has already set status→sending and saved.
-        when(sender.sendNextBatch(any()))
-                .thenThrow(new RuntimeException("provider exploded mid-batch"));
+    void midDriveCrash_failsTheCampaignAndNeverStampsItSent() {
+        Campaign c = scheduled(Instant.now().minus(3650, ChronoUnit.DAYS));
 
-        dispatcher.runOnce();
+        // The batch's 'sent' flip fails inside the sender's own transaction, after processOne flipped to sending.
+        try (var fault = PgFaults.failWrites(jdbc, "campaign_recipients", "campaign_id", c.getId())) {
+            dispatcher.runOnce();
+        }
 
-        Campaign after = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
-        // NOT 'sent' — the transactional unit rolled the status flip back, then markFailed ran.
+        Campaign after = reload(c);
         assertThat(after.getStatus()).isEqualTo("failed");
         assertThat(after.getAttempts()).isGreaterThanOrEqualTo((short) 1);
+        assertThat(after.getSentAt()).isNull();
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(1L);
     }
 }

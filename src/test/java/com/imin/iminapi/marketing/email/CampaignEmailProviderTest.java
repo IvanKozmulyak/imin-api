@@ -9,10 +9,14 @@ import com.resend.services.batch.model.BatchEmail;
 import com.resend.services.batch.model.CreateBatchEmailsResponse;
 import com.resend.services.emails.model.CreateEmailOptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -56,72 +60,44 @@ class CampaignEmailProviderTest {
     }
 
     /**
-     * mkt-edge-4 (P1): resend-java 4.1.0 never throws ResendException from Batch.send — a
-     * non-2xx is a PLAIN RuntimeException ("Failed to send batch emails: <code> <body>") and
-     * an IOException is wrapped in one. So `catch (ResendException)` was dead code and every
-     * real 429/5xx/timeout escaped as an unchecked exception that EmailChannelSender's
-     * `catch (ApiException)` backoff could not see: the REQUIRES_NEW batch transaction rolled
-     * back (no attempt increment, no next_attempt_at) and CampaignDispatcher failed the whole
-     * campaign. Every provider failure must now arrive as a classified ApiException.
+     * resend-java throws plain RuntimeExceptions, so every failure must be classified for the sender's backoff:
+     * a 4xx other than 429 is terminal for that batch, anything else (unrecognised included) is retryable.
      */
-    @Test
-    void aRateLimitIsRetryable() throws Exception {
-        assertThat(thrownBy("Failed to send batch emails: 429 {\"message\":\"Too many requests\"}"))
-                .isInstanceOf(ApiException.class)
-                .isNotInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class)
-                .extracting(e -> ((ApiException) e).status())
-                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("providerFailures")
+    void everyProviderFailureIsAClassifiedApiException(String name, RuntimeException thrown, boolean terminal)
+            throws Exception {
+        Throwable t = thrownBy(thrown);
+
+        assertThat(t).isInstanceOfSatisfying(ApiException.class, e -> {
+            assertThat(e.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            assertThat(e.code()).isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
+        });
+        assertThat(t instanceof CampaignEmailProvider.TerminalBatchFailure).isEqualTo(terminal);
     }
 
-    @Test
-    void aProviderServerErrorIsRetryable() throws Exception {
-        assertThat(thrownBy("Failed to send batch emails: 503 upstream down"))
-                .isInstanceOf(ApiException.class)
-                .isNotInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class);
-    }
-
-    @Test
-    void aWrappedIoExceptionIsRetryable() throws Exception {
-        Resend resend = mock(Resend.class);
-        Batch batch = mock(Batch.class);
-        when(resend.batch()).thenReturn(batch);
-        // HttpClient.perform wraps every IOException in a bare RuntimeException.
-        when(batch.send(anyList())).thenThrow(new RuntimeException(new IOException("connection reset")));
-
-        assertThatThrownBy(() -> new CampaignEmailProvider(resend).sendBatch(oneEmail()))
-                .isInstanceOf(ApiException.class)
-                .isNotInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class)
-                .extracting(e -> ((ApiException) e).code())
-                .isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
-    }
-
-    @Test
-    void aClientErrorIsTerminalForThatBatch() throws Exception {
-        // 422/401 will fail identically on every retry — backing off three times just delays
-        // the truth. The sender marks these rows failed so /retry is the recovery path.
-        assertThat(thrownBy("Failed to send batch emails: 422 {\"message\":\"Invalid `to` field\"}"))
-                .isInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class);
-        assertThat(thrownBy("Failed to send batch emails: 401 unauthorized"))
-                .isInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class);
-    }
-
-    /** An unrecognised failure is retryable: the attempt budget bounds it, silence does not. */
-    @Test
-    void anUnclassifiableFailureIsRetryable() throws Exception {
-        assertThat(thrownBy("something nobody has seen before"))
-                .isInstanceOf(ApiException.class)
-                .isNotInstanceOf(CampaignEmailProvider.TerminalBatchFailure.class);
+    static Stream<Arguments> providerFailures() {
+        return Stream.of(
+                Arguments.of("rate limit", new RuntimeException(
+                        "Failed to send batch emails: 429 {\"message\":\"Too many requests\"}"), false),
+                Arguments.of("server error", new RuntimeException("Failed to send batch emails: 503 upstream down"), false),
+                // HttpClient.perform wraps every IOException in a bare RuntimeException.
+                Arguments.of("wrapped I/O", new RuntimeException(new IOException("connection reset")), false),
+                Arguments.of("422", new RuntimeException(
+                        "Failed to send batch emails: 422 {\"message\":\"Invalid `to` field\"}"), true),
+                Arguments.of("401", new RuntimeException("Failed to send batch emails: 401 unauthorized"), true),
+                Arguments.of("unclassifiable", new RuntimeException("something nobody has seen before"), false));
     }
 
     private static List<CampaignEmailProvider.OutgoingEmail> oneEmail() {
         return List.of(new CampaignEmailProvider.OutgoingEmail("f", "t@x", "s", "h", "t", "u"));
     }
 
-    private static Throwable thrownBy(String providerMessage) throws Exception {
+    private static Throwable thrownBy(RuntimeException providerFailure) throws Exception {
         Resend resend = mock(Resend.class);
         Batch batch = mock(Batch.class);
         when(resend.batch()).thenReturn(batch);
-        when(batch.send(anyList())).thenThrow(new RuntimeException(providerMessage));
+        when(batch.send(anyList())).thenThrow(providerFailure);
         CampaignEmailProvider provider = new CampaignEmailProvider(resend);
         try {
             provider.sendBatch(oneEmail());

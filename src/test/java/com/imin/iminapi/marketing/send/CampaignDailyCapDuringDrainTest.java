@@ -1,28 +1,29 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.MarketingGuardProperties;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
-import net.javacrumbs.shedlock.core.LockConfiguration;
-import net.javacrumbs.shedlock.core.LockProvider;
-import net.javacrumbs.shedlock.core.SimpleLock;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,78 +31,77 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
 /**
- * mkt-core-5 (P2): the per-org daily cap was checked once, at claim time, and a campaign
- * admitted below the cap then drained without limit — a 200k-recipient campaign sent 200k
- * mails against a 10,000/day cap on a SHARED sending domain. The cap has to be re-checked
- * per batch, and the campaign left reclaimable when it bites.
+ * The per-org rolling-24h daily cap holds a due campaign at claim time and stops a drain per batch, leaving
+ * the campaign reclaimable; checked at claim time only, one campaign drained past the cap on a shared domain.
  */
-@SpringBootTest(properties = "imin.marketing.guard.daily-cap=100")
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignDailyCapDuringDrainTest {
+
+    // A fixed non-quiet instant for UTC orgs, so the claim's quiet-hours gate never interferes.
+    private static final Instant AWAKE = Instant.parse("2026-07-14T12:00:00Z");
+    // The claim is global, LIMIT 10, ordered by scheduled_at: rows this old sort ahead of other tests' campaigns.
+    private static final Instant ANCIENT = AWAKE.minus(3650, ChronoUnit.DAYS);
 
     @Autowired CampaignDispatcher dispatcher;
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
     @Autowired OrganizationRepository orgs;
-    @Autowired LockProvider lockProvider;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired MarketingGuardProperties guardProps;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    /** Holds the scheduled dispatcher's lock so its 30s tick cannot claim the campaign mid-seed. */
-    private SimpleLock holdSchedulerLock() throws InterruptedException {
-        long deadline = System.currentTimeMillis() + 20_000;
-        while (System.currentTimeMillis() < deadline) {
-            Optional<SimpleLock> lock = lockProvider.lock(new LockConfiguration(
-                    Instant.now(), "campaign_dispatcher", Duration.ofMinutes(2), Duration.ZERO));
-            if (lock.isPresent()) return lock.get();
-            Thread.sleep(100);
-        }
-        throw new AssertionError("campaign_dispatcher lock still held after 20s");
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
-    private Organization awakeOrg() {
-        int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
-        Organization o = new Organization();
-        o.setName("Cap Org");
-        o.setSlug("cap-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("cap@test.com");
-        o.setCountry("DE");
-        o.setTimezone(ZoneOffset.ofHours(12 - hourNowUtc).getId());
-        return orgs.save(o);
+    private Organization org(String timezone) {
+        Organization o = fx.org();
+        o.setTimezone(timezone);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
-    @Test
-    void drainStopsAtTheDailyCapAndLeavesTheRestQueued() throws InterruptedException {
-        SimpleLock schedulerLock = holdSchedulerLock();
-        try {
-            drainWithTheSchedulerHeld();
-        } finally {
-            schedulerLock.unlock();
-        }
-    }
-
-    private void drainWithTheSchedulerHeld() {
+    private Campaign scheduledCampaign(UUID orgId, Instant scheduledAt) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
-        c.setOrgId(awakeOrg().getId());
+        c.setOrgId(orgId);
         c.setChannel("email");
         c.setName("Over cap");
         c.setStatus("scheduled");
-        c.setScheduledAt(Instant.now().minus(1, ChronoUnit.MINUTES));
+        c.setScheduledAt(scheduledAt);
         c.setSubject("Subject");
         c.setBodyMd("Body");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
-        campaigns.save(c);
-        for (int i = 0; i < 150; i++) {   // cap is 100: batch 1 fills it, batch 2 must not run
-            CampaignRecipient r = new CampaignRecipient();
-            r.setId(UUID.randomUUID());
-            r.setCampaignId(c.getId());
-            r.setMembershipId(null);
-            r.setEmail("cap-" + UUID.randomUUID() + "@example.com");
-            r.setStatus("pending");
-            recipients.save(r);
-        }
+        return campaigns.save(c);
+    }
 
+    private void recipient(Campaign c, String status, Instant lastEventAt) {
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(null);
+        r.setEmail(fx.email("cap"));
+        r.setStatus(status);
+        r.setLastEventAt(lastEventAt);
+        recipients.save(r);
+    }
+
+    @Test
+    void drainStopsAtTheDailyCapAndLeavesTheRestQueued() {
+        flips.set(guardProps, "dailyCap", 100);
+        // runOnce reads Instant.now(): an offset that puts the org's local time near noon right now.
+        String awakeNow = ZoneOffset.ofHours(12 - Instant.now().atZone(ZoneOffset.UTC).getHour()).getId();
+        Campaign c = scheduledCampaign(org(awakeNow).getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        for (int i = 0; i < 150; i++) {   // cap is 100: batch 1 fills it, batch 2 must not run
+            recipient(c, "pending", null);
+        }
         when(provider.sendBatch(anyList())).thenAnswer(inv ->
                 ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
 
@@ -113,5 +113,22 @@ class CampaignDailyCapDuringDrainTest {
         Campaign after = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo("sending");
         assertThat(after.getSentAt()).isNull();
+    }
+
+    /** With the cap at 1, one recent send in the rolling window holds the org's due campaign; none claims it. */
+    @ParameterizedTest(name = "recent send = {0}")
+    @ValueSource(booleans = {true, false})
+    void claimHoldsAnOrgAtItsDailyCap(boolean recentSend) {
+        flips.set(guardProps, "dailyCap", 1);
+        Organization o = org("UTC");
+        if (recentSend) {
+            recipient(scheduledCampaign(o.getId(), null), "sent", AWAKE.minus(2, ChronoUnit.HOURS));
+        }
+        Campaign due = scheduledCampaign(o.getId(), ANCIENT);
+
+        List<UUID> claimed = dispatcher.claimDueCampaignIds(AWAKE);
+
+        if (recentSend) assertThat(claimed).doesNotContain(due.getId());
+        else assertThat(claimed).contains(due.getId());
     }
 }

@@ -1,6 +1,6 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -9,64 +9,67 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** The per-organizer From and footer on the real batch path, and the audience-plan legal-identity stop. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/**
+ * The per-organizer From and footer on the real batch path, and the audience-plan legal-identity stop.
+ * A failing org lookup is {@link EmailChannelSenderOrgLookupTest}.
+ */
+@IminIntegrationTest
 class EmailChannelSenderIdentityTest {
 
     @Autowired EmailChannelSender sender;
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
-    @MockitoSpyBean OrganizationRepository orgs;
+    @Autowired OrganizationRepository orgs;
     @Autowired MarketingEmailProperties marketingProps;
-    @Autowired com.imin.iminapi.audienceplan.config.AudiencePlanProperties planProps;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired AudiencePlanProperties planProps;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    private String savedFromAddress;
-    private String savedFromName;
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final Set<String> ownAddresses = new HashSet<>();
 
     @BeforeEach
     void configureSender() {
-        savedFromAddress = marketingProps.getFromAddress();
-        savedFromName = marketingProps.getFromName();
-        marketingProps.setFromAddress("contact@imin.support");
-        marketingProps.setFromName("Alex");
+        flips.set(marketingProps, "fromAddress", "contact@imin.support");
+        flips.set(marketingProps, "fromName", "Alex");
     }
 
+    /** The campaigns are left 'sending' or 'failed', which the global claim would pick up. */
     @AfterEach
-    void restoreSender() {
-        marketingProps.setFromAddress(savedFromAddress);
-        marketingProps.setFromName(savedFromName);
-        planProps.setLegalIdentityAllCampaigns(false);
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
     private Organization org(String brand, String legalName, String legalContact) {
-        Organization o = new Organization();
+        Organization o = fx.org();
         o.setName("Night Org");
         o.setBrandName(brand);
-        o.setSlug("id-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("ops@night.test");
         o.setCountry("FR");
         o.setLegalName(legalName);
         o.setLegalContact(legalContact);
@@ -78,6 +81,7 @@ class EmailChannelSenderIdentityTest {
     }
 
     private Campaign campaignWithPending(UUID orgId, String origin) {
+        orgIds.add(orgId);
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(orgId);
@@ -94,17 +98,26 @@ class EmailChannelSenderIdentityTest {
         r.setId(UUID.randomUUID());
         r.setCampaignId(c.getId());
         r.setMembershipId(null);
-        r.setEmail("fan@example.com");
+        r.setEmail(fx.email("fan"));
         r.setStatus("pending");
         recipients.save(r);
+        ownAddresses.add(r.getEmail());
         return c;
     }
 
+    /** The emails this test's campaigns handed to the provider. */
     @SuppressWarnings("unchecked")
-    private CampaignEmailProvider.OutgoingEmail sentEmail() {
+    private List<CampaignEmailProvider.OutgoingEmail> ownEmails() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(captor.capture());
-        return captor.getValue().get(0);
+        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        return captor.getAllValues().stream().flatMap(List::stream)
+                .filter(e -> ownAddresses.contains(e.to())).toList();
+    }
+
+    private CampaignEmailProvider.OutgoingEmail sentEmail() {
+        List<CampaignEmailProvider.OutgoingEmail> mine = ownEmails();
+        assertThat(mine).hasSize(1);
+        return mine.get(0);
     }
 
     @Test
@@ -143,7 +156,7 @@ class EmailChannelSenderIdentityTest {
 
     private void assertStoppedForMissingIdentity(Campaign c, boolean more) {
         assertThat(more).isFalse();
-        verify(provider, never()).sendBatch(anyList());
+        assertThat(ownEmails()).isEmpty();
         Campaign after = campaigns.findById(c.getId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo("failed");
         assertThat(after.getLastError()).isEqualTo("ORG_LEGAL_IDENTITY_MISSING");
@@ -170,30 +183,10 @@ class EmailChannelSenderIdentityTest {
 
     @Test
     void audiencePlanCampaign_orgMissing_failsWithRowsPending() {
+        // campaigns.org_id has no FK to organizations, so a campaign can outlive its org.
         Campaign c = campaignWithPending(UUID.randomUUID(), "audience_plan");
 
         assertStoppedForMissingIdentity(c, sender.sendNextBatch(c));
-    }
-
-    @Test
-    void audiencePlanCampaign_orgLookupFails_failsWithRowsPending() {
-        Organization o = org("Night", "Night SAS", "legal@night.test");
-        Campaign c = campaignWithPending(o, "audience_plan");
-        doThrow(new IllegalStateException("db hiccup")).when(orgs).findById(o.getId());
-
-        assertStoppedForMissingIdentity(c, sender.sendNextBatch(c));
-    }
-
-    @Test
-    void manualCampaign_orgLookupFails_stillSendsFromTheConfiguredHeader() {
-        Organization o = org("Night", null, null);
-        Campaign c = campaignWithPending(o, "manual");
-        doThrow(new IllegalStateException("db hiccup")).when(orgs).findById(o.getId());
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
-
-        sender.sendNextBatch(c);
-
-        assertThat(sentEmail().from()).isEqualTo("Alex <contact@imin.support>");
     }
 
     @Test
@@ -208,7 +201,7 @@ class EmailChannelSenderIdentityTest {
 
     @Test
     void allCampaignsFlag_manualCampaignWithoutLegalContact_failsWithRowsPending() {
-        planProps.setLegalIdentityAllCampaigns(true);
+        flips.set(planProps, "legalIdentityAllCampaigns", true);
         Campaign c = campaignWithPending(org("Night", "Night SAS", null), "manual");
 
         assertStoppedForMissingIdentity(c, sender.sendNextBatch(c));
@@ -216,7 +209,7 @@ class EmailChannelSenderIdentityTest {
 
     @Test
     void allCampaignsFlag_momentumCampaignWithLegalIdentity_sends() {
-        planProps.setLegalIdentityAllCampaigns(true);
+        flips.set(planProps, "legalIdentityAllCampaigns", true);
         Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "momentum");
         when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
 

@@ -1,7 +1,6 @@
 package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
@@ -9,33 +8,38 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** An audience-plan campaign whose org lacks a legal identity never loops and never starves other orgs. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudiencePlanLegalIdentityDispatchTest {
+
+    // The claim is global, LIMIT 10, ordered by scheduled_at: rows this old sort ahead of other tests' campaigns.
+    private static final Instant ANCIENT = Instant.now().minus(3650, ChronoUnit.DAYS);
 
     @Autowired CampaignDispatcher dispatcher;
     @Autowired CampaignSendUnit sendUnit;
@@ -44,14 +48,16 @@ class AudiencePlanLegalIdentityDispatchTest {
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanProperties props;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final Set<String> ownAddresses = new HashSet<>();
 
     @BeforeEach
     void setUp() {
-        // The claim query is global with a LIMIT: start from no campaigns so membership is deterministic.
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
         when(provider.sendBatch(anyList())).thenAnswer(inv -> {
             List<?> batch = inv.getArgument(0);
             return batch.stream().map(e -> "id-" + UUID.randomUUID()).toList();
@@ -59,26 +65,21 @@ class AudiencePlanLegalIdentityDispatchTest {
     }
 
     @AfterEach
-    void restore() {
-        props.setSendsEnabled(false);
-        props.setLegalIdentityAllCampaigns(false);
-        // Leave nothing claimable: the claim is global, so a leftover would be sent by another class's dispatcher test.
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
-    /** Local time near noon right now, so quiet hours never drop these campaigns. */
+    /** Local time near noon right now: the dispatcher reads Instant.now(), so quiet hours never drop these. */
     private Organization awakeOrg(String legalName, String legalContact) {
         int offset = 12 - Instant.now().atZone(ZoneOffset.UTC).getHour();
-        Organization o = new Organization();
-        o.setName("Dispatch Org");
-        o.setSlug("lid-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("lid@test.com");
+        Organization o = fx.org();
         o.setCountry("FR");
         o.setTimezone(ZoneOffset.ofHours(offset).getId());
         o.setLegalName(legalName);
         o.setLegalContact(legalContact);
-        return orgs.save(o);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
     private Campaign campaignWithPending(Organization org, String origin, String status, Instant updatedAt) {
@@ -91,7 +92,7 @@ class AudiencePlanLegalIdentityDispatchTest {
         c.setOrigin(origin);
         c.setSubject("S");
         c.setBodyMd("B");
-        c.setScheduledAt(Instant.now().minus(10, ChronoUnit.MINUTES));
+        c.setScheduledAt(ANCIENT);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(updatedAt);
         campaigns.save(c);
@@ -99,9 +100,10 @@ class AudiencePlanLegalIdentityDispatchTest {
         r.setId(UUID.randomUUID());
         r.setCampaignId(c.getId());
         r.setMembershipId(null);
-        r.setEmail(origin + "-" + UUID.randomUUID() + "@example.com");
+        r.setEmail(fx.email(origin));
         r.setStatus("pending");
         recipients.save(r);
+        ownAddresses.add(r.getEmail());
         return c;
     }
 
@@ -109,11 +111,19 @@ class AudiencePlanLegalIdentityDispatchTest {
         return campaigns.findById(c.getId()).orElseThrow();
     }
 
+    private String addressOf(Campaign c) {
+        return recipients.findByCampaignIdAndStatus(c.getId(), "pending").stream()
+                .map(CampaignRecipient::getEmail).findFirst()
+                .orElseGet(() -> recipients.findByCampaignIdAndStatus(c.getId(), "sent").get(0).getEmail());
+    }
+
+    /** Addresses this test's campaigns sent to; the dispatcher may also drain another class's leftovers. */
     @SuppressWarnings("unchecked")
     private List<String> sentTo() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, org.mockito.Mockito.atLeast(0)).sendBatch(captor.capture());
-        return captor.getAllValues().stream().flatMap(List::stream).map(CampaignEmailProvider.OutgoingEmail::to).toList();
+        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        return captor.getAllValues().stream().flatMap(List::stream)
+                .map(CampaignEmailProvider.OutgoingEmail::to).filter(ownAddresses::contains).toList();
     }
 
     @Test
@@ -121,8 +131,9 @@ class AudiencePlanLegalIdentityDispatchTest {
         Organization noIdentity = awakeOrg("Held SAS", null);
         Campaign stale = campaignWithPending(noIdentity, "audience_plan", "sending",
                 Instant.now().minus(30, ChronoUnit.MINUTES));
+        List<UUID> held = new ArrayList<>(List.of(stale.getId()));
         for (int i = 0; i < 10; i++) {
-            campaignWithPending(noIdentity, "audience_plan", "scheduled", Instant.now());
+            held.add(campaignWithPending(noIdentity, "audience_plan", "scheduled", Instant.now()).getId());
         }
         Campaign manual = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
 
@@ -132,12 +143,14 @@ class AudiencePlanLegalIdentityDispatchTest {
         assertThat(reload(manual).getStatus()).isEqualTo("sent");
         assertThat(reload(stale).getStatus()).isEqualTo("sending");
         assertThat(sentTo()).hasSize(1).allSatisfy(to -> assertThat(to).startsWith("manual-"));
-        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).isEmpty();
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now()))
+                .doesNotContain(manual.getId())
+                .doesNotContainAnyElementsOf(held);
     }
 
     @Test
     void identityRemovedAfterClaim_failsTheCampaignOnce_andItIsNotReclaimed() {
-        Organization noIdentity = awakeOrg(null, "legal@x.test");
+        Organization noIdentity = awakeOrg(null, fx.email("legal"));
         Campaign held = campaignWithPending(noIdentity, "audience_plan", "scheduled", Instant.now());
 
         // Drive it as the dispatcher would after a claim that raced the identity removal.
@@ -150,46 +163,47 @@ class AudiencePlanLegalIdentityDispatchTest {
         assertThat(recipients.countByCampaignIdAndStatus(held.getId(), "pending")).isEqualTo(1L);
 
         Campaign manual = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
+        String manualAddress = addressOf(manual);
         dispatcher.runOnce();
         dispatcher.runOnce();
 
         assertThat(reload(held).getAttempts()).isEqualTo((short) 1);
         assertThat(reload(held).getStatus()).isEqualTo("failed");
         assertThat(reload(manual).getStatus()).isEqualTo("sent");
-        verify(provider, times(1)).sendBatch(anyList());
+        assertThat(sentTo()).containsExactly(manualAddress);
     }
 
     @Test
     void identityRestored_failedCampaignIsClaimedAgain() {
-        Organization o = awakeOrg(null, "legal@x.test");
+        Organization o = awakeOrg(null, fx.email("legal"));
         Campaign held = campaignWithPending(o, "audience_plan", "scheduled", Instant.now());
         sendUnit.processOne(held);
-        verify(provider, never()).sendBatch(anyList());
+        assertThat(sentTo()).isEmpty();
 
         o.setLegalName("Restored SAS");
         orgs.save(o);
 
-        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).containsExactly(held.getId());
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).contains(held.getId());
     }
 
     @Test
     void allCampaignsFlag_manualOfOrgWithoutIdentity_isNotClaimed_andAnotherOrgsManualStillSends() {
-        props.setLegalIdentityAllCampaigns(true);
+        flips.set(props, "legalIdentityAllCampaigns", true);
         Campaign held = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
-        Campaign ok = campaignWithPending(awakeOrg("Ok SAS", "legal@ok.test"), "momentum", "scheduled", Instant.now());
+        Campaign ok = campaignWithPending(awakeOrg("Ok SAS", fx.email("legal")), "momentum", "scheduled", Instant.now());
 
         dispatcher.runOnce();
 
         assertThat(reload(held).getStatus()).isEqualTo("scheduled");
         assertThat(reload(ok).getStatus()).isEqualTo("sent");
         assertThat(sentTo()).hasSize(1).allSatisfy(to -> assertThat(to).startsWith("momentum-"));
-        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).isEmpty();
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).doesNotContain(held.getId(), ok.getId());
     }
 
     @Test
     void allCampaignsFlagOff_manualOfOrgWithoutIdentity_isClaimed() {
         Campaign manual = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
 
-        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).containsExactly(manual.getId());
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).contains(manual.getId());
     }
 }

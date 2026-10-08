@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing.send;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
@@ -8,19 +7,26 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -31,19 +37,39 @@ import static org.mockito.Mockito.when;
  * API is not all-or-nothing, so a partial outage became a triple send for the accepted part,
  * and a hard outage became a hot loop against a provider that was already down.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EmailChannelSenderBackoffTest {
 
     @Autowired EmailChannelSender sender;
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
-    @MockitoBean CampaignEmailProvider provider;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final Set<String> ownAddresses = new HashSet<>();
+
+    /** The campaigns are left 'sending', which the global claim would reclaim once stale. */
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** The provider batches that carried this test's addresses. */
+    @SuppressWarnings("unchecked")
+    private List<List<CampaignEmailProvider.OutgoingEmail>> ownBatches() {
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
+        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        return captor.getAllValues().stream()
+                .filter(b -> b.stream().anyMatch(e -> ownAddresses.contains(e.to()))).toList();
+    }
 
     private Campaign campaignWithPending(int n) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(UUID.randomUUID());
+        orgIds.add(c.getOrgId());
         c.setChannel("email");
         c.setName("Backoff blast");
         c.setStatus("sending");
@@ -57,9 +83,10 @@ class EmailChannelSenderBackoffTest {
             r.setId(UUID.randomUUID());
             r.setCampaignId(c.getId());
             r.setMembershipId(null);
-            r.setEmail("backoff-" + UUID.randomUUID() + "@example.com");
+            r.setEmail(fx.email("backoff"));
             r.setStatus("pending");
             recipients.save(r);
+            ownAddresses.add(r.getEmail());
         }
         return c;
     }
@@ -82,7 +109,7 @@ class EmailChannelSenderBackoffTest {
                 });
 
         sender.sendNextBatch(c);
-        verify(provider, times(1)).sendBatch(anyList());
+        assertThat(ownBatches()).hasSize(1);
     }
 
     /**
@@ -133,10 +160,9 @@ class EmailChannelSenderBackoffTest {
                 .hasSize(1)
                 .allSatisfy(r -> assertThat(r.getSkipReason()).isEqualTo("no_email"));
         // Only the addressable row reached the provider.
-        org.mockito.ArgumentCaptor<java.util.List<CampaignEmailProvider.OutgoingEmail>> captor =
-                org.mockito.ArgumentCaptor.forClass(java.util.List.class);
-        verify(provider).sendBatch(captor.capture());
-        assertThat(captor.getValue()).hasSize(1);
-        assertThat(captor.getValue().get(0).to()).isNotBlank();
+        List<List<CampaignEmailProvider.OutgoingEmail>> batches = ownBatches();
+        assertThat(batches).hasSize(1);
+        assertThat(batches.get(0)).hasSize(1);
+        assertThat(batches.get(0).get(0).to()).isNotBlank();
     }
 }

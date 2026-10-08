@@ -3,25 +3,49 @@ package com.imin.iminapi.marketing.email;
 import com.imin.iminapi.email.EmailProperties;
 import com.resend.Resend;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.boot.health.actuate.endpoint.HttpCodeStatusMapper;
+import org.springframework.boot.health.actuate.endpoint.StatusAggregator;
+import org.springframework.boot.health.autoconfigure.actuate.endpoint.HealthEndpointAutoConfiguration;
+import org.springframework.boot.health.autoconfigure.registry.HealthContributorRegistryAutoConfiguration;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.core.env.EnumerablePropertySource;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.io.FileSystemResource;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
-/** Tracking must be off on the marketing domain; the Resend round-trip is always stubbed. */
+/**
+ * Tracking must be off on the marketing domain (Resend always stubbed); tracking left on is loud but must not
+ * fail the deploy healthcheck, while a real DOWN still must.
+ */
 class ResendTrackingHealthIndicatorTest {
 
     /** Direct executor by default, so a probe's refresh lands before it returns. */
@@ -76,70 +100,43 @@ class ResendTrackingHealthIndicatorTest {
         return new Stub("re_key", "contact@imin.support", answer);
     }
 
-    @Test
-    void openTrackingOn_isTrackingOn_notDown() {
-        Health h = stub(new ResendTrackingHealthIndicator.TrackingState(true, false)).health();
-        assertThat(h.getStatus()).isEqualTo(ResendTrackingHealthIndicator.TRACKING_ON).isNotEqualTo(Status.DOWN);
-        assertThat(h.getDetails()).containsEntry("domain", "imin.support")
-                .containsEntry("openTracking", true).containsEntry("clickTracking", false);
+    /** Resend's answer → the indicator's verdict: never DOWN, so a tracking or lookup problem cannot fail the deploy. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("verdicts")
+    void verdict(String name, Object answer, Status expected, Map<String, Object> details, List<String> absentKeys) {
+        Health h = stub(answer).health();
+
+        assertThat(h.getStatus()).isEqualTo(expected).isNotEqualTo(Status.DOWN);
+        assertThat(h.getDetails()).containsAllEntriesOf(details).doesNotContainKeys(absentKeys.toArray(String[]::new));
     }
 
-    @Test
-    void clickTrackingOn_isTrackingOn() {
-        Health h = stub(new ResendTrackingHealthIndicator.TrackingState(false, true)).health();
-        assertThat(h.getStatus()).isEqualTo(ResendTrackingHealthIndicator.TRACKING_ON);
-        assertThat(h.getDetails()).containsEntry("clickTracking", true);
+    static Stream<Arguments> verdicts() {
+        Status on = ResendTrackingHealthIndicator.TRACKING_ON;
+        return Stream.of(
+                Arguments.of("open tracking on", new ResendTrackingHealthIndicator.TrackingState(true, false), on,
+                        Map.of("domain", "imin.support", "openTracking", true, "clickTracking", false), List.of()),
+                Arguments.of("click tracking on", new ResendTrackingHealthIndicator.TrackingState(false, true), on,
+                        Map.of("clickTracking", true), List.of()),
+                Arguments.of("one flag on, the other unreported", new ResendTrackingHealthIndicator.TrackingState(null, true), on,
+                        Map.of("clickTracking", true), List.of("openTracking")),
+                Arguments.of("both off", new ResendTrackingHealthIndicator.TrackingState(false, false), Status.UP,
+                        Map.of("openTracking", false, "clickTracking", false), List.of()),
+                Arguments.of("tracking not reported", new ResendTrackingHealthIndicator.TrackingState(false, null), Status.UNKNOWN,
+                        Map.of("reason", "tracking_not_reported"), List.of()),
+                Arguments.of("domain not in the account", null, Status.UNKNOWN,
+                        Map.of("reason", "domain_not_found"), List.of()),
+                Arguments.of("Resend failure", new IllegalStateException("401 missing domains scope"), Status.UNKNOWN,
+                        Map.of("reason", "unavailable"), List.of()));
     }
 
-    @Test
-    void oneFlagOnAndTheOtherUnreported_isStillTrackingOn() {
-        Health h = stub(new ResendTrackingHealthIndicator.TrackingState(null, true)).health();
-        assertThat(h.getStatus()).isEqualTo(ResendTrackingHealthIndicator.TRACKING_ON);
-        assertThat(h.getDetails()).containsEntry("clickTracking", true).doesNotContainKey("openTracking");
-    }
-
-    @Test
-    void bothOff_isUp() {
-        Health h = stub(new ResendTrackingHealthIndicator.TrackingState(false, false)).health();
-        assertThat(h.getStatus()).isEqualTo(Status.UP);
-        assertThat(h.getDetails()).containsEntry("openTracking", false).containsEntry("clickTracking", false);
-    }
-
-    @Test
-    void trackingNotReported_isUnknown() {
-        Health h = stub(new ResendTrackingHealthIndicator.TrackingState(false, null)).health();
-        assertThat(h.getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(h.getDetails()).containsEntry("reason", "tracking_not_reported");
-    }
-
-    @Test
-    void blankApiKey_isUnknown_withoutCallingResend() {
-        Stub s = new Stub("", "contact@imin.support", new ResendTrackingHealthIndicator.TrackingState(true, true));
+    @ParameterizedTest(name = "api key \"{0}\", from \"{1}\"")
+    @CsvSource({"'', contact@imin.support", "re_key, ''"})
+    void missingConfig_isUnknown_withoutCallingResend(String apiKey, String fromAddress) {
+        Stub s = new Stub(apiKey, fromAddress, new ResendTrackingHealthIndicator.TrackingState(true, true));
         Health h = s.health();
         assertThat(h.getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(h.getDetails()).containsEntry("reason", "not_configured");
+        if (apiKey.isEmpty()) assertThat(h.getDetails()).containsEntry("reason", "not_configured");
         assertThat(s.calls).hasValue(0);
-    }
-
-    @Test
-    void blankFromDomain_isUnknown_withoutCallingResend() {
-        Stub s = new Stub("re_key", "", new ResendTrackingHealthIndicator.TrackingState(true, true));
-        assertThat(s.health().getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(s.calls).hasValue(0);
-    }
-
-    @Test
-    void domainNotInAccount_isUnknown() {
-        Health h = stub(null).health();
-        assertThat(h.getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(h.getDetails()).containsEntry("reason", "domain_not_found");
-    }
-
-    @Test
-    void resendFailure_isUnknown_notDown() {
-        Health h = stub(new IllegalStateException("401 missing domains scope")).health();
-        assertThat(h.getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(h.getDetails()).containsEntry("reason", "unavailable");
     }
 
     @Test
@@ -263,5 +260,53 @@ class ResendTrackingHealthIndicatorTest {
     void theTestProfileSwitchRemovesIt() {
         context.withPropertyValues("management.health.resend-tracking.enabled=false")
                 .run(ctx -> assertThat(ctx).hasNotFailed().doesNotHaveBean(ResendTrackingHealthIndicator.class));
+    }
+
+    // The production status order and mapping, read from application.yaml rather than restated here.
+    private static final WebApplicationContextRunner HEALTH = new WebApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(HealthContributorRegistryAutoConfiguration.class,
+                    HealthEndpointAutoConfiguration.class))
+            .withPropertyValues(productionHealthStatus())
+            .withPropertyValues("management.endpoints.web.exposure.include=health");
+
+    private static String[] productionHealthStatus() {
+        try {
+            List<String> pairs = new ArrayList<>();
+            for (PropertySource<?> ps : new YamlPropertySourceLoader()
+                    .load("main", new FileSystemResource("src/main/resources/application.yaml"))) {
+                for (String name : ((EnumerablePropertySource<?>) ps).getPropertyNames()) {
+                    if (name.startsWith("management.endpoint.health.status.")) {
+                        pairs.add(name + "=" + ps.getProperty(name));
+                    }
+                }
+            }
+            assertThat(pairs).as("health status order and mapping in application.yaml").isNotEmpty();
+            return pairs.toArray(String[]::new);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void trackingOn_keepsRootHealthUpAnd200() {
+        HEALTH.run(ctx -> {
+            StatusAggregator aggregator = ctx.getBean(StatusAggregator.class);
+            HttpCodeStatusMapper codes = ctx.getBean(HttpCodeStatusMapper.class);
+            Status on = ResendTrackingHealthIndicator.TRACKING_ON;
+            assertThat(aggregator.getAggregateStatus(Set.of(Status.UP, on))).isEqualTo(Status.UP);
+            assertThat(codes.getStatusCode(Status.UP)).isEqualTo(200);
+            assertThat(codes.getStatusCode(on)).isEqualTo(200);
+        });
+    }
+
+    @Test
+    void aRealDownBesideTrackingOn_stillTurnsRootHealth503() {
+        HEALTH.run(ctx -> {
+            StatusAggregator aggregator = ctx.getBean(StatusAggregator.class);
+            HttpCodeStatusMapper codes = ctx.getBean(HttpCodeStatusMapper.class);
+            assertThat(aggregator.getAggregateStatus(Set.of(Status.DOWN, ResendTrackingHealthIndicator.TRACKING_ON)))
+                    .isEqualTo(Status.DOWN);
+            assertThat(codes.getStatusCode(Status.DOWN)).isEqualTo(503);
+        });
     }
 }
