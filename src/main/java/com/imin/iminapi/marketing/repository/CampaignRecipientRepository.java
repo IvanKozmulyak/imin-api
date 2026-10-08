@@ -393,15 +393,22 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                @Param("maxAttempts") short maxAttempts);
 
     /**
-     * How many of this membership's rows recorded a TRANSIENT bounce (mkt-edge-6). Counted
-     * across every campaign this membership has ever been on, because the question the
-     * threshold answers is "does mail to this person keep failing", not "did this campaign
-     * have a bad day". Written by {@code ResendWebhookProjector}; nothing else sets
-     * {@code error_code='soft_bounce'}. A row later delivered keeps that code but is no longer failing.
+     * How many of this membership's rows recorded a TRANSIENT bounce (mkt-edge-6), counting this
+     * bounce as {@link #markBounced}(recipientId, "soft_bounce") will record it, read before that
+     * update so the suppression slot is locked before the recipient row. Counted across every
+     * campaign, because the threshold asks "does mail to this person keep failing"; a row later
+     * delivered keeps its code but is no longer failing. The recipientId clause mirrors
+     * markBounced's CASE: complained or hard-bounced stays out.
      */
-    @Query("select count(r) from CampaignRecipient r "
-            + "where r.membershipId = :membershipId and r.status = 'bounced' and r.errorCode = 'soft_bounce'")
-    long countSoftBouncesByMembership(@Param("membershipId") UUID membershipId);
+    @Query("""
+            select count(r) from CampaignRecipient r
+             where r.membershipId = :membershipId
+               and ((r.status = 'bounced' and r.errorCode = 'soft_bounce')
+                 or (r.id = :recipientId and r.status <> 'complained'
+                     and (r.errorCode is null or r.errorCode <> 'hard_bounce')))
+            """)
+    long countSoftBouncesWithThisBounce(@Param("membershipId") UUID membershipId,
+                                        @Param("recipientId") UUID recipientId);
 
     /**
      * DSAR (mkt-edge-4): an erased membership's rows that are still QUEUED must leave the queue,

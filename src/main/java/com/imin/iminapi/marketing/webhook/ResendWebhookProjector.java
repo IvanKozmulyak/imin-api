@@ -103,30 +103,31 @@ public class ResendWebhookProjector {
                 // absent type is deliberately read as transient, because the shared list must
                 // never be written on a guess.
                 boolean permanent = isPermanentBounce(bounceType);
-                // Executed now, so the soft-bounce count below includes this row.
-                if (recipientId != null) {
-                    recipientRepo.markBounced(recipientId, permanent ? "hard_bounce" : "soft_bounce", occurredAt);
-                }
                 if (permanent) {
                     if (email != null && !email.isBlank()) {
-                        suppressionService.addDeliverability(
+                        suppressionService.addDeliverabilityIfAbsent(
                                 EmailNormalizer.normalize(email), "hard-bounce");
                     }
                 } else {
-                    escalateRepeatedSoftBounce(campaignId, membershipId);
+                    escalateRepeatedSoftBounce(campaignId, membershipId, recipientId);
+                }
+                // Recipient last, as in the complaint branch: holding this row while inserting the suppression
+                // a concurrent complaint already holds deadlocked the two.
+                if (recipientId != null) {
+                    recipientRepo.markBounced(recipientId, permanent ? "hard_bounce" : "soft_bounce", occurredAt);
                 }
             }
             case ProviderEvent.TYPE_COMPLAINED -> {
                 UUID orgId = orgIdOf(campaignId);
                 if (membershipId != null && orgId != null) {
-                    // MUST pass a non-null, org-scoped SYSTEM principal — addMarketing's
+                    // MUST pass a non-null, org-scoped SYSTEM principal — addMarketingIfAbsent's
                     // AuditLogger.record(principal, SUPPRESSION_ADDED, ...) dereferences
                     // principal.orgId() inside a best-effort try that SWALLOWS a null-principal
                     // NPE, so passing null silently loses the compliance-sensitive
                     // SUPPRESSION_ADDED audit row on every complaint. A system principal
                     // carrying the real orgId attributes the row correctly.
                     AuthPrincipal systemPrincipal = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
-                    suppressionService.addMarketing(orgId, membershipId, "spam", systemPrincipal);
+                    suppressionService.addMarketingIfAbsent(orgId, membershipId, "spam", systemPrincipal);
                     // A spam report is the person objecting; no sticky opt-out row, only the profiling flag.
                     // Membership lock before fan_features, the projector's order; taste clears in this transaction.
                     membershipRepo.lockByIdAndOrgId(membershipId, orgId).ifPresent(m -> {
@@ -169,17 +170,18 @@ public class ResendWebhookProjector {
      * cross-org deliverability list: another organizer's sending reputation and domain are a
      * different experiment, and only a Permanent bounce is evidence about the address itself.
      */
-    private void escalateRepeatedSoftBounce(UUID campaignId, UUID membershipId) {
+    private void escalateRepeatedSoftBounce(UUID campaignId, UUID membershipId, UUID recipientId) {
         if (membershipId == null) return;
         UUID orgId = orgIdOf(campaignId);
         if (orgId == null) return;
-        long soft = recipientRepo.countSoftBouncesByMembership(membershipId);
+        // Read before markBounced, counting this bounce as markBounced will record it.
+        long soft = recipientRepo.countSoftBouncesWithThisBounce(membershipId, recipientId);
         if (soft < SOFT_BOUNCE_SUPPRESS_AFTER) return;
         log.info("[resend-projector] membership {} has {} transient bounces — suppressing for org {}",
                 membershipId, soft, orgId);
-        // Same non-null, org-scoped SYSTEM principal the complaint branch documents: addMarketing
+        // Same non-null, org-scoped SYSTEM principal the complaint branch documents: addMarketingIfAbsent
         // audits through AuditLogger, which silently drops an org-less row.
         AuthPrincipal systemPrincipal = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
-        suppressionService.addMarketing(orgId, membershipId, "soft-bounce", systemPrincipal);
+        suppressionService.addMarketingIfAbsent(orgId, membershipId, "soft-bounce", systemPrincipal);
     }
 }

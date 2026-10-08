@@ -89,6 +89,21 @@ public class SuppressionService {
     }
 
     /**
+     * {@link #addMarketing} for system writers (provider webhooks): a row another writer committed or holds is a
+     * no-op instead of a 409, so concurrent events for one membership both succeed. Audits only its own insert.
+     */
+    @Transactional
+    public boolean addMarketingIfAbsent(UUID orgId, UUID membershipId, String reason, AuthPrincipal principal) {
+        requireMembership(orgId, membershipId);
+        boolean inserted = suppressionRepo.insertMarketingIfAbsent(UUID.randomUUID(), orgId, membershipId, reason) == 1;
+        if (inserted) {
+            auditLogger.record(principal, AuditActions.SUPPRESSION_ADDED, "membership", membershipId,
+                    "Marketing suppression added: reason=" + reason);
+        }
+        return inserted;
+    }
+
+    /**
      * Remove a marketing suppression for a membership in this org.
      * No-op if it does not exist.
      *
@@ -145,6 +160,12 @@ public class SuppressionService {
         s.setSystemOwned(true);
         // See addMarketing: flushed so the V114 unique index answers inside this method.
         return suppressionRepo.saveAndFlush(s);
+    }
+
+    /** {@link #addDeliverability} for provider webhooks: an address already listed, or being listed, is a no-op. */
+    @Transactional
+    public boolean addDeliverabilityIfAbsent(String normalizedEmail, String reason) {
+        return suppressionRepo.insertDeliverabilityIfAbsent(UUID.randomUUID(), normalizedEmail, reason) == 1;
     }
 
     /**

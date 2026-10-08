@@ -142,6 +142,22 @@ class ResendWebhookProjectorTest {
         assertThat(suppressionRepo.findDeliverabilityByEmail(f.email().toLowerCase(Locale.ROOT))).isPresent();
     }
 
+    /** The shared list holds one row per address: another org's permanent bounce for it is a no-op, not a 409. */
+    @Test
+    void aPermanentBounceForAnAddressAlreadyListedKeepsTheOneRow() {
+        String email = fx.email("bounce-twice");
+        Fixture first = seed(email);
+        Fixture second = seed(email);
+        projector.project(first.campaignId(), first.recipientId(), first.membershipId(),
+            email, "email.bounced", "Permanent", Instant.now());
+        projector.project(second.campaignId(), second.recipientId(), second.membershipId(),
+            email, "email.bounced", "Permanent", Instant.now());
+
+        assertThat(jdbc.queryForObject("select count(*) from suppression_entries where scope = 'deliverability'"
+                + " and normalized_email = ?", Long.class, email.toLowerCase(Locale.ROOT))).isEqualTo(1L);
+        assertThat(recipientRepo.findById(second.recipientId()).orElseThrow().getErrorCode()).isEqualTo("hard_bounce");
+    }
+
     /**
      * mkt-edge-6 (P2): every email.bounced wrote the shared, system-owned,
      * never-removable deliverability row — so one org's full mailbox, greylisting or
@@ -213,6 +229,37 @@ class ResendWebhookProjectorTest {
 
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
             .isEmpty();
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> thisRowBeforeTheThirdSoftBounce() {
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.arguments(2, "sent", null, true),
+                org.junit.jupiter.params.provider.Arguments.arguments(2, "delivered", "soft_bounce", true),
+                // Already a strike: the redelivered bounce counts it once, not twice.
+                org.junit.jupiter.params.provider.Arguments.arguments(1, "bounced", "soft_bounce", false),
+                org.junit.jupiter.params.provider.Arguments.arguments(2, "complained", null, false),
+                org.junit.jupiter.params.provider.Arguments.arguments(2, "bounced", "hard_bounce", false));
+    }
+
+    /** The strike is counted before the recipient row is written, as markBounced will leave that row. */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{1}/{2} after {0} strikes -> suppressed={3}")
+    @org.junit.jupiter.params.provider.MethodSource("thisRowBeforeTheThirdSoftBounce")
+    void aSoftBounceCountsItsOwnRowAsMarkBouncedLeavesIt(int priorStrikes, String status, String errorCode,
+                                                          boolean suppressed) {
+        Fixture f = seed(fx.email("strike-" + status));
+        for (int i = 0; i < priorStrikes; i++) {
+            Fixture earlier = laterCampaignFor(f);
+            jdbc.update("update campaign_recipients set status = 'bounced', error_code = 'soft_bounce' where id = ?",
+                    earlier.recipientId());
+        }
+        jdbc.update("update campaign_recipients set status = ?, error_code = ? where id = ?",
+                status, errorCode, f.recipientId());
+
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+                f.email(), "email.bounced", "Transient", Instant.now());
+
+        assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()).isPresent())
+                .isEqualTo(suppressed);
     }
 
     /**

@@ -9,24 +9,30 @@ import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.support.AuditRows;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PgLocks;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -45,8 +51,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Resend delivers at least once and in no order: a late event never walks back a terminal status.
- * Single events, replays and suppression rows belong to the projector/controller tests.
+ * Resend delivers at least once and in no order: a late event never walks back a terminal status, and concurrent
+ * events for one message neither deadlock nor fail. Single events and replays belong to the projector/controller tests.
  */
 @IminIntegrationTest
 class ResendWebhookOutOfOrderTest {
@@ -72,6 +78,7 @@ class ResendWebhookOutOfOrderTest {
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
+    @Autowired AuditRows auditRows;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -212,6 +219,109 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(expected.openedAt());
         // The held complaint writes last, so its own instant is the one left on the row.
         assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(COMPLAINED);
+    }
+
+    /**
+     * A complaint and a third transient bounce for one message take the suppression slot before the recipient row,
+     * so the bounce queues behind the complaint instead of deadlocking, and finds the row written rather than failing.
+     */
+    @Test
+    void aComplaintAndAThirdSoftBounceQueueInsteadOfDeadlocking() throws Exception {
+        Seeded s = seed(fx.email("lock-order"));
+        priorSoftBounce(s);
+        priorSoftBounce(s);
+        Webhook complaint = webhook(s, Event.of("email.complained", COMPLAINED));
+        Webhook bounce = webhook(s, Event.transientBounce());
+
+        MvcResult complained;
+        MvcResult bounced;
+        // The complaint's SUPPRESSION_ADDED audit write runs after its suppression INSERT, in its own transaction.
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "audit_logs", "target_id", s.membershipId())) {
+            CompletableFuture<MvcResult> first = CompletableFuture.supplyAsync(() -> send(complaint));
+            CompletableFuture<MvcResult> second = null;
+            try {
+                pause.awaitBlocked(Duration.ofSeconds(10));
+                second = CompletableFuture.supplyAsync(() -> send(bounce));
+                PgLocks.awaitLockWait(jdbc, "insert into suppression_entries",
+                        "the bounce waits on the complaint's suppression row");
+            } finally {
+                pause.release();
+                complained = first.get(30, TimeUnit.SECONDS);
+                bounced = second == null ? null : second.get(30, TimeUnit.SECONDS);
+            }
+        }
+
+        assertThat(sqlStates(complained)).as("complaint").doesNotContain("40P01");
+        assertThat(sqlStates(bounced)).as("bounce").doesNotContain("40P01");
+        assertThat(complained.getResponse().getStatus()).as("complaint").isEqualTo(200);
+        assertThat(bounced.getResponse().getStatus()).as("bounce, first delivery " + sqlStates(bounced)).isEqualTo(200);
+
+        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo("complained");
+        assertThat(after.getErrorCode()).isEqualTo("soft_bounce");
+        assertThat(jdbc.queryForList("select reason from suppression_entries where scope = 'marketing'"
+                + " and org_id = ? and membership_id = ?", String.class, s.orgId(), s.membershipId()))
+                .containsExactly("spam");
+        auditRows.assertRecorded(s.orgId(), AuditActions.SUPPRESSION_ADDED, "membership", s.membershipId());
+        assertThat(membershipRepo.findByIdAndOrgId(s.membershipId(), s.orgId()).orElseThrow().isObjectedProfiling()).isTrue();
+    }
+
+    /** A soft-bounced send of an earlier campaign: one strike against the membership. */
+    private void priorSoftBounce(Seeded s) {
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(s.orgId());
+        c.setChannel("email");
+        c.setName("webhook-earlier");
+        c.setStatus("sending");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaignRepo.save(c);
+
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(s.membershipId());
+        r.setEmail(s.email());
+        r.setStatus("bounced");
+        r.setErrorCode("soft_bounce");
+        r.setProviderMessageId("msg_" + UUID.randomUUID());
+        recipientRepo.save(r);
+    }
+
+    /** One signed webhook as Resend would send it. */
+    private record Webhook(String svixId, String body) {}
+
+    private Webhook webhook(Seeded s, Event e) {
+        String bounce = e.bounceType() == null ? ""
+                : ",\"bounce\":{\"type\":\"" + e.bounceType() + "\",\"subType\":\"General\"}";
+        String body = "{\"type\":\"" + e.type() + "\",\"created_at\":\"" + e.createdAt() + "\","
+                + "\"data\":{\"email_id\":\"" + s.recipient().getProviderMessageId() + "\","
+                + "\"to\":[\"" + s.email() + "\"]" + bounce + "}}";
+        return new Webhook("svix_" + UUID.randomUUID(), body);
+    }
+
+    private MvcResult send(Webhook w) {
+        try {
+            String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+            return mvc.perform(post("/api/v1/public/webhooks/resend")
+                            .header("svix-id", w.svixId()).header("svix-timestamp", ts)
+                            .header("svix-signature", sign(w.svixId(), ts, w.body()))
+                            .contentType("application/json").content(w.body()))
+                    .andReturn();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Every SQLState in the cause chain of the exception the request ended with. */
+    private static List<String> sqlStates(MvcResult result) {
+        List<String> states = new ArrayList<>();
+        for (Throwable t = result.getResolvedException(); t != null; t = t.getCause()) {
+            if (t instanceof SQLException sql && sql.getSQLState() != null) states.add(sql.getSQLState());
+            if (t.getCause() == t) break;
+        }
+        return states;
     }
 
     /** The complaint branch needs a real membership; the campaign carries the org the projector derives. */

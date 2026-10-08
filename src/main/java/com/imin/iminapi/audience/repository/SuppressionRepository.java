@@ -38,6 +38,15 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
     Optional<SuppressionEntry> findMarketingByOrgAndMembership(@Param("orgId") UUID orgId,
                                                                 @Param("membershipId") UUID membershipId);
 
+    /** Inserts unless V114's (scope, org_id, membership_id) key exists, waiting out an in-flight writer; 1 if inserted. */
+    @Modifying
+    @Transactional
+    @Query(value = "INSERT INTO suppression_entries (id, scope, org_id, membership_id, reason, system_owned)"
+            + " VALUES (:id, 'marketing', :orgId, :membershipId, :reason, false)"
+            + " ON CONFLICT (scope, org_id, membership_id) DO NOTHING", nativeQuery = true)
+    int insertMarketingIfAbsent(@Param("id") UUID id, @Param("orgId") UUID orgId,
+                                @Param("membershipId") UUID membershipId, @Param("reason") String reason);
+
     @Query("select s from SuppressionEntry s where s.scope = 'marketing' and s.orgId = :orgId")
     List<SuppressionEntry> findMarketingByOrg(@Param("orgId") UUID orgId);
 
@@ -55,6 +64,15 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
 
     @Query("select s from SuppressionEntry s where s.scope = 'deliverability' and s.normalizedEmail = :email")
     Optional<SuppressionEntry> findDeliverabilityByEmail(@Param("email") String email);
+
+    /** Inserts unless V114's (scope, normalized_email) key exists, waiting out an in-flight writer; 1 if inserted. */
+    @Modifying
+    @Transactional
+    @Query(value = "INSERT INTO suppression_entries (id, scope, normalized_email, reason, system_owned)"
+            + " VALUES (:id, 'deliverability', :email, :reason, true)"
+            + " ON CONFLICT (scope, normalized_email) DO NOTHING", nativeQuery = true)
+    int insertDeliverabilityIfAbsent(@Param("id") UUID id, @Param("email") String email,
+                                     @Param("reason") String reason);
 
     /** Batch check: which of these emails are deliverability-suppressed? */
     @Query("select s.normalizedEmail from SuppressionEntry s where s.scope = 'deliverability' and s.normalizedEmail in :emails")
