@@ -110,15 +110,24 @@ class PrimDisruptionsClientTest {
     void linesJoinByDisruptionIds() {
         Map<String, Disruption> byId = fetchFixture();
 
-        // the bus object on the same disruption is dropped, the rail line kept at line level
-        assertThat(byId.get("d-works-rer-b").lines())
-                .containsExactly(new LineRef("line:IDFM:C01743", "RER B", "RapidTransit", "line"));
+        // the bus line object on the same disruption is kept at line level, with no stop
+        assertThat(byId.get("d-works-rer-b").lines()).containsExactly(
+                new LineRef("line:IDFM:C01743", "RER B", "RapidTransit", "line", null),
+                new LineRef("line:IDFM:C01211", "Bus 211", "Bus", "line", null));
         assertThat(byId.get("d-stop-m1").lines())
-                .containsExactly(new LineRef("line:IDFM:C01371", "M1", "Metro", "stop"));
+                .contains(new LineRef("line:IDFM:C01371", "M1", "Metro", "stop", "IDFM:22088"));
         assertThat(byId.get("d-strike-t14").kind()).isEqualTo(PrimClassifier.STRIKE);
         assertThat(byId.get("d-works-rer-b").kind()).isEqualTo(PrimClassifier.WORKS);
         // the unparseable second period is dropped, the good one kept
         assertThat(byId.get("d-strike-t14").periods()).hasSize(1);
+    }
+
+    @Test
+    void stopObjectsKeepTheirStopRef() {
+        assertThat(fetchFixture().get("d-stop-m1").lines()).filteredOn(l -> l.label().equals("Bus 239")).containsExactly(
+                new LineRef("line:IDFM:C01239", "Bus 239", "Bus", "line", null),
+                new LineRef("line:IDFM:C01239", "Bus 239", "Bus", "stop", "IDFM:22088"),
+                new LineRef("line:IDFM:C01239", "Bus 239", "Bus", "stop", "IDFM:monomodalStopPlace:58879"));
     }
 
     @Test

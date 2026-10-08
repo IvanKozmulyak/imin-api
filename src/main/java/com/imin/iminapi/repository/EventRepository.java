@@ -331,6 +331,20 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                                @Param("latitude") Double latitude,
                                @Param("longitude") Double longitude);
 
+    /** A geocoded venue point. */
+    interface VenuePoint {
+        Double getLat();
+        Double getLng();
+    }
+
+    /** The org's non-deleted event's venue point; empty when either coordinate is missing. */
+    @Query("""
+        SELECT e.venueLatitude AS lat, e.venueLongitude AS lng FROM Event e
+         WHERE e.id = :id AND e.orgId = :orgId AND e.deletedAt IS NULL
+           AND e.venueLatitude IS NOT NULL AND e.venueLongitude IS NOT NULL
+    """)
+    Optional<VenuePoint> findVenuePoint(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
     /** Door QR switch and token, the columns' only writer; like the geocode fill it leaves {@code updated_at} (the PATCH ETag) alone. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional

@@ -703,7 +703,12 @@ public class DateCheckService {
     }
 
     private DateCheckInput input(DateCheck c, LocalDate today, Answers a) {
-        return new DateCheckInput(c.getCity(), c.getCountry(), c.getPostalCode(), null, null, c.getGenreFamily(),
+        // the venue point comes from the check's own event, so a standalone check never has one
+        Optional<EventRepository.VenuePoint> venue = c.getEventId() == null ? Optional.empty()
+                : events.findVenuePoint(c.getEventId(), c.getOrgId());
+        return new DateCheckInput(c.getCity(), c.getCountry(), c.getPostalCode(),
+                venue.map(EventRepository.VenuePoint::getLat).orElse(null),
+                venue.map(EventRepository.VenuePoint::getLng).orElse(null), c.getGenreFamily(),
                 c.getSubGenre(), c.getCapacity(), c.getPriceMinor(), c.getFormat(),
                 c.getStartHour() == null ? null : c.getStartHour().intValue(),
                 c.getEndHour() == null ? null : c.getEndHour().intValue(),

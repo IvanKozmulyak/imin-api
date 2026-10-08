@@ -23,7 +23,12 @@
     {"id": "line:IDFM:C01371", "name": "1", "shortName": "1", "mode": "Metro", "networkId": "network:IDFM:Operator_100",
      "impactedObjects": [{"type": "stop_point", "id": "stop_point:IDFM:22088", "name": "Argentine", "disruptionIds": ["d-stop-m1"]}]},
     {"id": "line:IDFM:C01211", "name": "211", "shortName": "211", "mode": "Bus", "networkId": "network:IDFM:1046",
-     "impactedObjects": [{"type": "line", "id": "line:IDFM:C01211", "name": "211", "disruptionIds": ["d-works-rer-b"]}]}
+     "impactedObjects": [{"type": "line", "id": "line:IDFM:C01211", "name": "211", "disruptionIds": ["d-works-rer-b"]}]},
+    {"id": "line:IDFM:C01239", "name": "239", "shortName": "239", "mode": "Bus", "networkId": "network:IDFM:1046",
+     "impactedObjects": [{"type": "line", "id": "line:IDFM:C01239", "name": "239", "disruptionIds": ["d-stop-m1"]},
+                         {"type": "stop_point", "id": "stop_point:IDFM:22088", "name": "Argentine", "disruptionIds": ["d-stop-m1"]},
+                         {"type": "stop_point", "id": "stop_point:IDFM:monomodalStopPlace:58879", "name": "Palais Royal",
+                          "disruptionIds": ["d-stop-m1"]}]}
   ],
   "lastUpdatedDate": "2026-10-07T12:58:17.304Z"
 }

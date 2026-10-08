@@ -14,6 +14,7 @@ import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles;
 import com.imin.iminapi.predictor.repository.TransitDisruptionRepository;
 import com.imin.iminapi.predictor.repository.TransitSyncStateRepository;
 import com.imin.iminapi.predictor.sources.prim.PrimProperties;
+import com.imin.iminapi.predictor.sources.prim.TransitStopStore;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -153,7 +154,8 @@ class RuleEngineTest {
         when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda",
                 "quefaireaparis", "prim"));
         return new TransitEvaluator(BANK, mock(TransitDisruptionRepository.class),
-                mock(TransitSyncStateRepository.class), gates, DataSourceCatalog.load(new DefaultResourceLoader(), gates),
+                mock(TransitSyncStateRepository.class), mock(TransitStopStore.class), gates,
+                DataSourceCatalog.load(new DefaultResourceLoader(), gates),
                 new PrimProperties(), Clock.systemUTC());
     }
 

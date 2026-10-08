@@ -112,7 +112,8 @@ class DataSourceCatalogTest {
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "football-data", "iana-tz",
-                "openjdk-hijrah", "openweather", "wikimedia-pageviews", "openagenda", "quefaireaparis", "idfm-prim");
+                "openjdk-hijrah", "openweather", "wikimedia-pageviews", "openagenda", "quefaireaparis", "idfm-prim",
+                "idfm-stops");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -381,7 +382,8 @@ class DataSourceCatalogTest {
         Map<String, String> updated = new HashMap<>();
         real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
 
-        assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis", "idfm-prim");
+        assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis", "idfm-prim",
+                "idfm-stops");
         // the prefix entries only: iana-tz, openjdk-hijrah and openweather are never looked up
         assertThat(askedPrefixes).containsExactly("https://calendrier.api.gouv.fr/jours-feries/",
                 "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/",

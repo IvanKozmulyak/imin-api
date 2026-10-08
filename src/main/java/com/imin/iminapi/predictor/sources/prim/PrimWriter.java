@@ -55,6 +55,7 @@ public class PrimWriter {
                 m.put("label", l.label());
                 m.put("mode", l.mode());
                 m.put("level", l.level());
+                if (l.stop() != null) m.put("stop", l.stop());
                 return m;
             }).toList()));
             row.setPeriodsJson(json(d.periods().stream()

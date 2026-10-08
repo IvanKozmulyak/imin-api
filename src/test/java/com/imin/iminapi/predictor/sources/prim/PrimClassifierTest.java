@@ -26,8 +26,12 @@ class PrimClassifierTest {
             "Metro        | 3bis | M3bis",
             "Tramway      | T3a  | T3a",
             "LocalTrain   | H    | Transilien H",
-            "Bus          | 211  | EXCLUDED",
-            "Funicular    | FUN  | EXCLUDED"})
+            "Bus          | 211   | Bus 211",
+            "Bus          | N01   | Noctilien N01",
+            "Bus          | N141  | Noctilien N141",
+            "Bus          | N1    | Bus N1",
+            "Bus          | N1234 | Bus N1234",
+            "Funicular    | FUN   | EXCLUDED"})
     void label(String mode, String shortName, String expected) {
         assertThat(PrimClassifier.label(mode, shortName)).isEqualTo(Optional.ofNullable(expected));
     }

@@ -36,6 +36,7 @@ public class PrimDisruptionsClient {
     static final int MAX_CODE = 32;
     static final int MAX_TITLE = 500;
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String STOP_POINT = "stop_point:";
 
     /** Wire values match {@code ck_transit_sync_state_status}. */
     public enum Status {
@@ -48,8 +49,11 @@ public class PrimDisruptionsClient {
         public String wire() { return wire; }
     }
 
-    /** {@code level}: {@code line} when the whole line is impacted, {@code stop} for a stop point on it. */
-    public record LineRef(String ref, String label, String mode, String level) {}
+    /**
+     * {@code level}: {@code line} when the whole line is impacted, {@code stop} for a stop point on it. {@code stop}: the
+     * stop point id without its {@code stop_point:} prefix ({@code IDFM:22088}); null at line level.
+     */
+    public record LineRef(String ref, String label, String mode, String level, String stop) {}
 
     public record Period(Instant begin, Instant end) {}
 
@@ -127,9 +131,10 @@ public class PrimDisruptionsClient {
                     default -> null;
                 };
                 if (level == null) continue;
+                String stop = level.equals("stop") ? stopRef(obj.path("id").asText("")) : null;
                 for (JsonNode id : obj.path("disruptionIds")) {
                     linesById.computeIfAbsent(id.asText(), k -> new LinkedHashSet<>())
-                            .add(new LineRef(ref, label.get(), mode, level));
+                            .add(new LineRef(ref, label.get(), mode, level, stop));
                 }
             }
         }
@@ -154,6 +159,13 @@ public class PrimDisruptionsClient {
                     List.copyOf(linesById.getOrDefault(id, Set.of())), periods));
         }
         return new Snapshot(instant(root.path("lastUpdatedDate").asText("")), out, dropped);
+    }
+
+    /** {@code stop_point:IDFM:22088} reads {@code IDFM:22088}, the id the stops reference uses; blank is null. */
+    private static String stopRef(String id) {
+        String s = id.strip();
+        if (s.startsWith(STOP_POINT)) s = s.substring(STOP_POINT.length());
+        return s.isEmpty() ? null : s;
     }
 
     /** Periods that parse and end after they begin; others are dropped. */

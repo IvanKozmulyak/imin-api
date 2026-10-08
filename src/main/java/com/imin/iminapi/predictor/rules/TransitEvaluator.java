@@ -14,6 +14,7 @@ import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.prim.PrimClassifier;
 import com.imin.iminapi.predictor.sources.prim.PrimProperties;
+import com.imin.iminapi.predictor.sources.prim.TransitStopStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -33,8 +35,12 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * Questions 6.1 (strike) and 6.2 (works cutting service) on the night, from stored IDFM line-level rail messages.
- * A source that is off, never loaded or out of date answers not checked, never clear.
+ * Questions 6.1 (strike) and 6.2 (works cutting service) on the night, from stored IDFM messages: line-level rail
+ * objects anywhere in the network, and, when the check's event has a venue point and the stops reference has synced,
+ * stop-level objects of any mode (buses and Noctilien included) within {@code stopRadiusM} of the venue. Facts carry
+ * {@code scope} ({@code network} or {@code near_venue}); a near-venue match adds {@code radiusM} and the stops
+ * reference's {@code stopsUrl}, {@code stopsLicence}, {@code stopsLicenceUrl} and {@code stopsUpdated} (UTC date of its
+ * last ok sync). A source that is off, never loaded or out of date answers not checked, never clear.
  */
 @Component
 public class TransitEvaluator implements QuestionEvaluator {
@@ -52,7 +58,8 @@ public class TransitEvaluator implements QuestionEvaluator {
 
     private record QParams(int clearMaxAheadDays, int nightStartHour, int nightEndHour, int wideMinLines) {}
 
-    private record Line(String label, String mode, String level) {}
+    /** {@code stop}: the stop ref of a stop-level object, else null. */
+    private record Line(String label, String mode, String level, String stop) {}
 
     private record Period(Instant begin, Instant end) {}
 
@@ -60,8 +67,14 @@ public class TransitEvaluator implements QuestionEvaluator {
 
     private record Window(Instant start, Instant end) {}
 
+    /** Stop refs near the venue, the radius used, and the UTC date of the stops sync; empty without a venue point. */
+    private record Near(Set<String> refs, int radiusM, String updated) {
+        static final Near NONE = new Near(Set.of(), 0, null);
+    }
+
     private final TransitDisruptionRepository disruptions;
     private final TransitSyncStateRepository states;
+    private final TransitStopStore stops;
     private final SourceGates gates;
     private final PrimProperties props;
     private final Clock clock;
@@ -70,12 +83,16 @@ public class TransitEvaluator implements QuestionEvaluator {
     private final String licence;
     private final String licenceUrl;
     private final String credit;
+    private final String stopsUrl;
+    private final String stopsLicence;
+    private final String stopsLicenceUrl;
 
     public TransitEvaluator(QuestionBank bank, TransitDisruptionRepository disruptions,
-                            TransitSyncStateRepository states, SourceGates gates, DataSourceCatalog catalog,
-                            PrimProperties props, Clock clock) {
+                            TransitSyncStateRepository states, TransitStopStore stops, SourceGates gates,
+                            DataSourceCatalog catalog, PrimProperties props, Clock clock) {
         this.disruptions = disruptions;
         this.states = states;
+        this.stops = stops;
         this.gates = gates;
         this.props = props;
         this.clock = clock;
@@ -97,6 +114,11 @@ public class TransitEvaluator implements QuestionEvaluator {
         this.licence = source.licence();
         this.licenceUrl = source.licenceUrl();
         this.credit = source.creditLine();
+        PublicDataSource stopsSource = catalog.byId(TransitSyncState.IDFM_STOPS).orElseThrow(() ->
+                new IllegalStateException("predictor questions 6.1/6.2: sources.yaml has no " + TransitSyncState.IDFM_STOPS));
+        this.stopsUrl = stopsSource.url();
+        this.stopsLicence = stopsSource.licence();
+        this.stopsLicenceUrl = stopsSource.licenceUrl();
     }
 
     private static int whole(Question q, String key, int min, int max) {
@@ -145,15 +167,30 @@ public class TransitEvaluator implements QuestionEvaluator {
             Row r = parse(d);
             if (r != null) rows.add(r);
         }
+        Near near = near(in);
         List<Finding> out = new ArrayList<>();
-        for (Question q : questions) out.add(answer(q, params.get(q.id()), windows.get(q.id()), rows, in, date, fetchedAt));
+        for (Question q : questions) {
+            out.add(answer(q, params.get(q.id()), windows.get(q.id()), rows, near, in, date, fetchedAt));
+        }
         return out;
     }
 
-    private Finding answer(Question q, QParams p, Window w, List<Row> rows, DateCheckInput in, LocalDate date,
-                           Instant fetchedAt) {
+    /** One stops-state read and one box query per date, only when the check's event has a venue point. */
+    private Near near(DateCheckInput in) {
+        if (in.venueLat() == null || in.venueLng() == null) return Near.NONE;
+        Instant synced = states.findById(TransitSyncState.IDFM_STOPS).map(TransitSyncState::getSyncedAt).orElse(null);
+        if (synced == null) return Near.NONE;
+        int radius = props.getStopRadiusM();
+        return new Near(stops.nearby(in.venueLat(), in.venueLng(), radius), radius,
+                synced.atZone(ZoneOffset.UTC).toLocalDate().toString());
+    }
+
+    private Finding answer(Question q, QParams p, Window w, List<Row> rows, Near near, DateCheckInput in,
+                           LocalDate date, Instant fetchedAt) {
         boolean strike = q.id().equals(STRIKE);
-        TreeSet<String> lines = new TreeSet<>();
+        TreeSet<String> railLines = new TreeSet<>();
+        TreeSet<String> nearLabels = new TreeSet<>();
+        boolean nearRail = false;
         String worst = null;
         boolean blocking = false;
         for (Row r : rows) {
@@ -163,23 +200,45 @@ public class TransitEvaluator implements QuestionEvaluator {
             List<String> rail = r.lines().stream()
                     .filter(l -> "line".equals(l.level()) && PrimClassifier.RAIL_MODES.contains(l.mode()))
                     .map(Line::label).toList();
-            if (rail.isEmpty()) continue;
-            lines.addAll(rail);
-            blocking |= BLOQUANTE.equals(r.severity());
+            // any mode counts at a stop near the venue; line-level buses never count
+            List<Line> close = r.lines().stream()
+                    .filter(l -> "stop".equals(l.level()) && l.stop() != null && near.refs().contains(l.stop())).toList();
+            if (rail.isEmpty() && close.isEmpty()) continue;
+            if (!rail.isEmpty()) {
+                railLines.addAll(rail);
+                blocking |= BLOQUANTE.equals(r.severity());
+            }
+            for (Line l : close) {
+                nearLabels.add(l.label());
+                nearRail |= PrimClassifier.RAIL_MODES.contains(l.mode());
+            }
             if (worst == null || rank(r.severity()) > rank(worst)) worst = r.severity();
         }
-        if (!lines.isEmpty()) {
-            int strength = lines.size() >= p.wideMinLines() || (strike && blocking) ? 2 : 1;
+        if (!railLines.isEmpty() || !nearLabels.isEmpty()) {
+            int network = railLines.isEmpty() ? 0
+                    : railLines.size() >= p.wideMinLines() || (strike && blocking) ? 2 : 1;
+            int close = nearLabels.isEmpty() ? 0 : strike || nearRail ? 2 : 1;
+            TreeSet<String> lines = new TreeSet<>(railLines);
+            lines.addAll(nearLabels);
             Map<String, Object> facts = new LinkedHashMap<>();
             facts.put("date", date.toString());
             facts.put("lines", listed(lines));
             facts.put("lineCount", lines.size());
             facts.put("severity", worst);
-            facts.put("scope", "network");
+            if (nearLabels.isEmpty()) {
+                facts.put("scope", "network");
+            } else {
+                facts.put("scope", "near_venue");
+                facts.put("radiusM", near.radiusM());
+                facts.put("stopsUrl", stopsUrl);
+                facts.put("stopsLicence", stopsLicence);
+                facts.put("stopsLicenceUrl", stopsLicenceUrl);
+                facts.put("stopsUpdated", near.updated());
+            }
             facts.put("licence", licence);
             facts.put("licenceUrl", licenceUrl);
             facts.put("credit", credit);
-            return Finding.found(q, Kind.RISK, strength, facts, url, fetchedAt);
+            return Finding.found(q, Kind.RISK, Math.max(network, close), facts, url, fetchedAt);
         }
         if (date.isAfter(in.today().plusDays(p.clearMaxAheadDays()))) return Finding.notChecked(q, "too_far_ahead");
         Map<String, Object> facts = new LinkedHashMap<>();
@@ -220,7 +279,8 @@ public class TransitEvaluator implements QuestionEvaluator {
         try {
             List<Line> lines = new ArrayList<>();
             for (JsonNode n : array(d.getLinesJson())) {
-                lines.add(new Line(n.get("label").asText(), n.get("mode").asText(), n.get("level").asText()));
+                lines.add(new Line(n.get("label").asText(), n.get("mode").asText(), n.get("level").asText(),
+                        n.path("stop").asText(null)));
             }
             List<Period> periods = new ArrayList<>();
             for (JsonNode n : array(d.getPeriodsJson())) {

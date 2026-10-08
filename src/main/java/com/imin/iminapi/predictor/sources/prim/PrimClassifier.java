@@ -12,11 +12,13 @@ public final class PrimClassifier {
     public static final String STRIKE = "strike";
     public static final String WORKS = "works";
     public static final String OTHER = "other";
-    /** Line-level rail modes the date check reads; any other mode is dropped at parse time. */
+    /** Modes a line-level object counts with; Bus is labelled too, but only its stop-level objects ever count. */
     public static final Set<String> RAIL_MODES = Set.of("Metro", "RapidTransit", "Tramway", "LocalTrain");
     // The feed has no strike cause code; strikes are PERTURBATION rows titled "Mouvement social" or "grève".
     private static final Pattern STRIKE_TITLE = Pattern.compile("mouvement social|greve");
     private static final Pattern MARKS = Pattern.compile("\\p{M}+");
+    // Noctilien night buses run on many operators' networks, so only the short name identifies them.
+    private static final Pattern NOCTILIEN = Pattern.compile("^N\\d{2,3}$");
 
     private PrimClassifier() {}
 
@@ -28,7 +30,10 @@ public final class PrimClassifier {
         return OTHER;
     }
 
-    /** {@code RER A}, {@code M3bis}, {@code T3a}, {@code Transilien H}; empty for a mode outside {@link #RAIL_MODES}. */
+    /**
+     * {@code RER A}, {@code M3bis}, {@code T3a}, {@code Transilien H}, {@code Bus 211}, {@code Noctilien N01}; empty for
+     * any other mode (funicular, shuttle, cable car), which is dropped at parse time.
+     */
     public static Optional<String> label(String mode, String shortName) {
         if (mode == null || shortName == null || shortName.isBlank()) return Optional.empty();
         String s = shortName.strip();
@@ -37,6 +42,7 @@ public final class PrimClassifier {
             case "Metro" -> Optional.of("M" + s);
             case "Tramway" -> Optional.of(s.toUpperCase(Locale.ROOT).startsWith("T") ? s : "T" + s);
             case "LocalTrain" -> Optional.of("Transilien " + s);
+            case "Bus" -> Optional.of((NOCTILIEN.matcher(s).matches() ? "Noctilien " : "Bus ") + s);
             default -> Optional.empty();
         };
     }

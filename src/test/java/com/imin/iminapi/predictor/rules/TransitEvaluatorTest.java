@@ -11,6 +11,7 @@ import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
 import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.prim.PrimProperties;
+import com.imin.iminapi.predictor.sources.prim.TransitStopStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -36,8 +37,11 @@ import java.util.stream.Stream;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -51,9 +55,12 @@ class TransitEvaluatorTest {
     private static final Instant FEED_UPDATED = Instant.parse("2026-10-07T11:58:17Z");
     private static final String URL = "https://prim.iledefrance-mobilites.fr/fr/apis/idfm-disruptions_bulk";
     private static final String LICENCE_URL = "https://prim.iledefrance-mobilites.fr/fr/licences";
+    private static final double VENUE_LAT = 48.8606;
+    private static final double VENUE_LNG = 2.3376;
 
     private final TransitDisruptionRepository disruptions = mock(TransitDisruptionRepository.class);
     private final TransitSyncStateRepository states = mock(TransitSyncStateRepository.class);
+    private final TransitStopStore stops = mock(TransitStopStore.class);
     private final SourceGates gates = mock(SourceGates.class);
     private final List<TransitDisruption> rows = new ArrayList<>();
     private TransitEvaluator evaluator;
@@ -63,11 +70,22 @@ class TransitEvaluatorTest {
         when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda",
                 "quefaireaparis", "prim"));
         when(gates.isOn("prim")).thenReturn(true);
-        evaluator = new TransitEvaluator(BANK, disruptions, states, gates,
+        evaluator = new TransitEvaluator(BANK, disruptions, states, stops, gates,
                 DataSourceCatalog.load(new DefaultResourceLoader(), gates), new PrimProperties(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         state(NOW.minus(Duration.ofMinutes(10)), FEED_UPDATED);
         when(disruptions.findOverlapping(anyString(), any(), any())).thenReturn(rows);
+        when(states.findById("idfm-stops")).thenReturn(Optional.empty());
+        when(stops.nearby(anyDouble(), anyDouble(), anyInt())).thenReturn(Set.of("IDFM:1"));
+    }
+
+    private void stopsSynced(Instant syncedAt) {
+        TransitSyncState s = new TransitSyncState();
+        s.setSource("idfm-stops");
+        s.setSyncedAt(syncedAt);
+        s.setLastStatus("ok");
+        s.setLastAttemptAt(syncedAt);
+        when(states.findById("idfm-stops")).thenReturn(Optional.of(s));
     }
 
     private void state(Instant syncedAt, Instant feedUpdatedAt) {
@@ -85,8 +103,16 @@ class TransitEvaluatorTest {
     }
 
     private static DateCheckInput in(Integer startHour, Integer endHour) {
-        return new DateCheckInput("Paris", "FR", "75011", null, null, "house & techno", null, 300, 2000L, "club",
+        return at(null, null, startHour, endHour);
+    }
+
+    private static DateCheckInput at(Double lat, Double lng, Integer startHour, Integer endHour) {
+        return new DateCheckInput("Paris", "FR", "75011", lat, lng, "house & techno", null, 300, 2000L, "club",
                 startHour, endHour, List.of(), null, UUID.randomUUID(), TODAY, null, null, null, null);
+    }
+
+    private Finding askAtVenue(String id, LocalDate date) {
+        return evaluator.evaluate(q(id), at(VENUE_LAT, VENUE_LNG, null, null), date);
     }
 
     private Finding ask(String id, LocalDate date) {
@@ -106,12 +132,12 @@ class TransitEvaluatorTest {
         return LocalDateTime.parse(local).atZone(PARIS).toInstant();
     }
 
-    /** {@code label|mode|level} entries. */
+    /** {@code label|mode|level} or {@code label|mode|level|stop} entries. */
     private static String lines(String... objects) {
         return Stream.of(objects).map(o -> {
             String[] p = o.split("\\|");
             return "{\"ref\":\"line:IDFM:" + p[0] + "\",\"label\":\"" + p[0] + "\",\"mode\":\"" + p[1]
-                    + "\",\"level\":\"" + p[2] + "\"}";
+                    + "\",\"level\":\"" + p[2] + "\"" + (p.length > 3 ? ",\"stop\":\"" + p[3] + "\"" : "") + "}";
         }).collect(Collectors.joining(",", "[", "]"));
     }
 
@@ -321,5 +347,97 @@ class TransitEvaluatorTest {
         assertThat(out).extracting(Finding::questionId).containsExactly("6.1", "6.2");
         verify(states, times(1)).findById("idfm-prim");
         verify(disruptions, times(1)).findOverlapping(anyString(), any(), any());
+    }
+
+    static Stream<Arguments> nearVenueWorks() {
+        return Stream.of(
+                Arguments.of("BLOQUANTE", "Bus 139|Bus|stop|IDFM:1", 1),
+                Arguments.of("BLOQUANTE", "M4|Metro|stop|IDFM:1", 2),
+                Arguments.of("BLOQUANTE", "Noctilien N01|Bus|stop|IDFM:1", 1),
+                Arguments.of("BLOQUANTE", "Bus 139|Bus|stop|IDFM:2", 0),
+                // a stop key on a line-level object is never read as a near stop
+                Arguments.of("BLOQUANTE", "Bus 139|Bus|line|IDFM:1", 0),
+                Arguments.of("PERTURBEE", "Bus 139|Bus|stop|IDFM:1", 0));
+    }
+
+    @ParameterizedTest(name = "{0} {1} -> {2}")
+    @MethodSource
+    void nearVenueWorks(String severity, String object, int strength) {
+        stopsSynced(NOW.minus(Duration.ofDays(2)));
+        // the excluded row comes first: a far stop on another bus line
+        row("far", "works", "BLOQUANTE", lines("Bus 99|Bus|stop|IDFM:2"), periods(night(D), nightEnd(D)));
+        row("w", "works", severity, lines(object), periods(night(D), nightEnd(D)));
+
+        Finding f = askAtVenue("6.2", D);
+
+        assertThat(f.status()).isEqualTo(strength == 0 ? Status.CLEAR : Status.FOUND);
+        assertThat(f.strength()).isEqualTo(strength);
+        if (strength > 0) {
+            assertThat(f.facts()).containsEntry("scope", "near_venue")
+                    .containsEntry("lines", object.split("\\|")[0]).containsEntry("lineCount", 1);
+        } else {
+            assertThat(f.facts()).containsEntry("scope", "network").doesNotContainKey("radiusM");
+        }
+    }
+
+    @Test
+    void nearStrikeIsStrengthTwo() {
+        stopsSynced(NOW.minus(Duration.ofDays(2)));
+        row("s", "strike", "PERTURBEE", lines("Bus 139|Bus|stop|IDFM:1"), periods(night(D), nightEnd(D)));
+
+        Finding f = askAtVenue("6.1", D);
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.strength()).isEqualTo(2);
+        assertThat(f.facts()).containsEntry("scope", "near_venue").containsEntry("lines", "Bus 139");
+    }
+
+    @Test
+    void nearVenueFactsAndMaxStrength() {
+        // 23:30Z on 5 October is already 6 October in Paris; the credit dates the sync in UTC like the public tile
+        stopsSynced(Instant.parse("2026-10-05T23:30:00Z"));
+        row("rail", "works", "BLOQUANTE", lines("RER B|RapidTransit|line"), periods(night(D), nightEnd(D)));
+        row("bus", "works", "BLOQUANTE", lines("Bus 139|Bus|stop|IDFM:1"), periods(night(D), nightEnd(D)));
+
+        Finding f = askAtVenue("6.2", D);
+
+        assertThat(f.strength()).isEqualTo(1);
+        assertThat(f.url()).isEqualTo(URL);
+        assertThat(f.fetchedAt()).isEqualTo(FEED_UPDATED);
+        assertThat(f.facts()).containsEntry("date", D.toString()).containsEntry("lines", "Bus 139, RER B")
+                .containsEntry("lineCount", 2).containsEntry("severity", "BLOQUANTE")
+                .containsEntry("scope", "near_venue").containsEntry("radiusM", 800)
+                .containsEntry("stopsUrl", "https://data.iledefrance-mobilites.fr/explore/dataset/arrets/")
+                .containsEntry("stopsLicence", "Licence Ouverte 2.0")
+                .containsEntry("stopsLicenceUrl",
+                        "https://www.etalab.gouv.fr/wp-content/uploads/2017/04/ETALAB-Licence-Ouverte-v2.0.pdf")
+                .containsEntry("stopsUpdated", "2026-10-05")
+                .containsEntry("licence", "Licence Mobilités").containsEntry("licenceUrl", LICENCE_URL)
+                .containsKey("credit");
+        verify(stops).nearby(VENUE_LAT, VENUE_LNG, 800);
+    }
+
+    @Test
+    void noVenuePointIgnoresStops() {
+        stopsSynced(NOW.minus(Duration.ofDays(2)));
+        row("bus", "works", "BLOQUANTE", lines("Bus 139|Bus|stop|IDFM:1"), periods(night(D), nightEnd(D)));
+
+        Finding f = ask("6.2", D);
+
+        assertThat(f.status()).isEqualTo(Status.CLEAR);
+        assertThat(f.facts()).containsEntry("scope", "network");
+        verify(stops, never()).nearby(anyDouble(), anyDouble(), anyInt());
+    }
+
+    @Test
+    void stopsNeverSyncedFallsBackToNetwork() {
+        row("bus", "works", "BLOQUANTE", lines("Bus 139|Bus|stop|IDFM:1"), periods(night(D), nightEnd(D)));
+        row("rail", "works", "BLOQUANTE", lines("RER A|RapidTransit|line"), periods(night(D), nightEnd(D)));
+
+        Finding f = askAtVenue("6.2", D);
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.facts()).containsEntry("scope", "network").containsEntry("lines", "RER A")
+                .doesNotContainKeys("radiusM", "stopsUpdated");
     }
 }

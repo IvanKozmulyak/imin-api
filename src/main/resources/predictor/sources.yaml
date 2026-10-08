@@ -1,8 +1,8 @@
 # Outside datasets the predictor uses, served by GET /api/v1/public/predictor/sources.
 # List a source only in the change that makes it live, with the gate that turns it off.
 # syncPrefix (optional): reference_calendar.source_url prefix whose latest synced_at is the source's lastUpdated.
-# syncSource (optional, not with syncPrefix): store id (open_event_occurrence.source, wikimedia, or idfm-prim for
-# transit_sync_state) whose latest synced_at is the source's lastUpdated.
+# syncSource (optional, not with syncPrefix): store id (open_event_occurrence.source, wikimedia, or idfm-prim /
+# idfm-stops for transit_sync_state) whose latest synced_at is the source's lastUpdated.
 reviewedOn: 2026-10-07
 sources:
   - id: calendrier-api-gouv
@@ -111,4 +111,15 @@ sources:
     creditLine: "Contient des informations de Messages Info Trafic – requête globale, mises à disposition aux conditions de la «\u00a0Licence Mobilités\u00a0»"
     url: https://prim.iledefrance-mobilites.fr/fr/apis/idfm-disruptions_bulk
     syncSource: idfm-prim
+    gate: prim
+  # Licence Ouverte 2.0 (Etalab), read on the dataset page 2026-10-07: credit the producer, link the dataset, give the
+  # update date. Zone points are the mean of the dataset's own stops; zones-d-arrets is not used.
+  - id: idfm-stops
+    name: Île-de-France Mobilités (Référentiel des arrêts)
+    usedFor: [transit_disruptions]
+    licence: Licence Ouverte 2.0
+    licenceUrl: https://www.etalab.gouv.fr/wp-content/uploads/2017/04/ETALAB-Licence-Ouverte-v2.0.pdf
+    creditLine: "Arrêts : Île-de-France Mobilités (data.iledefrance-mobilites.fr, Référentiel des arrêts), Licence Ouverte 2.0"
+    url: https://data.iledefrance-mobilites.fr/explore/dataset/arrets/
+    syncSource: idfm-stops
     gate: prim

@@ -657,6 +657,8 @@ imin:
       base-url: ${PREDICTOR_PRIM_BASE_URL:https://prim.iledefrance-mobilites.fr}
       # A last good poll older than this many hours makes 6.1/6.2 "not checked: stale".
       max-age-hours: ${PREDICTOR_PRIM_MAX_AGE_HOURS:6}
+      # Metres from the venue within which a closed stop counts for 6.1/6.2; 100–2000, else startup fails.
+      stop-radius-m: ${PREDICTOR_PRIM_STOP_RADIUS_M:800}
   ratelimit:
     login:
       capacity: 5

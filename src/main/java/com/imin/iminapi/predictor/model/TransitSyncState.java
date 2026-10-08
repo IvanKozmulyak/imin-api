@@ -21,6 +21,8 @@ public class TransitSyncState {
 
     /** The IDFM PRIM traffic-message source id, shared by both V175 tables and sources.yaml {@code syncSource}. */
     public static final String IDFM_PRIM = "idfm-prim";
+    /** The IDFM stops reference source id (V176), shared by {@code transit_stop} and sources.yaml {@code syncSource}. */
+    public static final String IDFM_STOPS = "idfm-stops";
 
     @Id
     @Column(length = 16)
