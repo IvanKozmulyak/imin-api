@@ -2,24 +2,6 @@
 # This list only shrinks.
 com.imin.iminapi.IminApiApplicationTests
 com.imin.iminapi.app.AppConfigControllerTest
-com.imin.iminapi.audienceplan.controller.DoorOptInControllerWebTest
-com.imin.iminapi.audienceplan.controller.PortraitControllerPostgresTest
-com.imin.iminapi.audienceplan.controller.PortraitControllerScenarios
-com.imin.iminapi.audienceplan.controller.PortraitControllerWebTest
-com.imin.iminapi.audienceplan.controller.SurveyControllerWebTest
-com.imin.iminapi.audienceplan.service.CityOpenDataSeederTest
-com.imin.iminapi.audienceplan.service.DoorOptInServiceTest
-com.imin.iminapi.audienceplan.service.OutcomeH2Test
-com.imin.iminapi.audienceplan.service.OutcomePostgresTest
-com.imin.iminapi.audienceplan.service.OutcomeScenarios
-com.imin.iminapi.audienceplan.service.PlanPrunerPostgresTest
-com.imin.iminapi.audienceplan.service.PlanPrunerScenarios
-com.imin.iminapi.audienceplan.service.PlanPrunerTest
-com.imin.iminapi.audienceplan.service.PortraitResearchStoreH2Test
-com.imin.iminapi.audienceplan.service.PortraitResearchStorePostgresTest
-com.imin.iminapi.audienceplan.service.PortraitResearchStoreScenarios
-com.imin.iminapi.audienceplan.service.SurveyRetentionJobTest
-com.imin.iminapi.audienceplan.service.SurveyServiceTest
 com.imin.iminapi.config.AsyncConfigTest
 com.imin.iminapi.config.OpenEndpointRateLimitTest
 com.imin.iminapi.config.SentryScrubberTest

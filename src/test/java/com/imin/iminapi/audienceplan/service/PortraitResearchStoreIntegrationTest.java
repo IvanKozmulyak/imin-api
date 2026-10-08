@@ -6,12 +6,11 @@ import com.imin.iminapi.audienceplan.service.PortraitResearchStore.Row;
 import com.imin.iminapi.audienceplan.service.PortraitResearchStore.Spend;
 import com.imin.iminapi.audienceplan.service.PortraitResearchStore.StoredGroup;
 import com.imin.iminapi.audienceplan.service.PortraitResearchStore.WebSource;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
@@ -33,13 +32,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-/** The portrait research table and the weekly refresh over it, on H2 and on Postgres 17. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class PortraitResearchStoreScenarios {
+/**
+ * The portrait research table and the weekly refresh over it. Portraits are shared by every org, so each test
+ * clears only the (genre, city) pairs it uses.
+ */
+@IminIntegrationTest
+class PortraitResearchStoreIntegrationTest {
 
     private static final Instant NOW = Instant.parse("2026-10-05T03:00:00Z");
     private static final String HOUSE = "house & techno";
+    private static final List<String> CITIES = List.of("metz", "nancy", "thionville", "lyon", "paris");
     private static final StoredGroup GROUP = new StoredGroup("Techno regulars", "They follow the BAM nights.",
             "regulars", List.of("metz"), List.of(new WebSource("https://www.bam-metz.fr/programme", "BAM Metz")),
             "cited");
@@ -52,8 +54,11 @@ abstract class PortraitResearchStoreScenarios {
     private final PortraitResearchService research = mock(PortraitResearchService.class);
 
     @BeforeEach
+    @AfterEach
     void clean() {
-        jdbc.update("DELETE FROM audience_portraits");
+        for (String city : CITIES) {
+            jdbc.update("DELETE FROM audience_portraits WHERE genre_key = ? AND city_key = ?", HOUSE, city);
+        }
     }
 
     // ── store ──────────────────────────────────────────────────────────────
@@ -69,13 +74,15 @@ abstract class PortraitResearchStoreScenarios {
         assertThat(store.touch(HOUSE, "metz", NOW.plus(Duration.ofMinutes(30))).requestedAt()).isEqualTo(NOW);
         assertThat(store.touch(HOUSE, "metz", NOW.plus(Duration.ofMinutes(61))).requestedAt())
                 .isEqualTo(NOW.plus(Duration.ofMinutes(61)));
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audience_portraits", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audience_portraits WHERE genre_key = ? AND city_key = ?",
+                Integer.class, HOUSE, "metz")).isEqualTo(1);
     }
 
     @Test
     void saveReady_storesTheGroups_bumpsTheVersion_andClearsTheReview() {
         store.touch(HOUSE, "metz", NOW);
-        jdbc.update("UPDATE audience_portraits SET reviewed_by = 'ivan', reviewed_at = ?", Timestamp.from(NOW));
+        jdbc.update("UPDATE audience_portraits SET reviewed_by = 'ivan', reviewed_at = ? WHERE genre_key = ? AND city_key = ?",
+                Timestamp.from(NOW), HOUSE, "metz");
 
         store.saveReady(new Pair(HOUSE, "metz"), List.of(GROUP), NOW, NOW.plus(Duration.ofDays(90)), SPEND);
 
@@ -86,7 +93,8 @@ abstract class PortraitResearchStoreScenarios {
         assertThat(r.generatedAt()).isEqualTo(NOW);
         assertThat(r.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(90)));
         assertThat(r.reviewedBy()).isNull();
-        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd, reviewed_at FROM audience_portraits"))
+        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd, reviewed_at FROM audience_portraits"
+                + " WHERE genre_key = ? AND city_key = ?", HOUSE, "metz"))
                 .containsEntry("model_id", "anthropic/claude-haiku-4.5").containsEntry("tokens_in", 2000)
                 .containsEntry("tokens_out", 500).containsEntry("reviewed_at", null)
                 .hasEntrySatisfying("cost_usd", v -> assertThat((BigDecimal) v).isEqualByComparingTo("0.0361"));
@@ -120,7 +128,8 @@ abstract class PortraitResearchStoreScenarios {
         store.saveEmpty(new Pair(HOUSE, "metz"), NOW.plusSeconds(6), NOW.plus(Duration.ofDays(1)),
                 new Spend("other/model", 0, 0, null));
 
-        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd FROM audience_portraits"))
+        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd FROM audience_portraits"
+                + " WHERE genre_key = ? AND city_key = ?", HOUSE, "metz"))
                 .containsEntry("model_id", "anthropic/claude-haiku-4.5").containsEntry("tokens_in", 2100)
                 .containsEntry("tokens_out", 550)
                 .hasEntrySatisfying("cost_usd", v -> assertThat((BigDecimal) v).isEqualByComparingTo("0.0371"));
@@ -130,8 +139,9 @@ abstract class PortraitResearchStoreScenarios {
 
     private void generated(String city, Duration generatedAgo, Duration requestedAgo, String status) {
         store.touch(HOUSE, city, NOW.minus(requestedAgo));
-        jdbc.update("UPDATE audience_portraits SET status = ?, generated_at = ?, requested_at = ? WHERE city_key = ?",
-                status, Timestamp.from(NOW.minus(generatedAgo)), Timestamp.from(NOW.minus(requestedAgo)), city);
+        jdbc.update("UPDATE audience_portraits SET status = ?, generated_at = ?, requested_at = ?"
+                + " WHERE genre_key = ? AND city_key = ?", status, Timestamp.from(NOW.minus(generatedAgo)),
+                Timestamp.from(NOW.minus(requestedAgo)), HOUSE, city);
     }
 
     private PortraitRefreshJob job() {
@@ -151,7 +161,8 @@ abstract class PortraitResearchStoreScenarios {
 
         verify(research).refresh(eq(HOUSE), eq("metz"));
         verify(research).refresh(eq(HOUSE), eq("lyon"));
-        verify(research, times(2)).refresh(any(), any());
+        // Other classes write portraits at the real now, after the fixed NOW, so their rows are never due; this test's other pairs are checked by name.
+        for (String city : List.of("nancy", "thionville", "paris")) verify(research, never()).refresh(eq(HOUSE), eq(city));
     }
 
     @Test
@@ -160,7 +171,7 @@ abstract class PortraitResearchStoreScenarios {
 
         job().run();
 
-        verifyNoInteractions(research);
+        verify(research, never()).refresh(eq(HOUSE), eq("metz"));
     }
 
     @Test
@@ -216,8 +227,8 @@ abstract class PortraitResearchStoreScenarios {
     }
 
     private Instant attempted(String city) {
-        Timestamp t = jdbc.queryForObject("SELECT refresh_attempted_at FROM audience_portraits WHERE city_key = ?",
-                Timestamp.class, city);
+        Timestamp t = jdbc.queryForObject("SELECT refresh_attempted_at FROM audience_portraits"
+                + " WHERE genre_key = ? AND city_key = ?", Timestamp.class, HOUSE, city);
         return t == null ? null : t.toInstant();
     }
 

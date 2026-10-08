@@ -1,6 +1,5 @@
 package com.imin.iminapi.audienceplan.service;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -10,12 +9,11 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -31,13 +29,12 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * PlanPruner's delete on a real schema, H2 ({@link PlanPrunerTest}) and Postgres ({@link PlanPrunerPostgresTest}).
+ * PlanPruner's delete on the shared Postgres.
  * Plans are dated around 2001 with the clock in 2001 too, so rows other tests leave behind (dated now) are never
  * older than the cutoff and these rows are always the oldest in a batch.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class PlanPrunerScenarios {
+@IminIntegrationTest
+class PlanPrunerIntegrationTest {
 
     static final Instant NOW = Instant.parse("2001-06-01T09:00:00Z");
     static final Instant OLD = NOW.minus(Duration.ofDays(60));

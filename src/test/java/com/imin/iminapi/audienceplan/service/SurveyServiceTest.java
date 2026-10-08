@@ -16,11 +16,11 @@ import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.audienceplan.dto.SurveyPageResponse;
 import com.imin.iminapi.audienceplan.dto.SurveyResponseRequest;
 import com.imin.iminapi.audienceplan.dto.SurveySettingsResponse;
 import com.imin.iminapi.audienceplan.repository.SurveyResponseRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -34,34 +34,41 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullSource;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SurveyServiceTest {
 
     private static final String ORG_NAME = "Vechirka Survey";
@@ -69,6 +76,8 @@ class SurveyServiceTest {
     private static final String VERSION = "survey-org-named-2026-09";
     private static final String TEXT = "Email me about events by " + ORG_NAME
             + ". I agree to receive email marketing and can unsubscribe any time, one click in every email.";
+    /** Stands for a fresh valid address in a parameter row. */
+    private static final String FRESH = "<fresh>";
 
     @Autowired SurveyService service;
     @Autowired EventRepository events;
@@ -88,7 +97,10 @@ class SurveyServiceTest {
     @Autowired ConsentGate gate;
     @Autowired SendGateService sendGate;
     @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
+    private final List<String> platformErased = new ArrayList<>();
     private UUID orgId;
     private UUID otherOrgId;
     private UUID ownerId;
@@ -112,6 +124,8 @@ class SurveyServiceTest {
 
     @AfterEach
     void tearDown() {
+        // A stored consent recomputes the member's features on the live pool; let it finish before the rows go.
+        AsyncDrain.drain(fanFeatureExecutor);
         for (UUID org : List.of(orgId, otherOrgId)) {
             List<UUID> cids = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, org);
             jdbc.update("delete from survey_responses where org_id = ?", org);
@@ -126,7 +140,9 @@ class SurveyServiceTest {
         }
         jdbc.update("delete from users where org_id = ?", orgId);
         jdbc.update("delete from organizations where id in (?, ?)", orgId, otherOrgId);
-        jdbc.update("delete from erased_addresses where org_id is null and email_normalized like '%@survey.test'");
+        for (String email : platformErased) {
+            jdbc.update("delete from erased_addresses where org_id is null and email_normalized = ?", email);
+        }
     }
 
     // ── anonymous answers ─────────────────────────────────────────────────
@@ -161,9 +177,9 @@ class SurveyServiceTest {
 
     @Test
     void answerTime_isStoredAsTheUtcDayWithNoTimeOfDay() {
-        Instant before = Instant.now().truncatedTo(ChronoUnit.DAYS);
+        Instant before = clock.instant().truncatedTo(ChronoUnit.DAYS);
         service.submit(token, answers("Metz", List.of(), null, null, false));
-        Instant after = Instant.now().truncatedTo(ChronoUnit.DAYS);
+        Instant after = clock.instant().truncatedTo(ChronoUnit.DAYS);
 
         Instant stored = jdbc.queryForObject("select created_at from survey_responses where event_id = ?",
                 OffsetDateTime.class, event.getId()).toInstant();
@@ -199,10 +215,11 @@ class SurveyServiceTest {
 
     @Test
     void tickedBox_recordsAnExplicitSurveyConsentSeparateFromTheAnswer() {
-        service.submit(token, consented("Guest@Survey.test", TEXT, VERSION));
+        String email = addr("guest");
+        service.submit(token, consented(email.toUpperCase(Locale.ROOT), TEXT, VERSION));
 
         Map<String, Object> r = onlyResponse();
-        Map<String, Object> m = membership("guest@survey.test");
+        Map<String, Object> m = membership(email);
         Map<String, Object> c = jdbc.queryForMap("select * from consent_records where event_id = ?", event.getId());
         assertThat(r).doesNotContainKeys("membership_id", "consent_record_id");
         assertThat(r.values()).doesNotContain(m.get("membership_id"), m.get("consumer_id"), c.get("id"));
@@ -222,9 +239,10 @@ class SurveyServiceTest {
 
     @Test
     void consentAlone_isMailableByNeitherGateUntilConfirmed() {
-        service.submit(token, consented("pending@survey.test", TEXT, VERSION));
+        String email = addr("pending");
+        service.submit(token, consented(email, TEXT, VERSION));
 
-        Map<String, Object> m = membership("pending@survey.test");
+        Map<String, Object> m = membership(email);
         UUID mid = (UUID) m.get("membership_id");
         assertThat(m.get("consent_status")).isEqualTo("never");
         assertThat(m.get("consent_basis")).isNull();
@@ -236,172 +254,133 @@ class SurveyServiceTest {
 
     @Test
     void consentOfAMemberWithACheckoutConsent_keepsThemMailableByBothGates() {
-        projector.upsertMembership(orgId, "buyer@survey.test", null);
-        UUID mid = (UUID) membership("buyer@survey.test").get("membership_id");
+        String email = addr("buyer");
+        projector.upsertMembership(orgId, email, null);
+        UUID mid = (UUID) membership(email).get("membership_id");
         consentService.capture(orgId, mid, "explicit", "checkout", "Ticked at checkout", "email",
                 "checkout-org-named-2026-09", null, ConsentOrigin.DATA_SUBJECT, null);
 
-        service.submit(token, consented("buyer@survey.test", TEXT, VERSION));
+        service.submit(token, consented(email, TEXT, VERSION));
 
-        Map<String, Object> m = membership("buyer@survey.test");
+        Map<String, Object> m = membership(email);
         assertThat(m.get("consent_status")).isEqualTo("subscribed");
         assertThat(m.get("consent_basis")).isEqualTo("explicit");
         assertThat(sendGate.evaluate(orgId, List.of(mid)).sendable()).containsExactly(mid);
         assertThat(gate.canMarket(orgId, mid)).isTrue();
     }
 
-    @Test
-    void emailWithoutTick_is400AndStoresNothing() {
-        assertInvalid(() -> service.submit(token, request(null, null, "friend", null, null, NOTICE, "en", false,
-                "guest@survey.test", TEXT, VERSION, null)), "consentGiven");
-        assertNothingStored("guest@survey.test");
+    static Stream<Arguments> invalidConsents() {
+        return Stream.of(
+                arguments("an email without the tick", false, FRESH, TEXT, VERSION, "consentGiven"),
+                arguments("a tick without an email", true, null, TEXT, VERSION, "email"),
+                arguments("a tick with a blank email", true, " ", TEXT, VERSION, "email"),
+                arguments("a malformed email", true, "not-an-email", TEXT, VERSION, "email"),
+                arguments("an overlong email", true, "a".repeat(250) + "@survey.test", TEXT, VERSION, "email"),
+                arguments("no text version", true, FRESH, TEXT, null, "consentTextVersion"),
+                arguments("the door text version", true, FRESH, TEXT, "door-org-named-2026-09", "consentTextVersion"),
+                arguments("an unknown survey version", true, FRESH, TEXT, "survey-v0", "consentTextVersion"),
+                arguments("text that does not name the organizer", true, FRESH,
+                        "Email me about this organiser's events.", VERSION, "consentText"),
+                arguments("blank text", true, FRESH, " ", VERSION, "consentText"),
+                arguments("overlong text", true, FRESH, TEXT + "x".repeat(2001), VERSION, "consentText"));
     }
 
-    @ParameterizedTest
-    @NullSource
-    @ValueSource(strings = {" "})
-    void tickWithoutEmail_is400(String email) {
-        assertInvalid(() -> service.submit(token, consented(email, TEXT, VERSION)), "email");
-        assertThat(responseCount()).isZero();
-    }
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidConsents")
+    void anInvalidConsent_is400NamingTheField_andStoresNothing(String label, Boolean ticked, String email, String text,
+                                                               String version, String field) {
+        String address = FRESH.equals(email) ? addr("invalid") : email;
+        SurveyResponseRequest body = request(null, null, "friend", null, null, NOTICE, "fr", ticked, address, text,
+                version, null);
 
-    @Test
-    void malformedEmail_is400() {
-        assertInvalid(() -> service.submit(token, consented("not-an-email", TEXT, VERSION)), "email");
-    }
-
-    @Test
-    void overlongEmail_is400() {
-        assertInvalid(() -> service.submit(token, consented("a".repeat(250) + "@survey.test", TEXT, VERSION)), "email");
-    }
-
-    @ParameterizedTest
-    @NullSource
-    @ValueSource(strings = {"door-org-named-2026-09", "survey-v0"})
-    void consentVersionOffTheSurveyAllowlist_is400AndStoresNothing(String version) {
-        assertInvalid(() -> service.submit(token, consented("v@survey.test", TEXT, version)), "consentTextVersion");
-        assertNothingStored("v@survey.test");
-    }
-
-    @Test
-    void consentTextNotNamingTheOrganizer_is400AndStoresNothing() {
-        assertInvalid(() -> service.submit(token, consented("t@survey.test",
-                "Email me about this organiser's events.", VERSION)), "consentText");
-        assertNothingStored("t@survey.test");
-    }
-
-    @Test
-    void blankConsentText_is400() {
-        assertInvalid(() -> service.submit(token, consented("t@survey.test", " ", VERSION)), "consentText");
-    }
-
-    @Test
-    void overlongConsentText_is400() {
-        assertInvalid(() -> service.submit(token, consented("t@survey.test", TEXT + "x".repeat(2001), VERSION)),
-                "consentText");
+        assertInvalid(() -> service.submit(token, body), field);
+        assertNothingStored(address);
     }
 
     // ── answers kept anonymous for addresses that must not be re-subscribed ──
 
-    @Test
-    void erasedForThisOrg_keepsTheAnswerAnonymous() {
-        erase(orgId, "gone@survey.test");
-        assertAnonymousAccepted("gone@survey.test");
+    enum Blocked {
+        ERASED_FOR_THIS_ORG(false), ERASED_PLATFORM_WIDE(false), STICKY_OPT_OUT(false), UNSUBSCRIBED_MEMBER(true),
+        MARKETING_SUPPRESSED_MEMBER(true), ERASE_PENDING_MEMBER(true);
+
+        final boolean member;
+
+        Blocked(boolean member) {
+            this.member = member;
+        }
     }
 
-    @Test
-    void erasedPlatformWide_keepsTheAnswerAnonymous() {
-        erase(null, "gone2@survey.test");
-        assertAnonymousAccepted("gone2@survey.test");
-    }
+    @ParameterizedTest
+    @EnumSource(Blocked.class)
+    void aBlockedAddress_keepsTheAnswerAnonymous_andIsNeverResubscribed(Blocked blocked) {
+        String email = addr("blocked");
+        if (blocked.member) projector.upsertMembership(orgId, email, null);
+        switch (blocked) {
+            case ERASED_FOR_THIS_ORG -> erase(orgId, email);
+            case ERASED_PLATFORM_WIDE -> erase(null, email);
+            case STICKY_OPT_OUT -> {
+                MarketingOptOut o = new MarketingOptOut();
+                o.setEmailNormalized(email);
+                o.setOrgId(orgId);
+                o.setChannel("email");
+                o.setSource("unsubscribe_link");
+                optOuts.save(o);
+            }
+            case UNSUBSCRIBED_MEMBER ->
+                    jdbc.update("update memberships set consent_status = 'unsubscribed' where org_id = ?", orgId);
+            case MARKETING_SUPPRESSED_MEMBER -> {
+                SuppressionEntry s = new SuppressionEntry();
+                s.setScope(SuppressionEntry.SCOPE_MARKETING);
+                s.setOrgId(orgId);
+                s.setMembershipId((UUID) membership(email).get("membership_id"));
+                s.setReason("manual");
+                suppressions.save(s);
+            }
+            case ERASE_PENDING_MEMBER ->
+                    jdbc.update("update memberships set status = 'erase_pending' where org_id = ?", orgId);
+        }
+        Map<String, Object> before = blocked.member ? membership(email) : null;
 
-    @Test
-    void stickyOptOut_keepsTheAnswerAnonymous() {
-        MarketingOptOut o = new MarketingOptOut();
-        o.setEmailNormalized("sticky@survey.test");
-        o.setOrgId(orgId);
-        o.setChannel("email");
-        o.setSource("unsubscribe_link");
-        optOuts.save(o);
-        assertAnonymousAccepted("sticky@survey.test");
-    }
-
-    @Test
-    void unsubscribedMember_keepsTheAnswerAnonymousAndStaysUnsubscribed() {
-        projector.upsertMembership(orgId, "unsub@survey.test", null);
-        jdbc.update("update memberships set consent_status = 'unsubscribed' where org_id = ?", orgId);
-
-        assertThat(service.submit(token, consented("unsub@survey.test", TEXT, VERSION)).received()).isTrue();
+        assertThat(service.submit(token, consented(email, TEXT, VERSION)).received()).isTrue();
 
         assertThat(onlyResponse().get("heard_from")).isEqualTo("friend");
         assertThat(consentCount()).isZero();
-        assertThat(membership("unsub@survey.test").get("consent_status")).isEqualTo("unsubscribed");
-    }
-
-    @Test
-    void marketingSuppressedMember_keepsTheAnswerAnonymous() {
-        projector.upsertMembership(orgId, "supp@survey.test", null);
-        SuppressionEntry s = new SuppressionEntry();
-        s.setScope(SuppressionEntry.SCOPE_MARKETING);
-        s.setOrgId(orgId);
-        s.setMembershipId((UUID) membership("supp@survey.test").get("membership_id"));
-        s.setReason("manual");
-        suppressions.save(s);
-
-        assertThat(service.submit(token, consented("supp@survey.test", TEXT, VERSION)).received()).isTrue();
-
-        assertThat(onlyResponse().get("heard_from")).isEqualTo("friend");
-        assertThat(consentCount()).isZero();
-    }
-
-    @Test
-    void erasePendingMember_keepsTheAnswerAnonymous() {
-        projector.upsertMembership(orgId, "pending@survey.test", null);
-        jdbc.update("update memberships set status = 'erase_pending' where org_id = ?", orgId);
-
-        assertThat(service.submit(token, consented("pending@survey.test", TEXT, VERSION)).received()).isTrue();
-
-        assertThat(onlyResponse().get("heard_from")).isEqualTo("friend");
-        assertThat(consentCount()).isZero();
+        if (blocked.member) {
+            assertThat(membership(email)).isEqualTo(before);
+        } else {
+            assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class,
+                    email)).isZero();
+        }
     }
 
     // ── validation ────────────────────────────────────────────────────────
 
-    @Test
-    void unknownField_is400NamingItAndStoresNothing() {
-        SurveyResponseRequest body = request("Metz", null, null, null, null, NOTICE, "en", null, null, null, null,
-                Map.of("religion", "x"));
-        assertInvalid(() -> service.submit(token, body), "religion");
+    static Stream<Arguments> invalidBodies() {
+        return Stream.of(
+                arguments("an unknown field", request("Metz", null, null, null, null, NOTICE, "en", null, null, null,
+                        null, Map.of("religion", "x")), "religion"),
+                arguments("a genre outside the whitelist", answers(null, List.of("pop", "techno"), null, null, null),
+                        "otherGenres"),
+                arguments("a null genre entry", answers(null, Arrays.asList("pop", null), null, null, null),
+                        "otherGenres"),
+                arguments("no answers", answers(" ", List.of(), " ", null, null), "answers"),
+                arguments("no body", null, "answers"),
+                arguments("a postcode as commune", answers("57100", null, null, null, null), "homeCommune"),
+                arguments("a commune with a digit", answers("Metz 4", null, null, null, null), "homeCommune"),
+                arguments("an address as commune", answers("a@b.c", null, null, null, null), "homeCommune"),
+                arguments("an overlong commune", answers("a".repeat(81), null, null, null, null), "homeCommune"),
+                arguments("an unknown heard-from", answers(null, null, "radio", null, null), "heardFrom"),
+                arguments("an unknown age band", answers(null, null, null, "under_18", null), "ageBand"),
+                arguments("no notice version", notice(null), "noticeVersion"),
+                arguments("an unknown notice version", notice("survey-v0"), "noticeVersion"),
+                arguments("the door text as notice", notice("door-org-named-2026-09"), "noticeVersion"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidBodies")
+    void anInvalidBody_is400NamingTheField_andStoresNoAnswer(String label, SurveyResponseRequest body, String field) {
+        assertInvalid(() -> service.submit(token, body), field);
         assertThat(responseCount()).isZero();
-    }
-
-    @Test
-    void genreOutsideTheWhitelist_is400() {
-        assertInvalid(() -> service.submit(token, answers(null, List.of("pop", "techno"), null, null, null)),
-                "otherGenres");
-        assertThat(responseCount()).isZero();
-    }
-
-    @Test
-    void nullGenreEntry_is400() {
-        assertInvalid(() -> service.submit(token, answers(null, Arrays.asList("pop", null), null, null, null)),
-                "otherGenres");
-    }
-
-    @Test
-    void noAnswers_is400() {
-        assertInvalid(() -> service.submit(token, answers(" ", List.of(), " ", null, null)), "answers");
-    }
-
-    @Test
-    void missingBody_is400() {
-        assertInvalid(() -> service.submit(token, null), "answers");
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"57100", "Metz 4", "a@b.c"})
-    void communeThatIsNotAPlaceName_is400(String commune) {
-        assertInvalid(() -> service.submit(token, answers(commune, null, null, null, null)), "homeCommune");
     }
 
     @Test
@@ -410,76 +389,39 @@ class SurveyServiceTest {
         assertThat(onlyResponse().get("home_commune")).isEqualTo("Saint-Julien-lès-Metz l’Île");
     }
 
-    @Test
-    void overlongCommune_is400() {
-        assertInvalid(() -> service.submit(token, answers("a".repeat(81), null, null, null, null)), "homeCommune");
-    }
-
-    @Test
-    void unknownHeardFrom_is400() {
-        assertInvalid(() -> service.submit(token, answers(null, null, "radio", null, null)), "heardFrom");
-    }
-
-    @Test
-    void unknownAgeBand_is400() {
-        assertInvalid(() -> service.submit(token, answers(null, null, null, "under_18", null)), "ageBand");
-    }
-
-    @ParameterizedTest
-    @NullSource
-    @ValueSource(strings = {"survey-v0", "door-org-named-2026-09"})
-    void noticeVersionOffTheAllowlist_is400(String notice) {
-        assertInvalid(() -> service.submit(token, request(null, null, "friend", null, null, notice, "en",
-                null, null, null, null, null)), "noticeVersion");
-        assertThat(responseCount()).isZero();
-    }
-
     // ── 404s (one per condition) ──────────────────────────────────────────
 
-    @Test
-    void switchedOff_is404() {
-        service.setEnabled(organizer, event.getId(), false);
-        assertNotFound(() -> service.submit(token, answers("Metz", null, null, null, null)));
-        assertThat(responseCount()).isZero();
+    enum Closed {
+        SWITCHED_OFF, NULL_TOKEN, BLANK_TOKEN, WRONG_TOKEN, DELETED_EVENT, DRAFT_EVENT, CANCELLED_EVENT,
+        UNPUBLISHED_EVENT, KILL_SWITCH
     }
 
     @ParameterizedTest
-    @NullSource
-    @ValueSource(strings = {" ", "wrong"})
-    void unknownToken_is404(String t) {
-        assertNotFound(() -> service.submit(t, answers("Metz", null, null, null, null)));
-    }
+    @EnumSource(Closed.class)
+    void aClosedSurvey_is404ForThePageAndTheAnswer_andStoresNothing(Closed closed) {
+        SurveyService svc = service;
+        String t = token;
+        switch (closed) {
+            case SWITCHED_OFF -> service.setEnabled(organizer, event.getId(), false);
+            case NULL_TOKEN -> t = null;
+            case BLANK_TOKEN -> t = " ";
+            case WRONG_TOKEN -> t = "wrong";
+            case DELETED_EVENT -> jdbc.update("update events set deleted_at = ? where id = ?",
+                    Timestamp.from(clock.instant()), event.getId());
+            case DRAFT_EVENT -> jdbc.update("update events set status = 'DRAFT' where id = ?", event.getId());
+            case CANCELLED_EVENT -> jdbc.update("update events set status = 'CANCELLED' where id = ?", event.getId());
+            case UNPUBLISHED_EVENT -> jdbc.update("update events set published_at = null where id = ?", event.getId());
+            case KILL_SWITCH -> {
+                AudiencePlanProperties off = new AudiencePlanProperties();
+                off.setEnabled(false);
+                svc = serviceWith(off);
+            }
+        }
+        SurveyService target = svc;
+        String tok = t;
 
-    @Test
-    void deletedEvent_is404() {
-        jdbc.update("update events set deleted_at = ? where id = ?", Timestamp.from(Instant.now()), event.getId());
-        assertNotFound(() -> service.submit(token, answers("Metz", null, null, null, null)));
-    }
-
-    @Test
-    void draftEvent_is404() {
-        jdbc.update("update events set status = 'DRAFT' where id = ?", event.getId());
-        assertNotFound(() -> service.submit(token, answers("Metz", null, null, null, null)));
-    }
-
-    @Test
-    void cancelledEvent_is404() {
-        jdbc.update("update events set status = 'CANCELLED' where id = ?", event.getId());
-        assertNotFound(() -> service.submit(token, answers("Metz", null, null, null, null)));
-    }
-
-    @Test
-    void unpublishedEvent_is404() {
-        jdbc.update("update events set published_at = null where id = ?", event.getId());
-        assertNotFound(() -> service.submit(token, answers("Metz", null, null, null, null)));
-    }
-
-    @Test
-    void killSwitch_is404() {
-        AudiencePlanProperties off = new AudiencePlanProperties();
-        off.setEnabled(false);
-        assertNotFound(() -> serviceWith(off).submit(token, answers("Metz", null, null, null, null)));
-        assertNotFound(() -> serviceWith(off).page(token));
+        assertNotFound(() -> target.submit(tok, answers("Metz", null, null, null, null)));
+        assertNotFound(() -> target.page(tok));
         assertThat(responseCount()).isZero();
     }
 
@@ -580,31 +522,36 @@ class SurveyServiceTest {
         assertThat(events.findById(event.getId()).orElseThrow().isSurveyEnabled()).isTrue();
     }
 
-    @Test
-    void settings_otherOrgsEvent_is404() {
-        Event foreign = event(otherOrgId, EventStatus.LIVE);
-        assertNotFound(() -> service.settings(organizer, foreign.getId()));
-        assertNotFound(() -> service.setEnabled(organizer, foreign.getId(), true));
-        assertThat(events.findById(foreign.getId()).orElseThrow().getSurveyToken()).isNull();
-    }
+    enum Hidden { OTHER_ORGS_EVENT, DELETED_EVENT, KILL_SWITCH }
 
-    @Test
-    void settings_deletedEvent_is404() {
-        jdbc.update("update events set deleted_at = ? where id = ?", Timestamp.from(Instant.now()), event.getId());
-        assertNotFound(() -> service.settings(organizer, event.getId()));
-    }
+    @ParameterizedTest
+    @EnumSource(Hidden.class)
+    void settingsOfAnEventTheCallerCannotSee_are404_andTheSwitchStays(Hidden hidden) {
+        SurveyService svc = service;
+        UUID target = event.getId();
+        switch (hidden) {
+            case OTHER_ORGS_EVENT -> target = event(otherOrgId, EventStatus.LIVE).getId();
+            case DELETED_EVENT -> jdbc.update("update events set deleted_at = ? where id = ?",
+                    Timestamp.from(clock.instant()), event.getId());
+            case KILL_SWITCH -> {
+                AudiencePlanProperties off = new AudiencePlanProperties();
+                off.setEnabled(false);
+                svc = serviceWith(off);
+            }
+        }
+        SurveyService s = svc;
+        UUID id = target;
+        Map<String, Object> before = surveyState(id);
 
-    @Test
-    void settings_killSwitch_is404() {
-        AudiencePlanProperties off = new AudiencePlanProperties();
-        off.setEnabled(false);
-        assertNotFound(() -> serviceWith(off).settings(organizer, event.getId()));
+        assertNotFound(() -> s.settings(organizer, id));
+        assertNotFound(() -> s.setEnabled(organizer, id, !(Boolean) before.get("survey_enabled")));
+        assertThat(surveyState(id)).isEqualTo(before);
     }
 
     @Test
     void responses_countEveryAnswerOfThisEventOnly() {
         service.submit(token, answers("Metz", null, null, null, null));
-        service.submit(token, consented("a@survey.test", TEXT, VERSION));
+        service.submit(token, consented(addr("a"), TEXT, VERSION));
         Event second = event(orgId, EventStatus.LIVE);
         String t2 = service.setEnabled(organizer, second.getId(), true).surveyUrl().replaceAll(".*\\?t=", "");
         service.submit(t2, answers("Nancy", null, null, null, null));
@@ -674,6 +621,11 @@ class SurveyServiceTest {
                 projector, consentService, new AudiencePlanAccess(props), logic, emailProps, confirmations);
     }
 
+    /** Addresses are keyed across orgs, so every test writes its own. */
+    private static String addr(String tag) {
+        return tag + "-" + UUID.randomUUID() + "@survey.test";
+    }
+
     private static SurveyResponseRequest request(String commune, List<String> genres, String heard, String age,
                                                  Boolean first, String notice, String locale, Boolean ticked,
                                                  String email, String text, String version,
@@ -687,16 +639,12 @@ class SurveyServiceTest {
         return request(commune, genres, heard, age, first, NOTICE, "fr", null, null, null, null, null);
     }
 
-    private static SurveyResponseRequest consented(String email, String text, String version) {
-        return request(null, null, "friend", null, null, NOTICE, "fr", true, email, text, version, null);
+    private static SurveyResponseRequest notice(String notice) {
+        return request(null, null, "friend", null, null, notice, "en", null, null, null, null, null);
     }
 
-    private void assertAnonymousAccepted(String email) {
-        assertThat(service.submit(token, consented(email, TEXT, VERSION)).received()).isTrue();
-        assertThat(onlyResponse().get("heard_from")).isEqualTo("friend");
-        assertThat(consentCount()).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class, email))
-                .isZero();
+    private static SurveyResponseRequest consented(String email, String text, String version) {
+        return request(null, null, "friend", null, null, NOTICE, "fr", true, email, text, version, null);
     }
 
     private UUID org(String name) {
@@ -715,7 +663,7 @@ class SurveyServiceTest {
         e.setSlug("survey-event-" + UUID.randomUUID().toString().substring(0, 12));
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(status);
-        e.setPublishedAt(Instant.now().minusSeconds(3600));
+        e.setPublishedAt(clock.instant().minus(Duration.ofHours(1)));
         e.setStartsAt(Instant.parse("2026-09-19T20:00:00Z"));
         e.setTimezone("Europe/Paris");
         e.setVenueCity("Metz");
@@ -729,6 +677,11 @@ class SurveyServiceTest {
         a.setOrgId(org);
         a.setEmailNormalized(email);
         erased.save(a);
+        if (org == null) platformErased.add(email);
+    }
+
+    private Map<String, Object> surveyState(UUID eventId) {
+        return jdbc.queryForMap("select survey_enabled, survey_token from events where id = ?", eventId);
     }
 
     private Map<String, Object> onlyResponse() {
@@ -753,8 +706,10 @@ class SurveyServiceTest {
     }
 
     private void assertNothingStored(String email) {
-        assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class, email))
-                .isZero();
+        if (email != null) {
+            assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class,
+                    email)).isZero();
+        }
         assertThat(consentCount()).isZero();
         assertThat(responseCount()).isZero();
     }

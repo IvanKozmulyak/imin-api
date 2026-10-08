@@ -6,8 +6,9 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
+import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.repository.OutcomeStore;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -24,19 +25,18 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -53,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
@@ -63,19 +64,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The collector, calibration and outcome endpoint on H2 ({@link OutcomeH2Test}) and Postgres 17 ({@link
- * OutcomePostgresTest}); the endpoint reads the real clock, so every time is relative to the test's start.
+ * The collector, calibration and outcome endpoint; the endpoint reads the app clock, so every time is relative to
+ * the test's start. The collector is built over this test's orgs only, as it reads every org's events.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-abstract class OutcomeScenarios {
+@IminIntegrationTest
+class OutcomeIntegrationTest {
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired OutcomeStore store;
     @Autowired CalibrationService calibration;
-    @Autowired AudiencePlanAccess access;
     @Autowired AudiencePlanProperties props;
     @Autowired PlatformTransactionManager txManager;
     @Autowired PlanService planService;
@@ -88,7 +86,10 @@ abstract class OutcomeScenarios {
     @Autowired TicketRepository ticketRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired PropertyFlips flips;
+    @Autowired Clock clock;
+    @Autowired @Qualifier(PlanRefreshExecutor.NAME) Executor refreshExecutor;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
     private final List<UUID> orgs = new ArrayList<>();
     /** Orders experiments of one test by creation, as the invitation writes them in arm order. */
@@ -99,17 +100,18 @@ abstract class OutcomeScenarios {
 
     @BeforeEach
     void setUp() {
-        now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         orgA = org();
         owner = new AuthPrincipal(user(orgA), orgA, UserRole.OWNER, UUID.randomUUID());
+        // Platform-wide derived table the collector itself rebuilds wholesale; only this class writes it.
         jdbc.update("delete from response_calibration");
         calibration.invalidate();
     }
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
-        props.setBetaOrgIds(Set.of());
+        AsyncDrain.drain(refreshExecutor);
+        AsyncDrain.drain(fanFeatureExecutor);
         for (UUID org : orgs) {
             jdbc.update("delete from campaign_recipients where campaign_id in (select id from campaigns where org_id = ?)", org);
             jdbc.update("delete from audience_outcomes where org_id = ?", org);
@@ -132,6 +134,7 @@ abstract class OutcomeScenarios {
             jdbc.update("delete from organizations where id = ?", org);
         }
         orgs.clear();
+        // Keeps this class's calibration out of other classes' plan numbers.
         jdbc.update("delete from response_calibration");
         calibration.invalidate();
     }
@@ -497,9 +500,8 @@ abstract class OutcomeScenarios {
         UUID segment = planSegment(p.plan, "loyal", "same");
         experiment(p.event.getId(), p.plan, segment, "launch", campaign(p.event.getId(), "draft", null),
                 members(orgA, 2, p.assignedAt.minus(Duration.ofDays(30))), p.assignedAt);
-        props.setBetaOrgIds(Set.of(UUID.randomUUID()));
 
-        OutcomeCollector.Result r = collector(now).run();
+        OutcomeCollector.Result r = collector(now, Set.of(UUID.randomUUID())).run();
 
         assertThat(r.written()).isZero();
         assertThat(r.skipped()).isGreaterThanOrEqualTo(1);
@@ -509,7 +511,7 @@ abstract class OutcomeScenarios {
     @Test
     void killSwitchOff_is404() throws Exception {
         Past p = pastEvent();
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         outcome(p.event).andExpect(status().isNotFound());
     }
@@ -617,9 +619,17 @@ abstract class OutcomeScenarios {
     }
 
     private OutcomeCollector collector(Instant at) {
+        return collector(at, Set.copyOf(orgs));
+    }
+
+    /** Only {@code allowed} orgs are collected, so another class's leftover events never enter the counts. */
+    private OutcomeCollector collector(Instant at, Set<UUID> allowed) {
+        AudiencePlanProperties local = new AudiencePlanProperties();
+        local.setBetaOrgIds(allowed);
         @SuppressWarnings("unchecked")
         ObjectProvider<OutcomeCollector> self = mock(ObjectProvider.class);
-        return new OutcomeCollector(store, calibration, access, txManager, Clock.fixed(at, ZoneOffset.UTC), self);
+        return new OutcomeCollector(store, calibration, new AudiencePlanAccess(local), txManager,
+                Clock.fixed(at, ZoneOffset.UTC), self);
     }
 
     private ResultActions outcome(Event e) throws Exception {

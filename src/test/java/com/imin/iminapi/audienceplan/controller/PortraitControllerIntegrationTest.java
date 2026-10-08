@@ -1,15 +1,13 @@
 package com.imin.iminapi.audienceplan.controller;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -19,6 +17,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -32,25 +31,27 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** {@code GET /api/v1/audience/portrait} over the committed open-data seed rows, on H2 and on Postgres 17. */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-abstract class PortraitControllerScenarios {
+/** {@code GET /api/v1/audience/portrait} over the committed open-data seed rows. */
+@IminIntegrationTest
+class PortraitControllerIntegrationTest {
 
     private static final String URL = "/api/v1/audience/portrait";
 
     @Autowired MockMvc mvc;
     @Autowired AudiencePlanProperties props;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PropertyFlips flips;
+    @Autowired Clock clock;
 
     private final AuthPrincipal memberA = principal();
     private final AuthPrincipal memberB = principal();
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
-        jdbc.update("DELETE FROM audience_portraits WHERE city_key IN ('nancy', 'thionville')");
+        jdbc.update("""
+                DELETE FROM audience_portraits WHERE (genre_key, city_key) IN
+                  (('pop', 'nancy'), ('pop', 'thionville'), ('house & techno', 'metz'), ('house & techno', 'lyon'))
+                """);
     }
 
     @Test
@@ -68,7 +69,7 @@ abstract class PortraitControllerScenarios {
 
     @Test
     void readyResearch_isServedAfterTheOpenDataGroups() throws Exception {
-        Instant generated = Instant.now().minus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS);
+        Instant generated = clock.instant().minus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS);
         jdbc.update("""
                 INSERT INTO audience_portraits (id, genre_key, city_key, status, research_groups, version, generated_at,
                   expires_at, requested_at, reviewed_by, created_at) VALUES (?, 'pop', 'thionville', 'ready', ?, 1, ?, ?, ?,
@@ -106,9 +107,9 @@ abstract class PortraitControllerScenarios {
     @Test
     void killSwitchOffOrBadGenre_recordsNothing() throws Exception {
         jdbc.update("DELETE FROM audience_portraits WHERE city_key = 'nancy'");
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         portrait(memberA, "pop", "nancy").andExpect(status().isNotFound());
-        props.setEnabled(true);
+        flips.set(props, "enabled", true);
         portrait(memberA, "techno", "nancy").andExpect(status().isBadRequest());
 
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audience_portraits WHERE city_key = 'nancy'",
@@ -156,27 +157,8 @@ abstract class PortraitControllerScenarios {
     }
 
     @Test
-    void genreOutsideTheBuckets_is400() throws Exception {
-        portrait(memberA, "techno", "metz").andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.genre").exists());
-    }
-
-    @Test
-    void missingGenre_is400() throws Exception {
-        portrait(memberA, null, "metz").andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.genre").exists());
-    }
-
-    @Test
-    void missingCity_is400() throws Exception {
-        portrait(memberA, "house & techno", null).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.city").exists());
-    }
-
-    @Test
     void killSwitchOff_is404() throws Exception {
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         portrait(memberA, "house & techno", "metz").andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));

@@ -17,6 +17,9 @@ import com.imin.iminapi.audienceplan.service.PortraitResearchStore.WebSource;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpStatus;
 
 import java.io.ByteArrayInputStream;
@@ -31,9 +34,11 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -237,31 +242,26 @@ class PortraitServiceTest {
         assertThat(p.groups().get(1).size()).isEqualTo(new SizeRange(1_113, 1_460));
     }
 
-    @Test
-    void portrait_genreOutsideTheBuckets_is400() {
-        assertInvalid(() -> service(70, NOW).portrait(ORG, "techno", "metz"), "genre");
+    /** A null field means the row is accepted (a 100-character city is the longest allowed). */
+    static Stream<Arguments> portraitInputs() {
+        return Stream.of(
+                arguments("a genre outside the buckets", "techno", "metz", "genre"),
+                arguments("no genre", null, "metz", "genre"),
+                arguments("a blank city", HOUSE, "   ", "city"),
+                arguments("no city", HOUSE, null, "city"),
+                arguments("a 101-character city", HOUSE, "a".repeat(101), "city"),
+                arguments("a city with a control character", HOUSE, "me\u0000tz", "city"),
+                arguments("a 100-character city", HOUSE, "a".repeat(100), null));
     }
 
-    @Test
-    void portrait_missingGenre_is400() {
-        assertInvalid(() -> service(70, NOW).portrait(ORG, null, "metz"), "genre");
-    }
-
-    @Test
-    void portrait_blankOrMissingCity_is400() {
-        assertInvalid(() -> service(70, NOW).portrait(ORG, HOUSE, "   "), "city");
-        assertInvalid(() -> service(70, NOW).portrait(ORG, HOUSE, null), "city");
-    }
-
-    @Test
-    void portrait_cityOver100Chars_is400_100IsAccepted() {
-        assertThat(service(70, NOW).portrait(ORG, HOUSE, "a".repeat(100)).catchment()).isNull();
-        assertInvalid(() -> service(70, NOW).portrait(ORG, HOUSE, "a".repeat(101)), "city");
-    }
-
-    @Test
-    void portrait_cityWithAControlCharacter_is400() {
-        assertInvalid(() -> service(70, NOW).portrait(ORG, HOUSE, "me\u0000tz"), "city");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("portraitInputs")
+    void portrait_rejectsABadGenreOrCityWith400(String label, String genre, String city, String field) {
+        if (field == null) {
+            assertThat(service(70, NOW).portrait(ORG, genre, city).catchment()).isNull();
+        } else {
+            assertInvalid(() -> service(70, NOW).portrait(ORG, genre, city), field);
+        }
     }
 
     @Test

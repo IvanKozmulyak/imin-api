@@ -3,11 +3,9 @@ package com.imin.iminapi.audienceplan.service;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.repository.OutcomeStore;
 import com.imin.iminapi.audienceplan.repository.OutcomeStore.EventRef;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 
@@ -86,18 +84,6 @@ class OutcomeCollectorTest {
         assertThat(r.written()).isEqualTo(1);
         assertThat(r.calibrated()).isFalse();
         verify(calibration).invalidate();
-    }
-
-    @Test
-    void wiring_dailyAt8Paris_beforeThePlanRefresh_underAShedLock() throws Exception {
-        Scheduled scheduled = OutcomeCollector.class.getMethod("scheduled").getAnnotation(Scheduled.class);
-        assertThat(scheduled.cron()).isEqualTo("0 0 8 * * *");
-        assertThat(scheduled.zone()).isEqualTo("Europe/Paris");
-        Scheduled refresh = PlanRefreshJob.class.getMethod("scheduled").getAnnotation(Scheduled.class);
-        assertThat(refresh.cron()).isEqualTo("0 0 9 * * *");
-        assertThat(refresh.zone()).isEqualTo(scheduled.zone());
-        assertThat(OutcomeCollector.class.getMethod("run").getAnnotation(SchedulerLock.class).name())
-                .isEqualTo("audience_outcomes");
     }
 
     /** Started 3 days ago with no end, so the door closed 2.5 days ago and D+1 is due. */

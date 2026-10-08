@@ -1,41 +1,40 @@
 package com.imin.iminapi.audienceplan.controller;
 
-import com.imin.iminapi.audienceplan.dto.SurveyPageResponse;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.audienceplan.dto.SurveyResponseRequest;
-import com.imin.iminapi.audienceplan.dto.SurveyResponseResult;
-import com.imin.iminapi.audienceplan.dto.SurveySettingsResponse;
 import com.imin.iminapi.audienceplan.service.SurveyService;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.email.EmailProperties;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.RecordingRateLimiter;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -43,122 +42,140 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** Routing, security, JSON binding and rate limiting of the survey endpoints; the service behind them is mocked. */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** Routing, security, JSON binding and rate limiting of the survey endpoints, over the real service. */
+@IminIntegrationTest
 class SurveyControllerWebTest {
 
-    static final UUID ORG = UUID.fromString("eeeeeeee-0000-0000-0000-0000000e0001");
-    static final UUID USER = UUID.fromString("eeeeeeee-0000-0000-0000-0000000e0010");
-    static final UUID EVENT = UUID.fromString("eeeeeeee-0000-0000-0000-0000000e0100");
+    private static final String NOTICE = "survey-notice-2026-10";
+    private static final String VERSION = "survey-org-named-2026-09";
 
     @Autowired MockMvc mvc;
-    @MockitoBean SurveyService service;
-    @MockitoBean RateLimiter rateLimiter;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
+    @Autowired SurveyService surveyService;
+    @Autowired RecordingRateLimiter limiter;
+    @Autowired EmailProperties emailProps;
+    @Autowired Clock clock;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = OrgFactory.class)
-    @interface WithOrg {}
+    private Organization org;
+    private AuthPrincipal owner;
+    private Event event;
+    private String token;
+    private String text;
 
-    static class OrgFactory implements WithSecurityContextFactory<WithOrg> {
-        @Override
-        public org.springframework.security.core.context.SecurityContext createSecurityContext(WithOrg ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.MEMBER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_MEMBER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    @BeforeEach
+    void setUp() {
+        org = fx.org();
+        User user = fx.owner(org);
+        owner = fx.principal(user);
+        event = fx.event(org, user, EventStatus.PAST, clock.instant().minus(Duration.ofDays(1)));
+        jdbc.update("update events set published_at = ? where id = ?",
+                Timestamp.from(clock.instant().minus(Duration.ofDays(30))), event.getId());
+        token = surveyService.setEnabled(owner, event.getId(), true).surveyUrl().replaceAll(".*\\?t=", "");
+        text = "Email me about events by " + org.getName() + ".";
     }
 
-    private static final String BODY = """
-            {"homeCommune":"Metz","otherGenres":["pop","house & techno"],"heardFrom":"instagram","ageBand":"25_34",
-             "firstTime":true,"noticeVersion":"survey-notice-2026-10","locale":"fr","consentGiven":true,
-             "email":"guest@example.com","consentText":"Email me about events by Vechirka.",
-             "consentTextVersion":"survey-org-named-2026-09"}""";
+    @AfterEach
+    void tearDown() {
+        // A stored consent recomputes the member's features on the live pool; let it finish before the rows go.
+        AsyncDrain.drain(fanFeatureExecutor);
+        UUID o = org.getId();
+        List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, o);
+        jdbc.update("delete from survey_responses where org_id = ?", o);
+        jdbc.update("delete from fan_features where org_id = ?", o);
+        jdbc.update("delete from memberships where org_id = ?", o);
+        for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
+        jdbc.update("delete from events where org_id = ?", o);
+        jdbc.update("delete from users where org_id = ?", o);
+        jdbc.update("delete from organizations where id = ?", o);
+    }
 
     @Test
     void publicPost_isOpenWithoutAuth_chargesTheSurveyBucketPerIp_andBindsEveryField() throws Exception {
-        when(service.submit(eq("tok"), any())).thenReturn(SurveyResponseResult.ok());
+        String email = fx.email("survey");
+        String body = """
+                {"homeCommune":"Metz","otherGenres":["pop","house & techno"],"heardFrom":"instagram","ageBand":"25_34",
+                 "firstTime":true,"noticeVersion":"%s","locale":"fr","consentGiven":true,
+                 "email":"%s","consentText":"%s","consentTextVersion":"%s"}""".formatted(NOTICE, email, text, VERSION);
 
-        mvc.perform(post("/api/v1/public/surveys/{token}", "tok")
-                        .contentType(MediaType.APPLICATION_JSON).content(BODY))
+        mvc.perform(post("/api/v1/public/surveys/{token}", token)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.received").value(true));
 
-        verify(rateLimiter).consume("survey", "ip:127.0.0.1");
-        verify(service).submit(eq("tok"), argThat((SurveyResponseRequest r) -> r.homeCommune().equals("Metz")
-                && r.otherGenres().equals(List.of("pop", "house & techno")) && r.heardFrom().equals("instagram")
-                && r.ageBand().equals("25_34") && Boolean.TRUE.equals(r.firstTime())
-                && r.noticeVersion().equals("survey-notice-2026-10") && r.locale().equals("fr")
-                && Boolean.TRUE.equals(r.consentGiven()) && r.email().equals("guest@example.com")
-                && r.consentText().equals("Email me about events by Vechirka.")
-                && r.consentTextVersion().equals("survey-org-named-2026-09")
-                && (r.unknownFields() == null || r.unknownFields().isEmpty())));
+        assertThat(limiter.calls()).contains(new RecordingRateLimiter.Call("survey", "ip:127.0.0.1"));
+        Map<String, Object> r = jdbc.queryForMap("select * from survey_responses where event_id = ?", event.getId());
+        assertThat(r).containsEntry("home_commune", "Metz").containsEntry("other_genres", "[\"pop\",\"house & techno\"]")
+                .containsEntry("heard_from", "instagram").containsEntry("age_band", "25_34")
+                .containsEntry("first_time", true).containsEntry("notice_version", NOTICE).containsEntry("locale", "fr");
+        Map<String, Object> c = jdbc.queryForMap("select cr.* from consent_records cr join memberships m"
+                + " on m.membership_id = cr.membership_id join consumers k on k.consumer_id = m.consumer_id"
+                + " where m.org_id = ? and k.normalized_email = ?", org.getId(), email);
+        assertThat(c).containsEntry("text_version", VERSION)
+                .containsEntry("event_id", event.getId());
+        assertThat((String) c.get("proof_text")).contains("\"" + text + "\"").contains("(locale fr)");
     }
 
     @Test
-    void publicPost_unknownProperty_reachesTheServiceAsAnUnknownField() throws Exception {
-        when(service.submit(eq("tok"), any())).thenReturn(SurveyResponseResult.ok());
-
-        mvc.perform(post("/api/v1/public/surveys/{token}", "tok")
+    void publicPost_unknownProperty_is400NamingIt_andStoresNothing() throws Exception {
+        mvc.perform(post("/api/v1/public/surveys/{token}", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"heardFrom\":\"friend\",\"nationality\":\"FR\"}"))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.error.fields.nationality").exists())
+                .andExpect(jsonPath("$.error.fields.heardFrom").doesNotExist());
 
-        verify(service).submit(eq("tok"), argThat((SurveyResponseRequest r) -> r.heardFrom().equals("friend")
-                && Map.of("nationality", "FR").equals(r.unknownFields())));
+        assertThat(responseCount()).isZero();
     }
 
     @Test
-    void publicPost_rateLimited_is429AndNeverReachesTheService() throws Exception {
-        doThrow(ApiException.rateLimited()).when(rateLimiter).consume("survey", "ip:127.0.0.1");
+    void publicPost_rateLimited_is429AndStoresNothing() throws Exception {
+        limiter.limit("survey", 0);
 
-        mvc.perform(post("/api/v1/public/surveys/{token}", "tok")
-                        .contentType(MediaType.APPLICATION_JSON).content(BODY))
+        mvc.perform(post("/api/v1/public/surveys/{token}", token)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"heardFrom\":\"friend\",\"noticeVersion\":\""
+                                + NOTICE + "\"}"))
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.error.code").value("RATE_LIMITED"));
 
-        verify(service, never()).submit(any(), any());
+        assertThat(responseCount()).isZero();
     }
 
     @Test
     void publicPost_malformedJson_is400BeforeTheBucketAndTheTokenLookup() throws Exception {
-        mvc.perform(post("/api/v1/public/surveys/{token}", "unknown")
+        mvc.perform(post("/api/v1/public/surveys/{token}", token + "x")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"otherGenres\":\"pop\""))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"))
                 .andExpect(jsonPath("$.error.message").value("Malformed request body"));
 
-        verify(rateLimiter, never()).consume(any(), any());
-        verify(service, never()).submit(any(), any());
+        assertThat(limiter.calls()).isEmpty();
     }
 
     @Test
     void publicPost_notFound_usesTheStandardEnvelope() throws Exception {
-        when(service.submit(eq("tok"), any())).thenThrow(ApiException.notFound("Event"));
-
-        mvc.perform(post("/api/v1/public/surveys/{token}", "tok")
-                        .contentType(MediaType.APPLICATION_JSON).content(BODY))
+        mvc.perform(post("/api/v1/public/surveys/{token}", token + "x")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"heardFrom\":\"friend\",\"noticeVersion\":\""
+                                + NOTICE + "\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
     }
 
     @Test
     void publicGet_isOpenWithoutAuth_passesTheToken_andIsNotCached() throws Exception {
-        when(service.page("tok")).thenReturn(new SurveyPageResponse(EVENT, "Survey Night", "Vechirka",
-                "Vechirka SAS", "hello@vechirka.test", Instant.parse("2026-09-19T20:00:00Z"), "Europe/Paris", "Metz"));
+        jdbc.update("update organizations set legal_name = ?, legal_contact = ? where id = ?",
+                "Vechirka SAS", "hello@vechirka.test", org.getId());
 
-        mvc.perform(get("/api/v1/public/surveys/{token}", "tok"))
+        mvc.perform(get("/api/v1/public/surveys/{token}", token))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
-                .andExpect(jsonPath("$.eventId").value(EVENT.toString()))
-                .andExpect(jsonPath("$.organizerName").value("Vechirka"))
+                .andExpect(jsonPath("$.eventId").value(event.getId().toString()))
+                .andExpect(jsonPath("$.organizerName").value(org.getName()))
                 .andExpect(jsonPath("$.organizerLegalName").value("Vechirka SAS"))
                 .andExpect(jsonPath("$.organizerLegalContact").value("hello@vechirka.test"))
-                .andExpect(jsonPath("$.eventName").value("Survey Night"));
+                .andExpect(jsonPath("$.eventName").value(event.getName()));
     }
 
     @Test
@@ -174,44 +191,49 @@ class SurveyControllerWebTest {
 
     @Test
     void organizerGet_withoutAuth_is401() throws Exception {
-        mvc.perform(get("/api/v1/events/{id}/survey", EVENT)).andExpect(status().isUnauthorized());
-        verify(service, never()).settings(any(), any());
+        mvc.perform(get("/api/v1/events/{id}/survey", event.getId())).andExpect(status().isUnauthorized());
     }
 
     @Test
-    @WithOrg
-    void organizerGet_returnsSettingsForTheCallersOrg() throws Exception {
-        when(service.settings(argThat(p -> p.orgId().equals(ORG)), eq(EVENT)))
-                .thenReturn(new SurveySettingsResponse(true, "https://app.imin.wtf/e/" + EVENT + "/survey?t=tok", 4));
+    void organizerGetAndPut_roundTripTheSwitchForTheCallersOrg() throws Exception {
+        surveyService.submit(token, new SurveyResponseRequest("Metz", null, null, null, null, NOTICE, "en", null, null,
+                null, null, null));
+        String url = emailProps.getBuyerSiteBaseUrl() + "/e/" + event.getId() + "/survey?t=" + token;
 
-        mvc.perform(get("/api/v1/events/{id}/survey", EVENT))
+        mvc.perform(get("/api/v1/events/{id}/survey", event.getId()).with(auth(owner)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.enabled").value(true))
-                .andExpect(jsonPath("$.surveyUrl").value("https://app.imin.wtf/e/" + EVENT + "/survey?t=tok"))
-                .andExpect(jsonPath("$.responses").value(4));
-    }
+                .andExpect(jsonPath("$.surveyUrl").value(url))
+                .andExpect(jsonPath("$.responses").value(1));
 
-    @Test
-    @WithOrg
-    void organizerPut_passesTheSwitch() throws Exception {
-        when(service.setEnabled(any(), eq(EVENT), eq(true)))
-                .thenReturn(new SurveySettingsResponse(true, "https://app.imin.wtf/e/" + EVENT + "/survey?t=tok", 0));
-
-        mvc.perform(put("/api/v1/events/{id}/survey", EVENT)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":true}"))
+        mvc.perform(put("/api/v1/events/{id}/survey", event.getId()).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.enabled").value(true));
+                .andExpect(jsonPath("$.enabled").value(false));
 
-        verify(service).setEnabled(argThat(p -> p.orgId().equals(ORG)), eq(EVENT), eq(true));
+        mvc.perform(get("/api/v1/events/{id}/survey", event.getId()).with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.enabled").value(false))
+                .andExpect(jsonPath("$.surveyUrl").value(url));
     }
 
     @Test
-    @WithOrg
-    void organizerPut_withoutEnabled_is400() throws Exception {
-        mvc.perform(put("/api/v1/events/{id}/survey", EVENT)
+    void organizerPut_withoutEnabled_is400_andLeavesTheSwitch() throws Exception {
+        mvc.perform(put("/api/v1/events/{id}/survey", event.getId()).with(auth(owner))
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest());
-        verify(service, never()).setEnabled(any(), any(), eq(true));
-        verify(service, never()).setEnabled(any(), any(), eq(false));
+
+        assertThat(jdbc.queryForObject("select survey_enabled from events where id = ?", Boolean.class,
+                event.getId())).isTrue();
+    }
+
+    private int responseCount() {
+        return jdbc.queryForObject("select count(*) from survey_responses where event_id = ?", Integer.class,
+                event.getId());
+    }
+
+    private static RequestPostProcessor auth(AuthPrincipal p) {
+        return authentication(new UsernamePasswordAuthenticationToken(p, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
     }
 }
