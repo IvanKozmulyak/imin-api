@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.dto.publicapi.SmsConsentRequest;
@@ -12,14 +13,12 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -96,42 +95,16 @@ public class SmsConsentService {
     }
 
     /**
-     * INSERT-first Consumer + Membership upsert, mirroring
+     * Race-safe Consumer + Membership get-or-create, shared with
      * {@code AudienceOrderProjector.upsertMembership}. Sets phone_e164 on the
      * membership; the full aggregate recompute is left to the projector.
      */
     private UUID upsertMembership(UUID orgId, String rawEmail, String phone) {
         String normalizedEmail = EmailNormalizer.normalize(rawEmail);
 
-        Consumer consumer = consumers.findByNormalizedEmail(normalizedEmail).orElse(null);
-        if (consumer == null) {
-            Consumer newC = new Consumer();
-            newC.setNormalizedEmail(normalizedEmail);
-            newC.setDisplayName(rawEmail);
-            try {
-                // saveAndFlush, not save: the id is assigned in memory, so a plain save()
-                // defers the INSERT past this try and the catch below could never fire.
-                consumer = consumers.saveAndFlush(newC);
-            } catch (DataIntegrityViolationException dup) {
-                consumer = consumers.findByNormalizedEmail(normalizedEmail)
-                        .orElseThrow(() -> new IllegalStateException(
-                                "Consumer insert race but still not found: " + normalizedEmail));
-            }
-        }
-
-        // `consumer` is reassigned above, so it is not effectively final and cannot
-        // be captured by an orElseGet lambda; use an if/else like the projector.
-        Optional<Membership> existing =
-                memberships.findByOrgIdAndConsumerId(orgId, consumer.getConsumerId());
-        Membership m;
-        if (existing.isPresent()) {
-            m = existing.get();
-        } else {
-            m = new Membership();
-            m.setOrgId(orgId);
-            m.setConsumerId(consumer.getConsumerId());
-            m.setDisplayName(rawEmail);
-        }
+        Consumer consumer = AudienceOrderProjector.getOrCreateConsumer(consumers, normalizedEmail, rawEmail);
+        Membership m = AudienceOrderProjector.lockOrCreateMembership(
+                memberships, orgId, consumer.getConsumerId(), rawEmail);
         m.setPhoneE164(phone);
         return memberships.save(m).getMembershipId();
     }

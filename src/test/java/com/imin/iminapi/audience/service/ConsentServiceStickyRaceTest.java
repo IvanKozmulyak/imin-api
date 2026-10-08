@@ -8,6 +8,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.service.audit.AuditLogger;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.context.ApplicationEventPublisher;
@@ -37,7 +38,8 @@ class ConsentServiceStickyRaceTest {
         ConsumerRepository consumers = mock(ConsumerRepository.class);
         MarketingOptOutRecorder recorder = mock(MarketingOptOutRecorder.class);
         ConsentService service = new ConsentService(memberships, consentRecords, consumers, recorder,
-                mock(AuditLogger.class), mock(ApplicationEventPublisher.class), mock(FanFeatureRepository.class));
+                mock(AuditLogger.class), mock(ApplicationEventPublisher.class), mock(FanFeatureRepository.class),
+                mock(EntityManager.class));
 
         UUID orgId = UUID.randomUUID();
         UUID mid = UUID.randomUUID();
@@ -52,7 +54,7 @@ class ConsentServiceStickyRaceTest {
         Consumer c = new Consumer();
         c.setConsumerId(consumerId);
         c.setNormalizedEmail(email);
-        when(memberships.findByIdAndOrgId(mid, orgId)).thenReturn(Optional.of(m));
+        when(memberships.lockByIdAndOrgId(mid, orgId)).thenReturn(Optional.of(m));
         when(consumers.findByConsumerId(consumerId)).thenReturn(Optional.of(c));
         doThrow(new DataIntegrityViolationException("check constraint")).when(recorder)
                 .record(email, orgId, "email", "footer_link");

@@ -10,20 +10,24 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
+import com.imin.iminapi.util.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.text.Normalizer;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Listens for {@link TicketsIssuedEvent} AFTER_COMMIT and upserts the
@@ -49,6 +53,7 @@ public class AudienceOrderProjector {
     private final ApplicationEventPublisher events;
     private final OrganizationRepository orgRepo;
     private final AudiencePlanLogic logic;
+    private final TransactionTemplate requiresNew;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
@@ -57,7 +62,10 @@ public class AudienceOrderProjector {
                                    ConsentService consentService,
                                    ApplicationEventPublisher events,
                                    OrganizationRepository orgRepo,
-                                   AudiencePlanLogic logic) {
+                                   AudiencePlanLogic logic,
+                                   PlatformTransactionManager transactionManager) {
+        this.requiresNew = new TransactionTemplate(transactionManager);
+        this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.orgRepo = orgRepo;
         this.logic = logic;
         this.orderRepo = orderRepo;
@@ -70,24 +78,52 @@ public class AudienceOrderProjector {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void onTicketsIssued(TicketsIssuedEvent event) {
         try {
-            Order order = orderRepo.findById(event.orderId()).orElse(null);
-            if (order == null) {
-                log.warn("AudienceOrderProjector: Order {} not found — skipping", event.orderId());
-                return;
-            }
-            String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
-            upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
-                    order.getBuyerPhone(), order.isSmsMarketingOptIn(),
-                    order.isMarketingOptIn(), order.getId(), order.getMarketingOptInProof(),
-                    provenTextVersion(order));
-            // Downstream projections read the membership, so they follow this commit, not the order's.
-            events.publishEvent(new MembershipProjected(order.getOrgId(), normalizedEmail));
+            // The transaction ends inside the try, so a rollback-only mark or a failed commit flush is caught too.
+            requiresNew.executeWithoutResult(status -> project(event.orderId()));
         } catch (Exception e) {
-            log.error("AudienceOrderProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
+            // No throwable: its message carries the SQL detail, buyer email included, past the redaction.
+            log.error("AudienceOrderProjector failed for order {}: {}: {}", event.orderId(),
+                    e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
         }
+    }
+
+    private void project(UUID orderId) {
+        Order order = orderRepo.findById(orderId).orElse(null);
+        if (order == null) {
+            log.warn("AudienceOrderProjector: Order {} not found — skipping", orderId);
+            return;
+        }
+        String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
+        upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
+                order.getBuyerPhone(), order.isSmsMarketingOptIn(),
+                order.isMarketingOptIn(), order.getId(), order.getMarketingOptInProof(),
+                provenTextVersion(order));
+        // Downstream projections read the membership, so they follow this commit, not the order's.
+        events.publishEvent(new MembershipProjected(order.getOrgId(), normalizedEmail));
+    }
+
+    /** Locked membership for (org, consumer), inserted first when absent; first_touch_src 'organic' (S3). */
+    public static Membership lockOrCreateMembership(MembershipRepository memberships, UUID orgId, UUID consumerId,
+                                                    String displayName) {
+        Optional<Membership> existing = memberships.lockByOrgIdAndConsumerId(orgId, consumerId);
+        if (existing.isPresent()) return existing.get();
+        memberships.insertIfAbsent(UUID.randomUUID(), orgId, consumerId, displayName, Instant.now());
+        return memberships.lockByOrgIdAndConsumerId(orgId, consumerId)
+                .orElseThrow(() -> new IllegalStateException("Membership missing after insert-if-absent"));
+    }
+
+    /** Consumer for the address, inserted first when absent; an existing consumer is never changed. */
+    public static Consumer getOrCreateConsumer(ConsumerRepository consumers, String normalizedEmail,
+                                               String displayName) {
+        Optional<Consumer> existing = consumers.findByNormalizedEmail(normalizedEmail);
+        if (existing.isPresent()) return existing.get();
+        // ON CONFLICT, not a caught duplicate: a failed INSERT aborts the Postgres transaction,
+        // so a re-read after it could never run.
+        consumers.insertIfAbsent(UUID.randomUUID(), normalizedEmail, displayName, Instant.now());
+        return consumers.findByNormalizedEmail(normalizedEmail)
+                .orElseThrow(() -> new IllegalStateException("Consumer missing after insert-if-absent"));
     }
 
     /**
@@ -113,12 +149,16 @@ public class AudienceOrderProjector {
      * Upsert Consumer then Membership, recompute projection — no phone/opt-in.
      * Package-visible so the backfill job and redeem projector can call it directly.
      * Delegates to the phone-aware form with no phone and no SMS opt-in.
+     * Transactional here too: the delegation below is a self-call, so without it the backfill's
+     * membership lock would be released before the row is written.
      */
+    @Transactional
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName) {
         upsertMembership(orgId, normalizedEmail, displayName, null, false, false, null);
     }
 
     /** Phase-3 form kept for existing callers — no email opt-in captured. */
+    @Transactional
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
                                  String phoneE164, boolean smsOptIn) {
         upsertMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn, false, null);
@@ -165,34 +205,12 @@ public class AudienceOrderProjector {
                                  String phoneE164, boolean smsOptIn,
                                  boolean emailOptIn, java.util.UUID orderIdForProof,
                                  String proofTextOverride, String textVersion) {
-        // 1. Upsert Consumer (INSERT-first, catch DuplicateKeyException — idempotent)
-        Consumer consumer = consumerRepo.findByNormalizedEmail(normalizedEmail).orElse(null);
-        if (consumer == null) {
-            Consumer newC = new Consumer();
-            newC.setNormalizedEmail(normalizedEmail);
-            newC.setDisplayName(displayName);
-            try {
-                // saveAndFlush, not save: the id is assigned in memory, so a plain save()
-                // defers the INSERT past this try and the catch below could never fire.
-                consumer = consumerRepo.saveAndFlush(newC);
-            } catch (DataIntegrityViolationException dup) {
-                consumer = consumerRepo.findByNormalizedEmail(normalizedEmail)
-                        .orElseThrow(() -> new IllegalStateException("Consumer insert race but still not found: " + normalizedEmail));
-            }
-        }
+        // 1. Get-or-create Consumer, race-safe.
+        Consumer consumer = getOrCreateConsumer(consumerRepo, normalizedEmail, displayName);
 
-        // 2. Upsert Membership
-        Optional<Membership> existing = membershipRepo.findByOrgIdAndConsumerId(orgId, consumer.getConsumerId());
-        Membership m;
-        if (existing.isPresent()) {
-            m = existing.get();
-        } else {
-            m = new Membership();
-            m.setOrgId(orgId);
-            m.setConsumerId(consumer.getConsumerId());
-            m.setDisplayName(displayName);
-            m.setFirstTouchSrc("organic"); // S3
-        }
+        // 2. Get-or-create Membership the same way, then hold its row lock: a concurrent projection
+        // of this buyer waits here and recomputes over both orders instead of writing over them.
+        Membership m = lockOrCreateMembership(membershipRepo, orgId, consumer.getConsumerId(), displayName);
 
         // 2b. Project SMS phone + opt-in (§4). Never downgrade an existing subscription.
         if (phoneE164 != null && !phoneE164.isBlank()) {

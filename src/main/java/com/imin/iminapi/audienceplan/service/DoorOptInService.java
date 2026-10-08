@@ -195,9 +195,10 @@ public class DoorOptInService {
         return orgs.findById(e.getOrgId()).orElseThrow(() -> ApiException.notFound("Event"));
     }
 
+    /** Row-locked from this first read, so the opt-out checks and the grant see the same row. */
     private Membership findMembership(UUID orgId, String email) {
         Consumer c = consumers.findByNormalizedEmail(email).orElse(null);
-        return c == null ? null : memberships.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElse(null);
+        return c == null ? null : memberships.lockByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElse(null);
     }
 
     private static boolean tokenMatches(String expected, String given) {

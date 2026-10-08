@@ -49,6 +49,24 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     Optional<Membership> findByOrgIdAndConsumerId(@Param("orgId") UUID orgId,
                                                    @Param("consumerId") UUID consumerId);
 
+    /** Row-locks the (org, consumer) membership, so concurrent projections of one buyer run one after the other. */
+    @Query(value = "SELECT * FROM memberships WHERE org_id = :orgId AND consumer_id = :consumerId FOR UPDATE",
+            nativeQuery = true)
+    Optional<Membership> lockByOrgIdAndConsumerId(@Param("orgId") UUID orgId, @Param("consumerId") UUID consumerId);
+
+    /**
+     * Inserts a fresh membership with the entity's defaults unless (org, consumer) already has one.
+     * A concurrent insert is waited out rather than raised, so the caller's transaction stays usable.
+     */
+    @Modifying
+    @Transactional
+    @Query(value = "INSERT INTO memberships (membership_id, org_id, consumer_id, display_name, first_touch_src,"
+            + " genres, tags, created_at, updated_at)"
+            + " VALUES (:id, :orgId, :consumerId, :displayName, 'organic', '[]', '[]', :now, :now)"
+            + " ON CONFLICT (org_id, consumer_id) DO NOTHING", nativeQuery = true)
+    int insertIfAbsent(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("consumerId") UUID consumerId,
+                       @Param("displayName") String displayName, @Param("now") java.time.Instant now);
+
     /**
      * Every membership held by these consumers, <b>across all organizers</b>.
      *
@@ -60,7 +78,8 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
      * scoped by the caller having proved they own the addresses behind those
      * consumer ids. Do not call it from an organizer-authenticated path.
      */
-    @Query("select m from Membership m where m.consumerId in :consumerIds")
+    // Ordered by id: the preference fan-out locks each row through ConsentService, so concurrent loops lock alike.
+    @Query("select m from Membership m where m.consumerId in :consumerIds order by m.membershipId")
     List<Membership> findAllOrgsByConsumerIdIn(@Param("consumerIds") Collection<UUID> consumerIds);
 
     // A membership with an accepted Art.17 erasure request is not part of the audience for
@@ -279,7 +298,8 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
      * Same M4 rationale as the shared Consumer / deliverability-suppression rows.
      * Exact-equality only (no lower/like) — safe from the PG null-String bytea trap.
      */
-    @Query("select m from Membership m where m.phoneE164 = :phone")
+    // Ordered by id: an SMS STOP locks each row through ConsentService, so two concurrent STOPs lock alike.
+    @Query("select m from Membership m where m.phoneE164 = :phone order by m.membershipId")
     List<Membership> findAllByPhoneE164(@Param("phone") String phone);
 
     // ---- backfill ----

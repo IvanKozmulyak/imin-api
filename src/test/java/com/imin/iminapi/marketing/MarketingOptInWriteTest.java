@@ -29,6 +29,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -59,6 +60,7 @@ class MarketingOptInWriteTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanLogic planLogic;
+    @Autowired PlatformTransactionManager txManager;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
@@ -333,7 +335,7 @@ class MarketingOptInWriteTest {
                 CheckoutAttribution.NONE, null, null, new CheckoutConsent(true, label, version));
         assertThat(orders.findById(order.getId()).orElseThrow().getMarketingOptInTextVersion()).isEqualTo(version);
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         // The context's own async projector may record the same order a second time.
@@ -391,7 +393,7 @@ class MarketingOptInWriteTest {
                 new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
 
         // Plain instance so the projection runs synchronously on this thread.
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         var m = membershipFor(addr("free-optin"));

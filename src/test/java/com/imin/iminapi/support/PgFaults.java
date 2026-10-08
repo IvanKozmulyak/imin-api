@@ -236,6 +236,117 @@ public final class PgFaults {
         }
     }
 
+    /**
+     * Holds every reader of {@code table} until released, as if its query were slow. ACCESS EXCLUSIVE, so table-wide:
+     * use it only on a table nothing else in the test reads meanwhile; always open it in try-with-resources.
+     */
+    public static TableHold pauseReads(DataSource ds, String table) {
+        requireIdentifier(table);
+        Connection holder;
+        try {
+            holder = ds.getConnection();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        TableHold hold = new TableHold(ds, holder, table);
+        try {
+            holder.setAutoCommit(false);
+            try (Statement st = holder.createStatement()) {
+                st.execute("SET LOCAL lock_timeout = '5s'");
+                st.execute("LOCK TABLE " + table + " IN ACCESS EXCLUSIVE MODE");
+            }
+            return hold;
+        } catch (SQLException | RuntimeException e) {
+            RuntimeException failure = e instanceof RuntimeException r ? r : new IllegalStateException(e);
+            try {
+                hold.close();
+            } catch (RuntimeException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    /** A held table lock; only the test thread touches {@code holder}, {@link #awaitBlocked} polls on its own connection. */
+    public static final class TableHold implements AutoCloseable {
+        private final DataSource ds;
+        private final Connection holder;
+        private final String table;
+        private boolean held = true;
+        private boolean closed;
+
+        private TableHold(DataSource ds, Connection holder, String table) {
+            this.ds = ds;
+            this.holder = holder;
+            this.table = table;
+        }
+
+        /** Waits until a reader is blocked on this table, else fails the test. */
+        public void awaitBlocked(Duration timeout) {
+            long deadline = System.nanoTime() + timeout.toNanos();
+            try (Connection c = ds.getConnection();
+                 PreparedStatement ps = c.prepareStatement("SELECT count(*) FROM pg_locks WHERE "
+                         + "locktype = 'relation' AND relation = to_regclass(?) AND NOT granted")) {
+                ps.setString(1, table);
+                while (System.nanoTime() < deadline) {
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next() && rs.getLong(1) > 0) return;
+                    }
+                    Thread.sleep(10);
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while waiting for a paused reader", e);
+            }
+            throw new AssertionError("no reader blocked on " + table + " within " + timeout);
+        }
+
+        /** Lets the paused readers continue. */
+        public synchronized void release() {
+            if (!held) return;
+            try {
+                holder.rollback();
+                held = false;
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        /** Releases and returns the connection to the pool in autocommit mode. */
+        @Override
+        public synchronized void close() {
+            if (closed) return;
+            closed = true;
+            List<RuntimeException> failures = new ArrayList<>();
+            List<Runnable> steps = List.of(this::release, () -> {
+                try {
+                    holder.setAutoCommit(true);
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            }, () -> {
+                try {
+                    holder.close();
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            for (Runnable step : steps) {
+                try {
+                    step.run();
+                } catch (RuntimeException e) {
+                    failures.add(e);
+                }
+            }
+            if (failures.isEmpty()) return;
+            RuntimeException first = failures.get(0);
+            failures.subList(1, failures.size()).forEach(first::addSuppressed);
+            throw first;
+        }
+    }
+
     private static void drop(JdbcTemplate jdbc, String table, String name) {
         List<RuntimeException> failures = new ArrayList<>();
         for (String sql : List.of("DROP TRIGGER IF EXISTS " + name + " ON " + table,

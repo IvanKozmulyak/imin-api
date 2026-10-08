@@ -29,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -70,6 +71,7 @@ class NeverSoftOptInGuardTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanLogic planLogic;
+    @Autowired PlatformTransactionManager txManager;
     @Autowired UserRepository users;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
@@ -123,7 +125,7 @@ class NeverSoftOptInGuardTest {
         freeTier = tiers.save(freeTier);
 
         // Plain instance so the projection runs synchronously on this thread.
-        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic);
+        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic, txManager);
     }
 
     @AfterEach

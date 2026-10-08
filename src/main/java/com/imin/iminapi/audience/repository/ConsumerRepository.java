@@ -29,15 +29,17 @@ public interface ConsumerRepository extends Repository<Consumer, UUID> {
     Consumer save(Consumer consumer);
 
     /**
-     * save() with the INSERT forced out to the database.
-     *
-     * <p>Consumer ids are {@code GenerationType.UUID}, i.e. assigned in memory, so persist()
-     * issues no statement and a plain save() cannot raise the duplicate-key violation on
-     * ux_consumers_normalized_email that the INSERT-first upserts say they catch — it
-     * arrives at the next auto-flush or at commit, outside their try. Same reason
-     * MarketingOptOutRecorder uses saveAndFlush.
+     * Inserts the consumer unless one already holds the address; an existing row is left untouched.
+     * A concurrent insert is waited out rather than raised, so the caller's transaction stays usable.
+     * Joins the caller's transaction; some callers reach it without one.
      */
-    Consumer saveAndFlush(Consumer consumer);
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "insert into consumers (consumer_id, normalized_email, display_name, created_at)"
+            + " values (:id, :email, :displayName, :createdAt) on conflict (normalized_email) do nothing",
+            nativeQuery = true)
+    int insertIfAbsent(@Param("id") UUID id, @Param("email") String normalizedEmail,
+                       @Param("displayName") String displayName, @Param("createdAt") java.time.Instant createdAt);
 
     /** Batch fetch by consumerIds — used by SendGateService for email resolution. */
     @Query("select c from Consumer c where c.consumerId in :ids")

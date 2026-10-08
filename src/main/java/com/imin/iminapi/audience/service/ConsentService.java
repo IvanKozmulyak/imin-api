@@ -13,6 +13,7 @@ import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.service.ImportProvenanceWriter;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import jakarta.persistence.EntityManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -47,6 +48,7 @@ public class ConsentService {
     private final AuditLogger auditLogger;
     private final ApplicationEventPublisher events;
     private final FanFeatureRepository fanFeatureRepo;
+    private final EntityManager entityManager;
 
     public ConsentService(MembershipRepository membershipRepo,
                           ConsentRecordRepository consentRepo,
@@ -54,7 +56,8 @@ public class ConsentService {
                           MarketingOptOutRecorder optOutRecorder,
                           AuditLogger auditLogger,
                           ApplicationEventPublisher events,
-                          FanFeatureRepository fanFeatureRepo) {
+                          FanFeatureRepository fanFeatureRepo,
+                          EntityManager entityManager) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
         this.consumerRepo = consumerRepo;
@@ -62,6 +65,7 @@ public class ConsentService {
         this.auditLogger = auditLogger;
         this.events = events;
         this.fanFeatureRepo = fanFeatureRepo;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -233,8 +237,8 @@ public class ConsentService {
         }
         // The person's own opt-out is also an Art.21 objection to profiling, on either channel.
         if (origin == ConsentOrigin.DATA_SUBJECT) {
-            // Membership lock before fan_features, the projector's order; cleared here, not via a droppable queue.
-            membershipRepo.lockByIdAndOrgId(membershipId, orgId);
+            // requireMembership took the membership lock, before fan_features, the projector's order;
+            // cleared here, not via a droppable queue.
             m.setObjectedProfiling(true);
             fanFeatureRepo.clearProfiling(membershipId);
         }
@@ -319,8 +323,15 @@ public class ConsentService {
         }
     }
 
+    /**
+     * The member, row-locked and re-read under the lock: a copy this transaction loaded earlier would
+     * otherwise be written back over whatever another writer committed since. Pending changes go out first.
+     */
     private Membership requireMembership(UUID orgId, UUID membershipId) {
-        return membershipRepo.findByIdAndOrgId(membershipId, orgId)
+        entityManager.flush();
+        Membership m = membershipRepo.lockByIdAndOrgId(membershipId, orgId)
                 .orElseThrow(() -> ApiException.notFound("Membership"));
+        entityManager.refresh(m);
+        return m;
     }
 }

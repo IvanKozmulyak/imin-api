@@ -140,26 +140,6 @@ class AudienceComputeIngestionTest {
         assertThat(m.getNoShow()).isEqualTo(1);
     }
 
-    /**
-     * audience-9: the INSERT-first Consumer upsert catches DataIntegrityViolationException,
-     * but Consumer ids are assigned in memory so a plain save() issued no statement and the
-     * catch could never fire — the violation arrived at the next auto-flush, outside the
-     * try, and took the whole projection transaction with it. The flushing variant is what
-     * makes the documented guard reachable.
-     */
-    @Test
-    void a_duplicate_consumer_insert_fails_inside_the_flushing_save() {
-        String email = fx.email("raced");
-        orderProjector.upsertMembership(orgId, email, "Raced");
-
-        Consumer duplicate = new Consumer();
-        duplicate.setNormalizedEmail(email);
-        duplicate.setDisplayName("Raced again");
-
-        assertThatThrownBy(() -> consumerRepo.saveAndFlush(duplicate))
-                .isInstanceOf(DataIntegrityViolationException.class);
-    }
-
     /** One membership per (org, consumer): a second row for the same pair is refused by the schema. */
     @Test
     void schema_unique_org_consumer() {

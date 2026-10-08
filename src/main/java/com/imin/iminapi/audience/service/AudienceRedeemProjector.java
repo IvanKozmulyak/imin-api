@@ -4,14 +4,18 @@ import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.ticket.TicketRedeemedEvent;
+import com.imin.iminapi.util.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.util.UUID;
 
 /**
  * Listens for {@link TicketRedeemedEvent} AFTER_COMMIT and recomputes the
@@ -29,10 +33,14 @@ public class AudienceRedeemProjector {
     private final OrderRepository orderRepo;
     private final AudienceOrderProjector orderProjector;
     private final ErasedAddressRepository erasedAddressRepo;
+    private final TransactionTemplate requiresNew;
 
     public AudienceRedeemProjector(OrderRepository orderRepo,
                                     AudienceOrderProjector orderProjector,
-                                    ErasedAddressRepository erasedAddressRepo) {
+                                    ErasedAddressRepository erasedAddressRepo,
+                                    PlatformTransactionManager transactionManager) {
+        this.requiresNew = new TransactionTemplate(transactionManager);
+        this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.orderRepo = orderRepo;
         this.orderProjector = orderProjector;
         this.erasedAddressRepo = erasedAddressRepo;
@@ -40,29 +48,34 @@ public class AudienceRedeemProjector {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void onTicketRedeemed(TicketRedeemedEvent event) {
         try {
-            Order order = orderRepo.findById(event.orderId()).orElse(null);
-            if (order == null) {
-                log.warn("AudienceRedeemProjector: Order {} not found — skipping", event.orderId());
-                return;
-            }
-            String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
-            // Erasure ledger (V99). A door scan replays an OLD order — it is not new
-            // data — so for an erased address it would silently rebuild the Consumer +
-            // Membership that Art.17 removed. The ticket itself still scans and admits
-            // the holder; only the audience profile is not resurrected.
-            if (erasedAddressRepo.existsPlatformWide(normalizedEmail)
-                    || erasedAddressRepo.existsForOrg(order.getOrgId(), normalizedEmail)) {
-                log.info("AudienceRedeemProjector: address erased — skipping projection for order {}",
-                        event.orderId());
-                return;
-            }
-            // Reuse upsertMembership which calls recompute() — derives attended from redeemed tickets (S1)
-            orderProjector.upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail());
+            // The transaction ends inside the try, so a rollback-only mark or a failed commit flush is caught too.
+            requiresNew.executeWithoutResult(status -> project(event.orderId()));
         } catch (Exception e) {
-            log.error("AudienceRedeemProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
+            // No throwable: its message carries the SQL detail, buyer email included, past the redaction.
+            log.error("AudienceRedeemProjector failed for order {}: {}: {}", event.orderId(),
+                    e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
         }
+    }
+
+    private void project(UUID orderId) {
+        Order order = orderRepo.findById(orderId).orElse(null);
+        if (order == null) {
+            log.warn("AudienceRedeemProjector: Order {} not found — skipping", orderId);
+            return;
+        }
+        String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
+        // Erasure ledger (V99). A door scan replays an OLD order — it is not new
+        // data — so for an erased address it would silently rebuild the Consumer +
+        // Membership that Art.17 removed. The ticket itself still scans and admits
+        // the holder; only the audience profile is not resurrected.
+        if (erasedAddressRepo.existsPlatformWide(normalizedEmail)
+                || erasedAddressRepo.existsForOrg(order.getOrgId(), normalizedEmail)) {
+            log.info("AudienceRedeemProjector: address erased — skipping projection for order {}", orderId);
+            return;
+        }
+        // Reuse upsertMembership which calls recompute() — derives attended from redeemed tickets (S1)
+        orderProjector.upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail());
     }
 }
