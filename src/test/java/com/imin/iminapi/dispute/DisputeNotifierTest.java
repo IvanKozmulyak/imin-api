@@ -174,6 +174,41 @@ class DisputeNotifierTest {
         assertThat(text).doesNotContain("{{");
     }
 
+    /** Singular branch: one revoked ticket reads "The ticket", not "The 1 tickets". */
+    @Test
+    void oneRevokedTicketUsesTheSingularSentence() {
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(ticket(Ticket.STATE_REVOKED)));
+
+        String text = sendAndCaptureText();
+
+        assertThat(text).contains("The ticket on that order is revoked and will not open the door.");
+        assertThat(text).doesNotContain("1 tickets");
+    }
+
+    @ParameterizedTest(name = "contact email [{0}]")
+    @ValueSource(strings = {"", "   "})
+    void blankOrgContactEmailSavesTheInAppRowAndSendsNoEmail(String contact) {
+        Organization o = org();
+        o.setContactEmail(contact);
+        when(orgs.findById(ORG_ID)).thenReturn(Optional.of(o));
+
+        notifier.notify(DISPUTE_ID);
+
+        verify(notifications).save(any(Notification.class));
+        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void unknownDisputeIdSavesAndSendsNothingAndDoesNotThrow() {
+        UUID unknown = UUID.randomUUID();
+        when(disputes.findById(unknown)).thenReturn(Optional.empty());
+
+        assertThatCode(() -> notifier.notify(unknown)).doesNotThrowAnyException();
+
+        verify(notifications, never()).save(any(Notification.class));
+        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
     /**
      * Branch (a): the dispute beat the order (or never matched one). The old copy claimed a
      * revocation that had not happened to an order we had not found.

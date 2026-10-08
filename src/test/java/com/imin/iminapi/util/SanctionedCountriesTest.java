@@ -2,41 +2,30 @@ package com.imin.iminapi.util;
 
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SanctionedCountriesTest {
 
-    @Test
-    void isSanctioned_recognises_known_codes_case_insensitively() {
-        assertThat(SanctionedCountries.isSanctioned("IR")).isTrue();
-        assertThat(SanctionedCountries.isSanctioned("ir")).isTrue();
-        assertThat(SanctionedCountries.isSanctioned("Ru")).isTrue();
-        assertThat(SanctionedCountries.isSanctioned("KP")).isTrue();
-    }
-
-    @Test
-    void isSanctioned_false_for_allowed_codes_and_null() {
-        assertThat(SanctionedCountries.isSanctioned("FR")).isFalse();
-        assertThat(SanctionedCountries.isSanctioned("US")).isFalse();
-        assertThat(SanctionedCountries.isSanctioned("DE")).isFalse();
-        assertThat(SanctionedCountries.isSanctioned(null)).isFalse();
-        assertThat(SanctionedCountries.isSanctioned("")).isFalse();
-    }
-
-    @Test
-    void requireAllowed_throws_COUNTRY_NOT_ALLOWED_on_sanctioned() {
-        assertThatThrownBy(() -> SanctionedCountries.requireAllowed("IR"))
+    // Sanctioned codes match case-insensitively and are refused with COUNTRY_NOT_ALLOWED.
+    @ParameterizedTest
+    @CsvSource({"IR", "ir", "Ru", "KP"})
+    void sanctionedCodesAreRefused(String code) {
+        assertThat(SanctionedCountries.isSanctioned(code)).isTrue();
+        assertThatThrownBy(() -> SanctionedCountries.requireAllowed(code))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.COUNTRY_NOT_ALLOWED);
     }
 
-    @Test
-    void requireAllowed_no_throw_for_allowed_country() {
-        SanctionedCountries.requireAllowed("DE");
-        SanctionedCountries.requireAllowed("FR");
-        SanctionedCountries.requireAllowed(null); // null is handled elsewhere (e.g., @NotBlank)
+    // Null and empty are handled elsewhere (@NotBlank), so they pass here.
+    @ParameterizedTest
+    @CsvSource(value = {"FR", "US", "DE", "NIL", "''"}, nullValues = "NIL")
+    void allowedCodesNullAndEmptyPass(String code) {
+        assertThat(SanctionedCountries.isSanctioned(code)).isFalse();
+        assertThatCode(() -> SanctionedCountries.requireAllowed(code)).doesNotThrowAnyException();
     }
 }

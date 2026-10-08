@@ -26,18 +26,18 @@ class SuggestedTiersTest {
     }
 
     @Test
-    void fallsBackTo12_24_250WhenTheRecommendationIsEmpty() {
-        var tiers = SuggestedTiers.build(new PricingRecommendation(null, null, null), null);
-
-        assertThat(tiers).extracting(SuggestedTierDto::priceMinor).containsExactly(1200, 1800, 2400);
-        assertThat(tiers).extracting(SuggestedTierDto::quantity).containsExactly(50, 150, 50);
-    }
-
-    @Test
     void neverEmitsAZeroQuantityTier() {
         var tiers = SuggestedTiers.build(
                 new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"), 1);
 
         assertThat(tiers).allSatisfy(t -> assertThat(t.quantity()).isGreaterThanOrEqualTo(1));
+    }
+
+    @Test
+    void fallsBackTo12_24_250WhenTheRecommendationIsEmpty() {
+        var tiers = SuggestedTiers.build(new PricingRecommendation(null, null, null), null);
+
+        assertThat(tiers).extracting(SuggestedTierDto::priceMinor).containsExactly(1200, 1800, 2400);
+        assertThat(tiers).extracting(SuggestedTierDto::quantity).containsExactly(50, 150, 50);
     }
 }

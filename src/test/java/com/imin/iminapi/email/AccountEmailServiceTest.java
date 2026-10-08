@@ -2,6 +2,8 @@ package com.imin.iminapi.email;
 
 import com.imin.iminapi.model.User;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.UUID;
 
@@ -29,36 +31,46 @@ class AccountEmailServiceTest {
         return u;
     }
 
+    // Neither flow has another test that renders the template: AuthServiceTest mocks this service.
     @Test
-    void sends_verification_code_email() {
+    void auth_emails_carry_the_code_and_the_reset_link() {
+        String link = "https://app.imin/reset-password?token=abc123";
+
         sut.sendVerificationCode(userWith("ada@example.com", "Ada"), "1234", 10);
+        sut.sendPasswordReset(userWith("ada@example.com", "Ada"), link, 30);
 
-        RecordingEmailService.SentEmail s = email.lastSent();
-        assertThat(s.to()).isEqualTo("ada@example.com");
-        assertThat(s.subject()).isEqualTo("Your verification code");
-        assertThat(s.html()).contains("1234").contains("10");
-        assertThat(s.text()).contains("1234").contains("10");
+        RecordingEmailService.SentEmail code = email.sent().get(0);
+        assertThat(code.to()).isEqualTo("ada@example.com");
+        assertThat(code.html()).contains("1234");
+        assertThat(code.text()).contains("1234");
+        assertThat(code.html()).contains("10");
+        assertThat(code.text()).contains("10");
+        RecordingEmailService.SentEmail reset = email.sent().get(1);
+        assertThat(reset.to()).isEqualTo("ada@example.com");
+        assertThat(reset.html()).contains(link);
+        assertThat(reset.text()).contains(link);
+        assertThat(reset.html()).contains("30");
     }
 
     @Test
-    void sends_welcome_email_with_name_when_present() {
-        sut.sendWelcome(userWith("ada@example.com", "Ada"));
+    void password_changed_notice_goes_to_the_account_owner() {
+        sut.sendPasswordChangedNotification(userWith("ada@example.com", "Ada"));
 
         RecordingEmailService.SentEmail s = email.lastSent();
         assertThat(s.to()).isEqualTo("ada@example.com");
-        assertThat(s.subject()).isEqualTo("Welcome to imin");
-        assertThat(s.html()).contains("Ada");
+        assertThat(s.subject()).isEqualTo("Your password was changed");
+        assertThat(s.html()).doesNotContain("{{");
     }
 
-    @Test
-    void sends_welcome_email_with_friendly_fallback_when_first_name_blank() {
-        sut.sendWelcome(userWith("ada@example.com", ""));
+    @ParameterizedTest
+    @CsvSource(value = {"Ada, Ada", "'', there"})
+    void welcome_greets_by_first_name_or_falls_back_to_there(String firstName, String greeted) {
+        sut.sendWelcome(userWith("ada@example.com", firstName));
 
         RecordingEmailService.SentEmail s = email.lastSent();
         assertThat(s.html()).doesNotContain("{{");
-        // Template renders "Welcome, {{name}}." — falls back to "there" when first name is blank
-        assertThat(s.html()).contains("Welcome, there.");
-        assertThat(s.text()).contains("Welcome, there.");
+        assertThat(s.html()).contains("Welcome, " + greeted + ".");
+        assertThat(s.text()).contains("Welcome, " + greeted + ".");
     }
 
     @Test
@@ -78,29 +90,5 @@ class AccountEmailServiceTest {
         // …and the French template body is used, not the English one.
         assertThat(frSent.html()).isNotEqualTo(enSent.html());
         assertThat(frSent.html()).doesNotContain("{{");
-    }
-
-    @Test
-    void sends_password_reset_email() {
-        sut.sendPasswordReset(
-                userWith("ada@example.com", "Ada"),
-                "https://app.imin/reset-password?token=abc123",
-                30);
-
-        RecordingEmailService.SentEmail s = email.lastSent();
-        assertThat(s.to()).isEqualTo("ada@example.com");
-        assertThat(s.subject()).isEqualTo("Reset your password");
-        assertThat(s.html()).contains("https://app.imin/reset-password?token=abc123").contains("30");
-        assertThat(s.text()).contains("https://app.imin/reset-password?token=abc123");
-    }
-
-    @Test
-    void sends_password_changed_notification() {
-        sut.sendPasswordChangedNotification(userWith("ada@example.com", "Ada"));
-
-        RecordingEmailService.SentEmail s = email.lastSent();
-        assertThat(s.to()).isEqualTo("ada@example.com");
-        assertThat(s.subject()).isEqualTo("Your password was changed");
-        assertThat(s.html()).doesNotContain("{{");
     }
 }

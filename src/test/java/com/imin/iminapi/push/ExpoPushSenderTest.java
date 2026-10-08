@@ -24,9 +24,8 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 /**
  * {@link ExpoPushSender#send} driven for real, against a mocked Expo.
  *
- * <p><b>Why this file has to exist.</b> {@code DropAlertPushTest} exercises only
- * the static {@code batch()}, and {@code DropAlertFanOutTest} mocks the sender
- * outright — so between them nothing ever runs {@code send()}, and
+ * <p><b>Why this file has to exist.</b> {@code DropAlertFanOutTest} mocks the sender
+ * outright, so nothing else ever runs {@code send()}, and
  * {@code readTickets} is where the dead-token pruning lives. Reading
  * {@code ticket.error} instead of {@code ticket.details.error}, or getting the
  * casing of {@code DeviceNotRegistered} wrong, would make {@code deadTokens}
@@ -214,5 +213,28 @@ class ExpoPushSenderTest {
                 .isEqualTo(Duration.ofSeconds(7));
         // And the factory the bean is built from actually accepts them.
         assertThat(new PushConfig().expoRestClient(props)).isNotNull();
+    }
+
+    // Expo accepts at most 100 messages per request; a fan-out that sends only the first 100
+    // drops the tail of a sold-out headliner's list unnoticed.
+    @Test
+    void batchesOfMoreThanOneHundredAreSplit() {
+        List<PushMessage> messages = java.util.stream.IntStream.range(0, 250)
+                .mapToObj(i -> new PushMessage("ExponentPushToken[t" + i + "]",
+                        "Tickets are live", "Vechirka", PushMessage.CHANNEL_DROP_ALERTS,
+                        Map.of("eventId", "e1")))
+                .toList();
+
+        List<List<PushMessage>> batches = ExpoPushSender.batch(messages);
+
+        assertThat(batches).hasSize(3);
+        assertThat(batches.get(0)).hasSize(100);
+        assertThat(batches.get(2)).hasSize(50);
+        assertThat(batches.stream().mapToInt(List::size).sum()).isEqualTo(250);
+    }
+
+    @Test
+    void emptyInputProducesNoBatches() {
+        assertThat(ExpoPushSender.batch(List.of())).isEmpty();
     }
 }

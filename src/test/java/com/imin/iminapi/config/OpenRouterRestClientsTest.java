@@ -1,32 +1,23 @@
 package com.imin.iminapi.config;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * poster-15: this normalization existed verbatim in three classes, each with its own hand-rolled
- * bearer client, and none of them had a test. One copy, one test.
- */
 class OpenRouterRestClientsTest {
 
-    @Test
-    void appendsV1WhenAbsent() {
-        assertThat(OpenRouterRestClients.v1BaseUrl("https://openrouter.ai/api"))
-                .isEqualTo("https://openrouter.ai/api/v1");
-    }
-
-    @Test
-    void trimsTrailingSlashesBeforeAppending() {
-        assertThat(OpenRouterRestClients.v1BaseUrl("  https://openrouter.ai/api//  "))
-                .isEqualTo("https://openrouter.ai/api/v1");
-    }
-
-    @Test
-    void leavesAnExistingV1Alone() {
-        assertThat(OpenRouterRestClients.v1BaseUrl("https://openrouter.ai/api/v1/"))
-                .isEqualTo("https://openrouter.ai/api/v1");
+    // Appends /v1 when absent, trims slashes and spaces first, leaves an existing /v1 alone.
+    @ParameterizedTest
+    @CsvSource({
+            "'https://openrouter.ai/api',         https://openrouter.ai/api/v1",
+            "'  https://openrouter.ai/api//  ',   https://openrouter.ai/api/v1",
+            "'https://openrouter.ai/api/v1/',     https://openrouter.ai/api/v1",
+    })
+    void buildsTheV1BaseUrl(String raw, String expected) {
+        assertThat(OpenRouterRestClients.v1BaseUrl(raw)).isEqualTo(expected);
     }
 
     @Test

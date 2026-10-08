@@ -1,37 +1,33 @@
 package com.imin.iminapi.app;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AppVersionsTest {
 
-    @Test
-    void comparesNumericallyNotLexically() {
-        // The whole reason this class exists.
-        assertThat(AppVersions.compare("1.10.0", "1.9.0")).isPositive();
-        assertThat(AppVersions.compare("1.9.0", "1.10.0")).isNegative();
-        assertThat(AppVersions.compare("2.0.0", "1.99.99")).isPositive();
+    // Numeric not lexical ("1.10.0" > "1.9.0": a String.compareTo gate nags the freshest install forever),
+    // equal versions, missing segments read as zero.
+    @ParameterizedTest
+    @CsvSource({
+            "1.10.0, 1.9.0,   1",
+            "1.9.0,  1.10.0, -1",
+            "2.0.0,  1.99.99, 1",
+            "1.2.3,  1.2.3,   0",
+            "1.2,    1.2.0,   0",
+            "1.3,    1.2.9,   1",
+    })
+    void comparesNumericallyWithMissingSegmentsAsZero(String a, String b, int sign) {
+        assertThat(Integer.signum(AppVersions.compare(a, b))).isEqualTo(sign);
     }
 
-    @Test
-    void equalVersionsCompareEqual() {
-        assertThat(AppVersions.compare("1.2.3", "1.2.3")).isZero();
-    }
-
-    @Test
-    void missingSegmentsReadAsZero() {
-        assertThat(AppVersions.compare("1.2", "1.2.0")).isZero();
-        assertThat(AppVersions.compare("1.3", "1.2.9")).isPositive();
-    }
-
-    @Test
-    void junkNeverLocksAnybodyOut() {
-        // An unparseable version must fail OPEN. A crash or a "too old" verdict
-        // here bricks the app for everyone whose header we failed to read.
-        assertThat(AppVersions.isAtLeast(null, "1.0.0")).isTrue();
-        assertThat(AppVersions.isAtLeast("", "1.0.0")).isTrue();
-        assertThat(AppVersions.isAtLeast("not-a-version", "1.0.0")).isTrue();
-        assertThat(AppVersions.isAtLeast("1.2.3-beta.1", "1.2.3")).isTrue();
+    // An unparseable version must fail OPEN: a "too old" verdict bricks the app for
+    // everyone whose header we failed to read.
+    @ParameterizedTest
+    @CsvSource(value = {"NIL, 1.0.0", "'', 1.0.0", "not-a-version, 1.0.0", "1.2.3-beta.1, 1.2.3"}, nullValues = "NIL")
+    void junkNeverLocksAnybodyOut(String installed, String minimum) {
+        assertThat(AppVersions.isAtLeast(installed, minimum)).isTrue();
     }
 }

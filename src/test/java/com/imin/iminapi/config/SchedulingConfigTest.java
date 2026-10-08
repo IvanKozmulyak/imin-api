@@ -2,6 +2,8 @@ package com.imin.iminapi.config;
 
 import net.javacrumbs.shedlock.core.LockProvider;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -22,17 +24,11 @@ class SchedulingConfigTest {
             .withBean(DataSource.class, () -> new DriverManagerDataSource("jdbc:h2:mem:sched-cfg;MODE=PostgreSQL"))
             .withUserConfiguration(SchedulingConfig.class);
 
-    @Test
-    void dispatchIsOnWhenThePropertyIsAbsent() {
-        runner.run(ctx -> {
-            assertThat(ctx).hasNotFailed();
-            assertThat(ctx.containsBean(TaskManagementConfigUtils.SCHEDULED_ANNOTATION_PROCESSOR_BEAN_NAME)).isTrue();
-        });
-    }
-
-    @Test
-    void dispatchIsOnWhenEnabledIsTrue() {
-        runner.withPropertyValues("imin.scheduling.enabled=true").run(ctx -> {
+    // The prod default (property absent) and an explicit true both dispatch @Scheduled jobs.
+    @ParameterizedTest
+    @ValueSource(strings = {"imin.scheduling.unrelated=x", "imin.scheduling.enabled=true"})
+    void dispatchIsOnByDefaultAndWhenEnabled(String property) {
+        runner.withPropertyValues(property).run(ctx -> {
             assertThat(ctx).hasNotFailed();
             assertThat(ctx.containsBean(TaskManagementConfigUtils.SCHEDULED_ANNOTATION_PROCESSOR_BEAN_NAME)).isTrue();
         });

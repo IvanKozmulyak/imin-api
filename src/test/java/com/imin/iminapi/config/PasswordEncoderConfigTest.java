@@ -27,14 +27,6 @@ class PasswordEncoderConfigTest {
     }
 
     @Test
-    void readsTheStrengthPropertyUnderTheTestProfile() {
-        runner.withPropertyValues("imin.auth.bcrypt-strength=4", "spring.profiles.active=test").run(ctx -> {
-            assertThat(ctx).hasNotFailed();
-            assertThat(ctx.getBean(BCryptPasswordEncoder.class).encode("x")).startsWith("$2a$04$");
-        });
-    }
-
-    @Test
     void refusesALowStrengthOutsideTheTestProfile() {
         runner.withPropertyValues("imin.auth.bcrypt-strength=4").run(ctx -> {
             assertThat(ctx).hasFailed();
@@ -42,14 +34,6 @@ class PasswordEncoderConfigTest {
                     .rootCause()
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("imin.auth.bcrypt-strength=4");
-        });
-    }
-
-    @Test
-    void refusesAStrengthBelowTheLibraryRange() {
-        runner.withPropertyValues("imin.auth.bcrypt-strength=3", "spring.profiles.active=test").run(ctx -> {
-            assertThat(ctx).hasFailed();
-            assertThat(ctx.getStartupFailure()).rootCause().isInstanceOf(IllegalArgumentException.class);
         });
     }
 

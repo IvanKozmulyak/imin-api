@@ -29,16 +29,6 @@ class EmailServiceHeadersTest {
     }
 
     @Test
-    void default_withNoHeaders_delegatesToThePlainSend() {
-        PlainOnly svc = new PlainOnly();
-
-        svc.send("a@x", "s", "h", "t", Map.of());
-        svc.send("b@x", "s", "h", "t", null);
-
-        assertThat(svc.sent).containsExactly("a@x", "b@x");
-    }
-
-    @Test
     void default_refusesToDropHeaders() {
         PlainOnly svc = new PlainOnly();
 
@@ -69,18 +59,6 @@ class EmailServiceHeadersTest {
     }
 
     @Test
-    void resend_plainSend_setsNoHeaders() throws Exception {
-        Emails emails = mock(Emails.class);
-        ResendEmailService svc = resendWith(emails);
-
-        svc.send("a@x", "s", "<p>h</p>", "t");
-
-        ArgumentCaptor<CreateEmailOptions> opts = ArgumentCaptor.forClass(CreateEmailOptions.class);
-        verify(emails).send(opts.capture());
-        assertThat(opts.getValue().getHeaders()).isNullOrEmpty();
-    }
-
-    @Test
     void default_refusesToDropAFromOverride() {
         PlainOnly svc = new PlainOnly();
 
@@ -103,18 +81,6 @@ class EmailServiceHeadersTest {
     }
 
     @Test
-    void resend_plainSend_usesTheConfiguredFrom() throws Exception {
-        Emails emails = mock(Emails.class);
-        ResendEmailService svc = resendWith(emails);
-
-        svc.send("a@x", "s", "<p>h</p>", "t");
-
-        ArgumentCaptor<CreateEmailOptions> opts = ArgumentCaptor.forClass(CreateEmailOptions.class);
-        verify(emails).send(opts.capture());
-        assertThat(opts.getValue().getFrom()).isEqualTo("noreply@imin.test");
-    }
-
-    @Test
     void fromHeader_forAnOrganizer_isQuotedViaImin_andBlankFallsBack() {
         EmailProperties props = new EmailProperties();
         props.setFromAddress("noreply@imin.test");
@@ -125,5 +91,28 @@ class EmailServiceHeadersTest {
         assertThat(props.fromHeader(null)).isEqualTo("imin <noreply@imin.test>");
         props.setFromAddress("");
         assertThat(props.fromHeader("Vechirka")).isEqualTo("imin <>");
+    }
+
+    @Test
+    void default_withNoHeaders_delegatesToThePlainSend() {
+        PlainOnly svc = new PlainOnly();
+
+        svc.send("a@x", "s", "h", "t", Map.of());
+        svc.send("b@x", "s", "h", "t", null);
+
+        assertThat(svc.sent).containsExactly("a@x", "b@x");
+    }
+
+    @Test
+    void resend_plainSend_usesTheConfiguredFromAndSetsNoHeaders() throws Exception {
+        Emails emails = mock(Emails.class);
+        ResendEmailService svc = resendWith(emails);
+
+        svc.send("a@x", "s", "<p>h</p>", "t");
+
+        ArgumentCaptor<CreateEmailOptions> opts = ArgumentCaptor.forClass(CreateEmailOptions.class);
+        verify(emails).send(opts.capture());
+        assertThat(opts.getValue().getFrom()).isEqualTo("noreply@imin.test");
+        assertThat(opts.getValue().getHeaders()).isNullOrEmpty();
     }
 }

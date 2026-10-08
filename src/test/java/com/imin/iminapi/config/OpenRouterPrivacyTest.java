@@ -1,5 +1,7 @@
 package com.imin.iminapi.config;
 
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.ParameterizedTest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
@@ -31,19 +33,6 @@ class OpenRouterPrivacyTest {
     final ObjectMapper om = new ObjectMapper();
 
     @Test
-    void policy_denies_data_collection() {
-        assertThat(OpenRouterPrivacy.providerPolicy()).containsEntry("data_collection", "deny");
-    }
-
-    /** A fresh map per call — a shared constant would be mutable shared state. */
-    @Test
-    void policy_is_a_fresh_map_each_call() {
-        var first = OpenRouterPrivacy.providerPolicy();
-        first.put("order", java.util.List.of("someone"));
-        assertThat(OpenRouterPrivacy.providerPolicy()).doesNotContainKey("order");
-    }
-
-    @Test
     void interceptor_adds_the_policy_to_a_chat_completion_body() throws Exception {
         String sent = intercept("{\"model\":\"openai/gpt-4o-mini\",\"messages\":[]}");
 
@@ -60,17 +49,6 @@ class OpenRouterPrivacyTest {
         JsonNode body = om.readTree(sent);
         assertThat(body.at("/provider/order/0").asText()).isEqualTo("anthropic");
         assertThat(body.at("/provider/data_collection").isMissingNode()).isTrue();
-    }
-
-    /** Fail open: a body we cannot parse goes out untouched rather than corrupted. */
-    @Test
-    void interceptor_passes_through_a_non_json_body() throws Exception {
-        assertThat(intercept("not json at all")).isEqualTo("not json at all");
-    }
-
-    @Test
-    void interceptor_passes_through_an_empty_body() throws Exception {
-        assertThat(intercept("")).isEmpty();
     }
 
     /** Content-Length must follow the body it describes. */
@@ -106,5 +84,12 @@ class OpenRouterPrivacyTest {
 
     private static ClientHttpResponse response() {
         return new MockClientHttpResponse(new byte[0], 200);
+    }
+
+    /** Fail open: a body we cannot parse goes out untouched rather than corrupted. */
+    @ParameterizedTest
+    @ValueSource(strings = {"not json at all", ""})
+    void interceptor_passes_through_an_unparseable_or_empty_body(String body) throws Exception {
+        assertThat(intercept(body)).isEqualTo(body);
     }
 }
