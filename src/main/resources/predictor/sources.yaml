@@ -1,9 +1,9 @@
 # Outside datasets the predictor uses, served by GET /api/v1/public/predictor/sources.
 # List a source only in the change that makes it live, with the gate that turns it off.
 # syncPrefix (optional): reference_calendar.source_url prefix whose latest synced_at is the source's lastUpdated.
-# syncSource (optional, not with syncPrefix): store id (open_event_occurrence.source or wikimedia) whose latest
-# synced_at is the source's lastUpdated.
-reviewedOn: 2026-10-01
+# syncSource (optional, not with syncPrefix): store id (open_event_occurrence.source, wikimedia, or idfm-prim for
+# transit_sync_state) whose latest synced_at is the source's lastUpdated.
+reviewedOn: 2026-10-07
 sources:
   - id: calendrier-api-gouv
     name: calendrier.api.gouv.fr
@@ -101,3 +101,14 @@ sources:
     url: https://opendata.paris.fr/explore/dataset/que-faire-a-paris-/
     syncSource: quefaireaparis
     gate: quefaireaparis
+  # Licence Mobilités (03.02.2021) art. 5.4 mention, read on the PRIM API page (logged in) on 2026-10-07.
+  # Never export transit_disruption raw (art. 5.5/5.6 c). Report data errors to IDFM (art. 5.6 d).
+  - id: idfm-prim
+    name: Île-de-France Mobilités (PRIM, Messages Info Trafic)
+    usedFor: [transit_disruptions]
+    licence: Licence Mobilités
+    licenceUrl: https://prim.iledefrance-mobilites.fr/fr/licences
+    creditLine: "Contient des informations de Messages Info Trafic – requête globale, mises à disposition aux conditions de la «\u00a0Licence Mobilités\u00a0»"
+    url: https://prim.iledefrance-mobilites.fr/fr/apis/idfm-disruptions_bulk
+    syncSource: idfm-prim
+    gate: prim

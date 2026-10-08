@@ -26,7 +26,7 @@ class ScorerTest {
 
     static Question q(String id, boolean star, SourceKind source, int weight, boolean stop, Kind... kinds) {
         return new Question(id, "test", star, source, EnumSet.of(kinds[0], kinds), weight, 3, Window.NIGHT, stop,
-                Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of());
+                Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of(), Set.of());
     }
 
     static Question risk(String id, int weight) {

@@ -1,0 +1,29 @@
+{
+  "disruptions": [
+    {"id": "d-works-rer-b", "applicationPeriods": [{"begin": "20260704T003000", "end": "20260704T020000"}],
+     "lastUpdate": "20260703T145424", "cause": "TRAVAUX", "severity": "BLOQUANTE",
+     "title": "RER B : Travaux - Trafic interrompu", "message": "<p>not stored</p>"},
+    {"id": "d-strike-t14", "applicationPeriods": [{"begin": "20261006T050000", "end": "20261009T235900"},
+                                                  {"begin": "bad", "end": "20261010T010000"}],
+     "lastUpdate": "20261007T094121", "cause": "PERTURBATION", "severity": "BLOQUANTE",
+     "title": "Tramway T14 -  Mouvement social du 6/10 au 9/10."},
+    {"id": "d-stop-m1", "applicationPeriods": [{"begin": "20261008T210000", "end": "20261009T060000"}],
+     "lastUpdate": "20261007T145424", "cause": "TRAVAUX", "severity": "BLOQUANTE",
+     "title": "Métro 1 : Travaux - Arrêt non desservi"},
+    {"id": "d-stop-m1", "applicationPeriods": [{"begin": "20261108T210000", "end": "20261109T060000"}],
+     "lastUpdate": "20261007T145424", "cause": "TRAVAUX", "severity": "PERTURBEE", "title": "Repeated id"},
+    {"id": "d-no-period", "applicationPeriods": [{"begin": "20261009T060000", "end": "20261008T060000"}],
+     "lastUpdate": "20261007T145424", "cause": "TRAVAUX", "severity": "PERTURBEE", "title": "Fin avant début"}
+  ],
+  "lines": [
+    {"id": "line:IDFM:C01743", "name": "B", "shortName": "B", "mode": "RapidTransit", "networkId": "network:IDFM:71",
+     "impactedObjects": [{"type": "line", "id": "line:IDFM:C01743", "name": "B", "disruptionIds": ["d-works-rer-b"]}]},
+    {"id": "line:IDFM:C02317", "name": "T14", "shortName": "T14", "mode": "Tramway", "networkId": "network:IDFM:Operator_100",
+     "impactedObjects": [{"type": "line", "id": "line:IDFM:C02317", "name": "T14", "disruptionIds": ["d-strike-t14"]}]},
+    {"id": "line:IDFM:C01371", "name": "1", "shortName": "1", "mode": "Metro", "networkId": "network:IDFM:Operator_100",
+     "impactedObjects": [{"type": "stop_point", "id": "stop_point:IDFM:22088", "name": "Argentine", "disruptionIds": ["d-stop-m1"]}]},
+    {"id": "line:IDFM:C01211", "name": "211", "shortName": "211", "mode": "Bus", "networkId": "network:IDFM:1046",
+     "impactedObjects": [{"type": "line", "id": "line:IDFM:C01211", "name": "211", "disruptionIds": ["d-works-rer-b"]}]}
+  ],
+  "lastUpdatedDate": "2026-10-07T12:58:17.304Z"
+}

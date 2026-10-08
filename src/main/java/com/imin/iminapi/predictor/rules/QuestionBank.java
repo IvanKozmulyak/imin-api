@@ -30,9 +30,14 @@ public record QuestionBank(int bankVersion, int profilesVersion, Thresholds thre
 
     public record Thresholds(int adjustMinRisk, int moveMinRisk, double minCoverage, int maxPointsPerFinding) {}
 
+    /**
+     * {@code postcodePrefixes}: two-digit French postcode prefixes the question is limited to (empty = no limit);
+     * when set, {@code cities} answers only for a check without a valid postcode.
+     */
     public record Question(String id, String family, boolean star, SourceKind source, Set<Kind> kinds, int weight,
                            int maxStrength, Window window, boolean stopFactor, Set<String> countries,
-                           Set<String> cities, Map<String, Number> params, String template, List<Action> actions) {}
+                           Set<String> cities, Map<String, Number> params, String template, List<Action> actions,
+                           Set<String> postcodePrefixes) {}
 
     public record Action(String key, Kind when, int dueDays) {}
 

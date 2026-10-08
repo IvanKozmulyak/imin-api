@@ -18,7 +18,8 @@ import java.util.Objects;
  * <p>Facts keys (template params later): {@code date, name, venue, count, leadDays, minDays,
  * capacityKnown, sharedArtists, sellOutRate, n, relaxation, soldShareBefore, approximate, reason, endDate, country,
  * community, competition, kickoff, estimate, article, project, fromMonth, toMonth, changePct, meanViews, weekStart,
- * norm, normWeeks, sources, source, licence, credit, pattern, weekday, ordinal, lastDate, announced, seriesCount}.
+ * norm, normWeeks, sources, source, licence, credit, pattern, weekday, ordinal, lastDate, announced, seriesCount,
+ * lines, lineCount, severity, scope, radiusM, licenceUrl}.
  */
 public record Finding(String questionId, Kind kind, Status status, int strength, int weight, SourceKind sourceKind,
                       Window window, boolean stopFactor, Map<String, Object> facts, String url, String quote,
@@ -49,6 +50,12 @@ public record Finding(String questionId, Kind kind, Status status, int strength,
 
     /** Strength is clamped to [1, q.maxStrength()], and to 2 off a structured or internal source; null facts are dropped. */
     public static Finding found(Question q, Kind kind, int strength, Map<String, Object> facts, String url) {
+        return found(q, kind, strength, facts, url, null);
+    }
+
+    /** As above, with the time the source's data was fetched or last updated. */
+    public static Finding found(Question q, Kind kind, int strength, Map<String, Object> facts, String url,
+                                Instant fetchedAt) {
         if (!q.kinds().contains(kind)) {
             throw new IllegalArgumentException("question " + q.id() + " has no kind " + kind);
         }
@@ -56,12 +63,17 @@ public record Finding(String questionId, Kind kind, Status status, int strength,
         int s = Math.max(1, Math.min(strength, cap));
         boolean stop = q.stopFactor() && firsthand(q.source());
         return new Finding(q.id(), kind, Status.FOUND, s, q.weight(), q.source(), q.window(), stop,
-                withoutNulls(facts), url, null, null);
+                withoutNulls(facts), url, null, fetchedAt);
     }
 
     public static Finding clear(Question q) {
+        return clear(q, Map.of(), null, null);
+    }
+
+    /** A clear answer that still names its source and data date, for a source that must be credited where shown. */
+    public static Finding clear(Question q, Map<String, Object> facts, String url, Instant fetchedAt) {
         return new Finding(q.id(), defaultKind(q), Status.CLEAR, 0, q.weight(), q.source(), q.window(), false,
-                Map.of(), null, null, null);
+                withoutNulls(facts), url, null, fetchedAt);
     }
 
     public static Finding notChecked(Question q, String reason) {

@@ -13,15 +13,19 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
- * Answers every non-web bank question for one candidate date: one {@link Finding} per (question, source),
- * in bank order. Deterministic, no LLM. Fails at boot when a question has no evaluator or two.
+ * One {@link Finding} per applicable (question, source) for a date, in bank order: filtered by country, then postcode
+ * prefix (city when no valid postcode) or city. Deterministic; fails at boot unless each question has one evaluator.
  */
 @Service
 public class RuleEngine {
 
     private record Key(SourceKind source, String id) {}
+
+    /** Same postcode shape as {@code CalendarRegions}: five digits once whitespace is removed. */
+    private static final Pattern FR_POSTCODE = Pattern.compile("\\d{5}");
 
     private final QuestionBank bank;
     private final Map<Key, QuestionEvaluator> evaluators = new HashMap<>();
@@ -55,8 +59,11 @@ public class RuleEngine {
         List<Question> applicable = new ArrayList<>();
         for (Question q : bank.questionsFor(in.country())) {
             if (q.source() == SourceKind.WEB) continue;
-            if (!q.cities().isEmpty()
-                    && q.cities().stream().map(EventNormalization::cityKey).noneMatch(cityKey::equals)) continue;
+            if (!q.postcodePrefixes().isEmpty()) {
+                if (!inRegion(q, in.postalCode(), cityKey)) continue;
+            } else if (!q.cities().isEmpty() && !listsCity(q, cityKey)) {
+                continue;
+            }
             applicable.add(q);
         }
         // Group per evaluator so one can share a fetch across its questions, then restore bank order.
@@ -74,5 +81,16 @@ public class RuleEngine {
             for (int i = 0; i < qs.size(); i++) answers.put(qs.get(i), out.get(i));
         });
         return applicable.stream().map(answers::get).toList();
+    }
+
+    /** The postcode decides when it is valid; only a missing or malformed one falls back to the city list. */
+    private static boolean inRegion(Question q, String postalCode, String cityKey) {
+        String pc = postalCode == null ? "" : postalCode.replaceAll("\\s+", "");
+        if (FR_POSTCODE.matcher(pc).matches()) return q.postcodePrefixes().contains(pc.substring(0, 2));
+        return listsCity(q, cityKey);
+    }
+
+    private static boolean listsCity(Question q, String cityKey) {
+        return q.cities().stream().map(EventNormalization::cityKey).anyMatch(cityKey::equals);
     }
 }

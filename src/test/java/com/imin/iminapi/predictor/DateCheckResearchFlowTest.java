@@ -309,7 +309,7 @@ class DateCheckResearchFlowTest {
             assertThat(l.getEventId()).isNull();
             assertThat(l.getModelId()).isEqualTo("anthropic/claude-haiku-4.5");
             assertThat(l.getPromptVersion()).isEqualTo("research-1");
-            assertThat(l.getQuestionBankVersion()).isEqualTo("qb5-gp1");
+            assertThat(l.getQuestionBankVersion()).isEqualTo("qb6-gp1");
             assertThat(l.getTokensIn()).isEqualTo(4300);
             assertThat(l.getTokensOut()).isEqualTo(250);
             assertThat(l.getSearches()).isEqualTo(1);

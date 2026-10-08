@@ -11,15 +11,23 @@ import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles;
+import com.imin.iminapi.predictor.repository.TransitDisruptionRepository;
+import com.imin.iminapi.predictor.repository.TransitSyncStateRepository;
+import com.imin.iminapi.predictor.sources.prim.PrimProperties;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.TODAY;
@@ -58,7 +66,8 @@ class RuleEngineTest {
                 new Stub(SourceKind.INTERNAL, "2.1", "2.2", "2.7", "2.9", "10.2"),
                 new Stub(SourceKind.ORGANIZER, "2.1", "2.2"),
                 new Stub(SourceKind.INPUT, "10.1"),
-                new Stub(SourceKind.STRUCTURED, "2.6", "5.3", "2.3"));
+                new Stub(SourceKind.STRUCTURED, "2.6", "5.3", "2.3"),
+                new Stub(SourceKind.STRUCTURED, "6.1", "6.2"));
     }
 
     private static QuestionBank bankWithWeb() {
@@ -133,14 +142,60 @@ class RuleEngineTest {
                 new InputEvaluator(),
                 new TrendEvaluator(BANK, WikimediaArticles.load(new DefaultResourceLoader(), BANK),
                         mock(WikimediaPageviewMonthRepository.class), mock(SourceGates.class)),
-                openEventsEvaluator());
+                openEventsEvaluator(),
+                transitEvaluator());
 
         new RuleEngine(BANK, real);
     }
 
+    private static TransitEvaluator transitEvaluator() {
+        SourceGates gates = mock(SourceGates.class);
+        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda",
+                "quefaireaparis", "prim"));
+        return new TransitEvaluator(BANK, mock(TransitDisruptionRepository.class),
+                mock(TransitSyncStateRepository.class), gates, DataSourceCatalog.load(new DefaultResourceLoader(), gates),
+                new PrimProperties(), Clock.systemUTC());
+    }
+
+    static Stream<Arguments> idfRegion() {
+        return Stream.of(
+                Arguments.of("75011", "Paris", true),
+                Arguments.of("93100", "Montreuil", true),
+                Arguments.of(" 77 300 ", "Fontainebleau", true),
+                // a valid postcode decides, whatever the city
+                Arguments.of("69001", "Paris", false),
+                Arguments.of(null, "Paris", true),
+                Arguments.of("", "Montreuil", false),
+                Arguments.of("97400", "Saint-Denis", false));
+    }
+
+    @ParameterizedTest(name = "{0} {1} -> {2}")
+    @MethodSource("idfRegion")
+    void postcodePrefixQuestionsFollowThePostcodeThenTheCity(String postcode, String city, boolean applies) {
+        RuleEngine engine = new RuleEngine(BANK, stubsForShippedBank());
+
+        List<String> ids = engine.evaluate(in().city(city, "FR", postcode).build(), D).stream()
+                .map(Finding::questionId).toList();
+
+        if (applies) assertThat(ids).contains("6.1", "6.2");
+        else assertThat(ids).doesNotContain("6.1", "6.2");
+    }
+
+    @Test
+    void questionWithoutPostcodePrefixesKeepsItsCityRule() {
+        RuleEngine engine = new RuleEngine(BANK, stubsForShippedBank());
+
+        // 4.5 lists only Metz-area cities: a Metz postcode elsewhere does not open it
+        assertThat(engine.evaluate(in().city("Paris", "FR", "57000").build(), D))
+                .extracting(Finding::questionId).doesNotContain("4.5");
+        assertThat(engine.evaluate(in().city("METZ", "FR", null).build(), D))
+                .extracting(Finding::questionId).contains("4.5");
+    }
+
     private static OpenEventsEvaluator openEventsEvaluator() {
         SourceGates gates = mock(SourceGates.class);
-        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis"));
+        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis",
+                "prim"));
         return new OpenEventsEvaluator(BANK, OpenEventCities.load(new DefaultResourceLoader()), List.of(),
                 mock(GenreWeekCountRepository.class), mock(OpenEventOccurrenceRepository.class), gates,
                 DataSourceCatalog.load(new DefaultResourceLoader(), gates));
@@ -166,7 +221,7 @@ class RuleEngineTest {
         assertThat(out.stream().map(f -> f.questionId() + "|" + f.sourceKind()).distinct()).hasSize(out.size());
         // bank order kept even though evaluators answer in groups; web rows come from research, not the engine
         List<String> expected = BANK.questionsFor("FR").stream()
-                .filter(q -> q.cities().isEmpty() && q.source() != SourceKind.WEB)
+                .filter(q -> (q.cities().isEmpty() || !q.postcodePrefixes().isEmpty()) && q.source() != SourceKind.WEB)
                 .map(q -> q.id() + "|" + q.source()).toList();
         assertThat(out.stream().map(f -> f.questionId() + "|" + f.sourceKind()).toList()).isEqualTo(expected);
         assertThatThrownBy(() -> out.add(out.get(0))).isInstanceOf(UnsupportedOperationException.class);

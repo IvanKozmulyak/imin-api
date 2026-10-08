@@ -20,7 +20,7 @@ class FindingTest {
 
     private static Question question(SourceKind source, boolean stop, int maxStrength) {
         return new Question("9.9", "test", false, source, EnumSet.of(Kind.RISK, Kind.OPPORTUNITY), 2, maxStrength,
-                Window.NIGHT, stop, Set.of("FR"), Set.of(), Map.of(), "predictor.q.9_9", List.of());
+                Window.NIGHT, stop, Set.of("FR"), Set.of(), Map.of(), "predictor.q.9_9", List.of(), Set.of());
     }
 
     @Test

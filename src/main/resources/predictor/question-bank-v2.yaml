@@ -3,7 +3,8 @@
 # Adds 9.1 (v3).
 # Adds 2.6, 5.3, 2.3 from open event listings (v4).
 # Adds web-sourced 2.1, 2.2, 5.3 from cite-only research (v5).
-version: 5
+# Adds 6.1, 6.2 from IDFM traffic messages (v6).
+version: 6
 thresholds: { adjust_min_risk: 3, move_min_risk: 7, min_coverage: 0.6, max_points_per_finding: 4 }
 questions:
   # --- calendar (structured) ---
@@ -149,6 +150,32 @@ questions:
     applies_when: { countries: [FR, NL, DE, ES, UA] }
     params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }
     template: predictor.q.9_1
+
+  # IDFM PRIM traffic messages (Île-de-France). Strengths and horizons are estimates pending product review.
+  - id: "6.1"
+    family: transport
+    source: structured
+    kinds: [risk]
+    weight: 2
+    max_strength: 2
+    window: night
+    applies_when: { countries: [FR], postcode_prefixes: ["75","77","78","91","92","93","94","95"], cities: [paris] }
+    params: { clear_max_ahead_days: 2, night_start_hour: 18, night_end_hour: 6, wide_min_lines: 3 }
+    template: predictor.q.6_1
+    actions:
+      - { key: predictor.a.transit_strike_tell_guests, when: risk, due: "D-1" }
+  - id: "6.2"
+    family: transport
+    source: structured
+    kinds: [risk]
+    weight: 1
+    max_strength: 2
+    window: night
+    applies_when: { countries: [FR], postcode_prefixes: ["75","77","78","91","92","93","94","95"], cities: [paris] }
+    params: { clear_max_ahead_days: 14, night_start_hour: 22, night_end_hour: 2, wide_min_lines: 3 }
+    template: predictor.q.6_2
+    actions:
+      - { key: predictor.a.transit_works_route, when: risk, due: "D-7" }
 
   # --- open event listings (structured) ---
   # Every weight and param below is an estimate pending product review.

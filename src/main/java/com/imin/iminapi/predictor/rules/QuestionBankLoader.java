@@ -31,8 +31,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Parses and validates the question bank and genre profiles. Any invalid value throws
- * {@link IllegalStateException} naming the file and dotted key, so a bad file stops startup.
+ * Parses and validates the question bank and genre profiles; an invalid value names the file and key and stops startup.
+ * {@code postcode_prefixes} (unique 2-digit, {@code countries: [FR]} only) limits a question; {@code cities} is then the no-postcode fallback.
  */
 public final class QuestionBankLoader {
 
@@ -45,13 +45,14 @@ public final class QuestionBankLoader {
     private static final Pattern ACTION_KEY = Pattern.compile("^predictor\\.a\\.[a-z0-9_]+$");
     private static final Pattern DUE = Pattern.compile("^D-(\\d+)$");
     private static final Pattern COUNTRY = Pattern.compile("^[A-Z]{2}$");
+    private static final Pattern POSTCODE_PREFIX = Pattern.compile("^\\d{2}$");
     private static final int DEFAULT_MAX_STRENGTH = 3;
     private static final int CAPPED_MAX_STRENGTH = 2;
     private static final Set<String> THRESHOLD_KEYS =
             Set.of("adjust_min_risk", "move_min_risk", "min_coverage", "max_points_per_finding");
     private static final Set<String> QUESTION_KEYS = Set.of("id", "family", "star", "source", "kinds", "weight",
             "max_strength", "window", "stop_factor", "applies_when", "params", "template", "actions");
-    private static final Set<String> APPLIES_WHEN_KEYS = Set.of("countries", "cities");
+    private static final Set<String> APPLIES_WHEN_KEYS = Set.of("countries", "cities", "postcode_prefixes");
     private static final Set<String> ACTION_KEYS = Set.of("key", "when", "due");
     private static final Set<String> BUCKET_KEYS = Set.of("sub_genres", "audience_age", "communities",
             "typical_price_eur", "typical_start_hour", "buying_lead_days");
@@ -168,6 +169,10 @@ public final class QuestionBankLoader {
             if (applies.has("cities")) {
                 cities = cities(applies);
             }
+            Set<String> postcodePrefixes = Set.of();
+            if (applies.has("postcode_prefixes")) {
+                postcodePrefixes = postcodePrefixes(applies, countries);
+            }
             String template = q.string("template");
             String expected = "predictor.q." + id.replace('.', '_');
             if (!template.equals(expected)) {
@@ -175,7 +180,7 @@ public final class QuestionBankLoader {
             }
             out.add(new Question(id, q.string("family"), q.optionalBoolean("star"), source,
                     Collections.unmodifiableSet(kinds), weight, maxStrength, window, stopFactor, countries, cities,
-                    params(q), template, actions(q, kinds)));
+                    params(q), template, actions(q, kinds), postcodePrefixes));
         }
         return List.copyOf(out);
     }
@@ -221,6 +226,26 @@ public final class QuestionBankLoader {
             }
         }
         return Set.copyOf(raw);
+    }
+
+    private static Set<String> postcodePrefixes(Node n, Set<String> countries) {
+        if (!countries.equals(Set.of("FR"))) {
+            throw n.invalid("postcode_prefixes", "allowed only with countries: [FR]");
+        }
+        List<String> raw = n.strings("postcode_prefixes");
+        if (raw.isEmpty()) {
+            throw n.invalid("postcode_prefixes", "must not be empty when present");
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        for (String p : raw) {
+            if (!POSTCODE_PREFIX.matcher(p).matches()) {
+                throw n.invalid("postcode_prefixes", "'" + p + "' must be two digits");
+            }
+            if (!seen.add(p)) {
+                throw n.invalid("postcode_prefixes", "duplicate '" + p + "'");
+            }
+        }
+        return Set.copyOf(seen);
     }
 
     private static Map<String, Number> params(Node q) {

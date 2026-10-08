@@ -4,6 +4,7 @@ import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
+import com.imin.iminapi.predictor.sources.prim.PrimProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -32,7 +33,7 @@ class FootballDataPropertiesTest {
 
     @Configuration
     @EnableConfigurationProperties({PredictorProperties.class, DateCheckProperties.class, WikimediaProperties.class,
-            OpenEventsProperties.class})
+            OpenEventsProperties.class, PrimProperties.class})
     static class GateProperties {}
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()

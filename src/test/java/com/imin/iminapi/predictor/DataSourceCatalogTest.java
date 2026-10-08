@@ -11,6 +11,7 @@ import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
+import com.imin.iminapi.predictor.sources.prim.PrimProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -41,7 +42,9 @@ class DataSourceCatalogTest {
     private final WikimediaProperties wikimedia = new WikimediaProperties();
     private final FootballDataProperties football = new FootballDataProperties();
     private final OpenEventsProperties openEvents = new OpenEventsProperties();
-    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football, openEvents);
+    private final PrimProperties prim = new PrimProperties();
+    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football, openEvents,
+            prim);
 
     private static final DataSourceCatalog.SyncDates NO_DATES = dates(Map.of(), Map.of(), null, null);
 
@@ -100,15 +103,16 @@ class DataSourceCatalogTest {
         gates(true, true, true);
         football(true, "k");
         openEvents(true, "oa_pk_k", true);
+        prim.setApiKey("prim-key");
 
         DataSourceCatalog catalog = real();
         List<PublicDataSource> active = catalog.active(NO_DATES);
 
-        assertThat(catalog.reviewedOn()).isEqualTo("2026-10-01");
+        assertThat(catalog.reviewedOn()).isEqualTo("2026-10-07");
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "football-data", "iana-tz",
-                "openjdk-hijrah", "openweather", "wikimedia-pageviews", "openagenda", "quefaireaparis");
+                "openjdk-hijrah", "openweather", "wikimedia-pageviews", "openagenda", "quefaireaparis", "idfm-prim");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -365,17 +369,19 @@ class DataSourceCatalogTest {
         gates(true, true, true, true);
         football(true, "k");
         openEvents(true, "oa_pk_k", true);
+        prim.setApiKey("prim-key");
         List<String> askedPrefixes = new ArrayList<>();
         List<String> askedSources = new ArrayList<>();
         DataSourceCatalog.SyncDates lookup = dates(Map.of(), Map.of(
                 "openagenda", LocalDate.of(2026, 9, 29),
                 "quefaireaparis", LocalDate.of(2026, 9, 30),
-                "wikimedia", LocalDate.of(2026, 9, 28)), askedPrefixes, askedSources);
+                "wikimedia", LocalDate.of(2026, 9, 28),
+                "idfm-prim", LocalDate.of(2026, 10, 7)), askedPrefixes, askedSources);
 
         Map<String, String> updated = new HashMap<>();
         real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
 
-        assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis");
+        assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis", "idfm-prim");
         // the prefix entries only: iana-tz, openjdk-hijrah and openweather are never looked up
         assertThat(askedPrefixes).containsExactly("https://calendrier.api.gouv.fr/jours-feries/",
                 "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/",
@@ -383,6 +389,7 @@ class DataSourceCatalogTest {
         assertThat(updated).containsEntry("openagenda", "2026-09-29")
                 .containsEntry("quefaireaparis", "2026-09-30")
                 .containsEntry("wikimedia-pageviews", "2026-09-28")
+                .containsEntry("idfm-prim", "2026-10-07")
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
                 .containsEntry("openweather", null);
     }

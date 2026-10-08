@@ -646,6 +646,17 @@ imin:
       openagenda-api-key: ${OPENAGENDA_API_KEY:}
       # Que Faire à Paris (Ville de Paris, ODbL), no key.
       quefaireaparis-enabled: ${PREDICTOR_QUEFAIREAPARIS_ENABLED:false}
+    # IDFM PRIM traffic messages for date-check questions 6.1/6.2 (PrimSyncJob every 30 min Europe/Paris, and at boot
+    # while no poll has succeeded). Also needs PREDICTOR_DATE_CHECK_ENABLED.
+    prim:
+      # Kill switch, on by default; with a blank key the source stays off and one WARN names both variables.
+      enabled: ${PREDICTOR_PRIM_ENABLED:true}
+      # PRIM token, sent in the "apiKey" header only; one token serves every PRIM API, regenerating it kills the old one.
+      api-key: ${IDFM_PRIM_API_KEY:}
+      # Must be https, else startup fails.
+      base-url: ${PREDICTOR_PRIM_BASE_URL:https://prim.iledefrance-mobilites.fr}
+      # A last good poll older than this many hours makes 6.1/6.2 "not checked: stale".
+      max-age-hours: ${PREDICTOR_PRIM_MAX_AGE_HOURS:6}
   ratelimit:
     login:
       capacity: 5

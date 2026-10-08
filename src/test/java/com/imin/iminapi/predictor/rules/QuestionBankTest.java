@@ -79,9 +79,9 @@ class QuestionBankTest {
     void loadsShippedBank() {
         QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
 
-        assertThat(bank.questions()).hasSize(26);
-        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(21);
-        assertThat(bank.version()).isEqualTo("qb5-gp1");
+        assertThat(bank.questions()).hasSize(28);
+        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(23);
+        assertThat(bank.version()).isEqualTo("qb6-gp1");
         assertThat(bank.profiles()).hasSize(8);
         for (GenreProfile p : bank.profiles().values()) {
             for (ProfileField<?> f : List.of(p.audienceAge(), p.communities(), p.typicalPriceEur(),
@@ -345,6 +345,30 @@ class QuestionBankTest {
     @MethodSource("rejectedBanks")
     void rejectsBank(String name, String bank, String message) {
         assertRejected(bank, message);
+    }
+
+    @Test
+    void postcodePrefixesParseWithCitiesAsFallback() {
+        Question q = parse(VALID_BANK.replace("countries: [FR] }",
+                "countries: [FR], postcode_prefixes: [\"75\", \"93\"], cities: [paris] }"), validProfiles())
+                .questions().get(1);
+        assertThat(q.postcodePrefixes()).containsExactlyInAnyOrder("75", "93");
+        assertThat(q.cities()).containsExactly("paris");
+    }
+
+    static Stream<Arguments> postcodePrefixesRejected() {
+        return Stream.of(
+                Arguments.of("[FR], postcode_prefixes: [\"7\"]", "'7' must be two digits"),
+                Arguments.of("[FR], postcode_prefixes: []", "must not be empty"),
+                Arguments.of("[FR], postcode_prefixes: [\"75\", \"75\"]", "duplicate '75'"),
+                Arguments.of("[FR, NL], postcode_prefixes: [\"75\"]", "allowed only with countries: [FR]"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource
+    void postcodePrefixesRejected(String countriesAndPrefixes, String message) {
+        assertRejected(VALID_BANK.replace("countries: [FR] }", "countries: " + countriesAndPrefixes + " }"),
+                "questions[1].applies_when.postcode_prefixes: " + message);
     }
 
     static Stream<Arguments> rejectedProfiles() {

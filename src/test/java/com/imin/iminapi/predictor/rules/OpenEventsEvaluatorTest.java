@@ -85,7 +85,7 @@ class OpenEventsEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis"));
+        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis", "prim"));
         when(gates.isOn(anyString())).thenReturn(true);
         catalog = DataSourceCatalog.load(new DefaultResourceLoader(), gates);
         assertThat(TODAY.getDayOfWeek()).isEqualTo(DayOfWeek.WEDNESDAY);

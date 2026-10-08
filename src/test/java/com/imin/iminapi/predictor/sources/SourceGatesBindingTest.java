@@ -9,6 +9,7 @@ import com.imin.iminapi.predictor.calendar.FootballDataProperties;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
+import com.imin.iminapi.predictor.sources.prim.PrimProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -45,24 +46,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SourceGatesBindingTest {
 
     private static final Set<String> ALL_GATES =
-            Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis");
+            Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis", "prim");
 
     /** Every variable an open-data gate reads, set to open it. */
-    private static final Map<String, String> ALL_ON = Map.of(
-            "PREDICTOR_DATE_CHECK_ENABLED", "true",
-            "PREDICTOR_CALENDAR_SYNC_ENABLED", "true",
-            "PREDICTOR_WEATHER_ENABLED", "true",
-            "PREDICTOR_WIKIMEDIA_ENABLED", "true",
-            "PREDICTOR_FOOTBALL_ENABLED", "true",
-            "FOOTBALL_DATA_API_KEY", "football-key",
-            "PREDICTOR_OPENAGENDA_ENABLED", "true",
-            "OPENAGENDA_API_KEY", "oa_pk_test",
-            "PREDICTOR_QUEFAIREAPARIS_ENABLED", "true");
+    private static final Map<String, String> ALL_ON = Map.ofEntries(
+            Map.entry("PREDICTOR_DATE_CHECK_ENABLED", "true"),
+            Map.entry("PREDICTOR_CALENDAR_SYNC_ENABLED", "true"),
+            Map.entry("PREDICTOR_WEATHER_ENABLED", "true"),
+            Map.entry("PREDICTOR_WIKIMEDIA_ENABLED", "true"),
+            Map.entry("PREDICTOR_FOOTBALL_ENABLED", "true"),
+            Map.entry("FOOTBALL_DATA_API_KEY", "football-key"),
+            Map.entry("PREDICTOR_OPENAGENDA_ENABLED", "true"),
+            Map.entry("OPENAGENDA_API_KEY", "oa_pk_test"),
+            Map.entry("PREDICTOR_QUEFAIREAPARIS_ENABLED", "true"),
+            Map.entry("PREDICTOR_PRIM_ENABLED", "true"),
+            Map.entry("IDFM_PRIM_API_KEY", "prim-key"));
 
     @Configuration
     @EnableConfigurationProperties({CalendarSyncProperties.class, FootballDataProperties.class,
             PredictorProperties.class, DateCheckProperties.class, WikimediaProperties.class,
-            OpenEventsProperties.class})
+            OpenEventsProperties.class, PrimProperties.class})
     static class GateProperties {}
 
     private static ApplicationContextRunner runner(Map<String, String> env) {
@@ -105,7 +108,8 @@ class SourceGatesBindingTest {
     }
 
     static Stream<Arguments> ownEnvAbsent() {
-        Set<String> needDateCheck = Set.of("date-check", "wikimedia", "football", "openagenda", "quefaireaparis");
+        Set<String> needDateCheck = Set.of("date-check", "wikimedia", "football", "openagenda", "quefaireaparis",
+                "prim");
         return Stream.of(
                 Arguments.of("PREDICTOR_DATE_CHECK_ENABLED", null, needDateCheck),
                 // Calendar sync defaults to true, so only an explicit false closes it.
@@ -115,7 +119,10 @@ class SourceGatesBindingTest {
                 Arguments.of("PREDICTOR_FOOTBALL_ENABLED", null, Set.of("football")),
                 Arguments.of("FOOTBALL_DATA_API_KEY", null, Set.of("football")),
                 Arguments.of("PREDICTOR_OPENAGENDA_ENABLED", null, Set.of("openagenda")),
-                Arguments.of("PREDICTOR_QUEFAIREAPARIS_ENABLED", null, Set.of("quefaireaparis")));
+                Arguments.of("PREDICTOR_QUEFAIREAPARIS_ENABLED", null, Set.of("quefaireaparis")),
+                // The PRIM kill switch defaults to true, so only an explicit false closes it; a blank key does too.
+                Arguments.of("PREDICTOR_PRIM_ENABLED", "false", Set.of("prim")),
+                Arguments.of("IDFM_PRIM_API_KEY", null, Set.of("prim")));
     }
 
     @ParameterizedTest(name = "{0}={1} closes {2}")
@@ -148,6 +155,7 @@ class SourceGatesBindingTest {
             logger.setLevel(before);
         }
         assertThat(appender.list).singleElement().satisfies(e ->
-                assertThat(e.getFormattedMessage()).doesNotContain("oa_pk_test").doesNotContain("football-key"));
+                assertThat(e.getFormattedMessage()).doesNotContain("oa_pk_test").doesNotContain("football-key")
+                        .doesNotContain("prim-key"));
     }
 }

@@ -24,7 +24,7 @@ class ActionPickerTest {
 
     private static Question q(String id, int weight, Set<Kind> kinds, Action... actions) {
         return new Question(id, "test", true, SourceKind.STRUCTURED, kinds, weight, 3, Window.NIGHT, false,
-                Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of(actions));
+                Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of(actions), Set.of());
     }
 
     private static Question risk(String id, int weight, Action... actions) {
@@ -114,7 +114,7 @@ class ActionPickerTest {
     void unknownQuestionRejected() {
         Question inBank = risk("4.1", 2, a(PROMO, Kind.RISK, 28));
         Question otherSource = new Question("4.1", "test", true, SourceKind.ORGANIZER, EnumSet.of(Kind.RISK), 2, 2,
-                Window.NIGHT, false, Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of());
+                Window.NIGHT, false, Set.of("FR"), Set.of(), Map.of(), "predictor.q.t", List.of(), Set.of());
 
         assertThatThrownBy(() -> ActionPicker.pick(List.of(Finding.found(otherSource, Kind.RISK, 1, Map.of(), null)),
                 bank(inBank), TODAY.plusDays(60), TODAY)).isInstanceOf(IllegalArgumentException.class);
