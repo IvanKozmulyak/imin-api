@@ -321,32 +321,13 @@ class StripeWebhookServiceTest {
             eq(5000L));
     }
 
-    // ── endpoint must REJECT (non-2xx) so Stripe retries, never silently 200 ──────
-
-    @Test
-    void v1_invalidSignature_throwsSoStripeRetries() {
-        // A bad signature must surface as an exception (controller → 400) so Stripe re-delivers,
-        // and must NOT reach any handler — a forged event can't poison the dedup table either.
-        String body = "{\"id\":\"evt_forged\",\"type\":\"payment_intent.succeeded\"}";
-
-        assertThatThrownBy(() -> svc.handleV1Endpoint(body, "t=1,v1=deadbeef"))
-                .isInstanceOf(ApiException.class);
-
-        verify(dedup, never()).tryRecord(anyString(), anyString());
-        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
-    }
+    // Signature rejection is owned by StripeWebhookHttpSeamTest; the missing-secret 503 stays here.
 
     @Test
     void v1_missingSecret_throwsServiceUnavailable() {
         props.setWebhookSecretV1(null);
 
         assertThatThrownBy(() -> svc.handleV1Endpoint("{}", "t=1,v1=whatever"))
-                .isInstanceOf(ApiException.class);
-    }
-
-    @Test
-    void v1_missingSignatureHeader_throws() {
-        assertThatThrownBy(() -> svc.handleV1Endpoint("{}", null))
                 .isInstanceOf(ApiException.class);
     }
 
