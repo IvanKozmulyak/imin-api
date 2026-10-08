@@ -6,7 +6,6 @@ import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.marketing.model.Campaign;
-import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -89,14 +88,11 @@ public class ResendWebhookProjector {
             log.info("[resend-projector] event with no type for recipient {} — ignored", recipientId);
             return;
         }
-        CampaignRecipient r = recipientId == null ? null
-                : recipientRepo.findById(recipientId).orElse(null);
+        // Every branch writes the row through a column-scoped UPDATE, never an entity save: the entity has
+        // no @Version, so a save of a row read earlier would put back columns a concurrent event committed.
         switch (type) {
             case ProviderEvent.TYPE_DELIVERED -> {
-                // Conditional UPDATE, not an entity save, so a stale read cannot overwrite a terminal status.
-                // r stays untouched, so the save below would flush nothing; return keeps it that way.
-                if (r != null) recipientRepo.markDelivered(r.getId(), occurredAt);
-                return;
+                if (recipientId != null) recipientRepo.markDelivered(recipientId, occurredAt);
             }
             case ProviderEvent.TYPE_BOUNCED -> {
                 // mkt-edge-6: the deliverability list is platform-shared, system-owned and has
@@ -107,10 +103,9 @@ public class ResendWebhookProjector {
                 // absent type is deliberately read as transient, because the shared list must
                 // never be written on a guess.
                 boolean permanent = isPermanentBounce(bounceType);
-                if (r != null) {
-                    r.setStatus("bounced");
-                    r.setErrorCode(permanent ? "hard_bounce" : "soft_bounce");
-                    touch(r, occurredAt);
+                // Executed now, so the soft-bounce count below includes this row.
+                if (recipientId != null) {
+                    recipientRepo.markBounced(recipientId, permanent ? "hard_bounce" : "soft_bounce", occurredAt);
                 }
                 if (permanent) {
                     if (email != null && !email.isBlank()) {
@@ -118,11 +113,10 @@ public class ResendWebhookProjector {
                                 EmailNormalizer.normalize(email), "hard-bounce");
                     }
                 } else {
-                    escalateRepeatedSoftBounce(campaignId, membershipId, r);
+                    escalateRepeatedSoftBounce(campaignId, membershipId);
                 }
             }
             case ProviderEvent.TYPE_COMPLAINED -> {
-                if (r != null) { r.setStatus("complained"); touch(r, occurredAt); }
                 UUID orgId = orgIdOf(campaignId);
                 if (membershipId != null && orgId != null) {
                     // MUST pass a non-null, org-scoped SYSTEM principal — addMarketing's
@@ -142,22 +136,19 @@ public class ResendWebhookProjector {
                         events.publishEvent(new ConsentChanged(orgId, membershipId, false));
                     });
                 }
+                // After the membership lock, so this transaction locks membership then recipient.
+                if (recipientId != null) recipientRepo.markComplained(recipientId, occurredAt);
                 complaintRateBreaker.evaluate(campaignId, orgId);
             }
             case ProviderEvent.TYPE_OPENED -> {
                 // Tracking is off for everyone: only the recipient row, never the membership.
-                if (r != null) { r.setOpenedAt(occurredAt); touch(r, occurredAt); }
+                if (recipientId != null) recipientRepo.markOpened(recipientId, occurredAt);
             }
             case ProviderEvent.TYPE_CLICKED -> {
-                if (r != null) { r.setClickedAt(occurredAt); touch(r, occurredAt); }
+                if (recipientId != null) recipientRepo.markClicked(recipientId, occurredAt);
             }
             default -> { /* unknown type — logged and deduped upstream, no projection */ }
         }
-        if (r != null) recipientRepo.save(r);
-    }
-
-    private void touch(CampaignRecipient r, Instant occurredAt) {
-        r.setLastEventAt(occurredAt);
     }
 
     /** Resend's own classification. Anything we do not recognise is NOT permanent. */
@@ -178,13 +169,10 @@ public class ResendWebhookProjector {
      * cross-org deliverability list: another organizer's sending reputation and domain are a
      * different experiment, and only a Permanent bounce is evidence about the address itself.
      */
-    private void escalateRepeatedSoftBounce(UUID campaignId, UUID membershipId, CampaignRecipient r) {
+    private void escalateRepeatedSoftBounce(UUID campaignId, UUID membershipId) {
         if (membershipId == null) return;
         UUID orgId = orgIdOf(campaignId);
         if (orgId == null) return;
-        // Flush this bounce before counting: the count is over campaign_recipients.error_code
-        // and must include the row we just stamped, not lag one event behind it.
-        if (r != null) recipientRepo.saveAndFlush(r);
         long soft = recipientRepo.countSoftBouncesByMembership(membershipId);
         if (soft < SOFT_BOUNCE_SUPPRESS_AFTER) return;
         log.info("[resend-projector] membership {} has {} transient bounces — suppressing for org {}",

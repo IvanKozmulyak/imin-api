@@ -196,6 +196,25 @@ class ResendWebhookProjectorTest {
         assertThat(suppressionRepo.findDeliverabilityByEmail(f.email())).isEmpty();
     }
 
+    /** A transient bounce that was later delivered is no longer failing mail, so it is not a strike. */
+    @Test
+    void aTransientBounceLaterDeliveredIsNotCountedTowardTheSuppression() {
+        Fixture f = seed(fx.email("soft-recovered"));
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            f.email(), "email.bounced", "Transient", Instant.now());
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            f.email(), "email.delivered", null, Instant.now());
+
+        for (int i = 0; i < 2; i++) {
+            Fixture later = laterCampaignFor(f);
+            projector.project(later.campaignId(), later.recipientId(), later.membershipId(),
+                later.email(), "email.bounced", "Transient", Instant.now());
+        }
+
+        assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
+            .isEmpty();
+    }
+
     /**
      * The same membership on a LATER campaign — the only way it can bounce twice, since
      * uq_campaign_recipient (campaign_id, membership_id) allows one row per campaign.
@@ -293,12 +312,12 @@ class ResendWebhookProjectorTest {
     @Test
     void openedStampsRecipientOnly_membershipUnchanged() {
         Fixture f = seed(fx.email("open"));
-        Instant when = Instant.now();
+        Instant when = Instant.parse("2026-07-11T10:05:00Z");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             f.email(), "email.opened", null, when);
         CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
-        assertThat(r.getOpenedAt()).isNotNull();
-        assertThat(r.getLastEventAt()).isNotNull();
+        assertThat(r.getOpenedAt()).isEqualTo(when);
+        assertThat(r.getLastEventAt()).isEqualTo(when);
         Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
         assertThat(m.getLastEmailOpen()).isNull();
         assertThat(m.getLastEmailClick()).isNull();
@@ -307,11 +326,12 @@ class ResendWebhookProjectorTest {
     @Test
     void clickedStampsRecipientOnly_membershipUnchanged() {
         Fixture f = seed(fx.email("click"));
+        Instant when = Instant.parse("2026-07-11T10:06:00Z");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            f.email(), "email.clicked", null, Instant.now());
+            f.email(), "email.clicked", null, when);
         CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
-        assertThat(r.getClickedAt()).isNotNull();
-        assertThat(r.getLastEventAt()).isNotNull();
+        assertThat(r.getClickedAt()).isEqualTo(when);
+        assertThat(r.getLastEventAt()).isEqualTo(when);
         Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
         assertThat(m.getLastEmailOpen()).isNull();
         assertThat(m.getLastEmailClick()).isNull();

@@ -12,6 +12,7 @@ import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,13 +25,18 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,6 +71,7 @@ class ResendWebhookOutOfOrderTest {
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -112,27 +119,36 @@ class ResendWebhookOutOfOrderTest {
         // A transient bounce is not terminal: a later delivery wins, a later bounce wins too.
         Expected softThenDelivered = new Expected("delivered", "soft_bounce", DELIVERED, null);
         Expected deliveredThenSoft = new Expected("bounced", "soft_bounce", DELIVERED, null);
+        // A complaint outranks a bounce; a transient bounce never downgrades a permanent one.
+        Expected complaintOverBounce = new Expected("complained", "hard_bounce", null, null);
+        Expected hardOverSoft = new Expected("bounced", "hard_bounce", null, null);
 
+        // The third argument is last_event_at: the last arrival's instant, even when its CASE keeps the status.
         return Stream.of(
-                arguments(List.of(delivered, opened), deliveredAndOpened),
-                arguments(List.of(opened, delivered), deliveredAndOpened),
-                arguments(List.of(sent, delivered), deliveredOnly),
-                arguments(List.of(delivered, sent), deliveredOnly),
-                arguments(List.of(delivered, bounced), hardBounced),
-                arguments(List.of(bounced, delivered), hardBounced),
-                arguments(List.of(delivered, complained), complaint),
-                arguments(List.of(complained, delivered), complaint),
-                arguments(List.of(opened, complained), openedComplaint),
-                arguments(List.of(complained, opened), openedComplaint),
-                arguments(List.of(delivered, unsubscribed), optedOut),
-                arguments(List.of(unsubscribed, delivered), optedOut),
-                arguments(List.of(softBounced, delivered), softThenDelivered),
-                arguments(List.of(delivered, softBounced), deliveredThenSoft));
+                arguments(List.of(delivered, opened), deliveredAndOpened, OPENED),
+                arguments(List.of(opened, delivered), deliveredAndOpened, DELIVERED),
+                arguments(List.of(sent, delivered), deliveredOnly, DELIVERED),
+                arguments(List.of(delivered, sent), deliveredOnly, DELIVERED),
+                arguments(List.of(delivered, bounced), hardBounced, BOUNCED),
+                arguments(List.of(bounced, delivered), hardBounced, DELIVERED),
+                arguments(List.of(delivered, complained), complaint, COMPLAINED),
+                arguments(List.of(complained, delivered), complaint, DELIVERED),
+                arguments(List.of(opened, complained), openedComplaint, COMPLAINED),
+                arguments(List.of(complained, opened), openedComplaint, OPENED),
+                arguments(List.of(delivered, unsubscribed), optedOut, UNSUBSCRIBED),
+                arguments(List.of(unsubscribed, delivered), optedOut, DELIVERED),
+                arguments(List.of(softBounced, delivered), softThenDelivered, DELIVERED),
+                arguments(List.of(delivered, softBounced), deliveredThenSoft, BOUNCED),
+                arguments(List.of(complained, bounced), complaintOverBounce, BOUNCED),
+                arguments(List.of(bounced, complained), complaintOverBounce, COMPLAINED),
+                arguments(List.of(bounced, softBounced), hardOverSoft, BOUNCED),
+                arguments(List.of(softBounced, bounced), hardOverSoft, BOUNCED));
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("eventPairsInBothOrders")
-    void finalRecipientStateAfterTwoEventsInEitherOrder(List<Event> arrivals, Expected expected) throws Exception {
+    void finalRecipientStateAfterTwoEventsInEitherOrder(List<Event> arrivals, Expected expected, Instant lastEventAt)
+            throws Exception {
         Seeded s = seed(fx.email("ooo"));
         for (Event e : arrivals) deliver(s, e);
 
@@ -141,6 +157,61 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getErrorCode()).as("error_code").isEqualTo(expected.errorCode());
         assertThat(after.getDeliveredAt()).as("delivered_at").isEqualTo(expected.deliveredAt());
         assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(expected.openedAt());
+        assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
+    }
+
+    static Stream<Arguments> eventsCommittedWhileAComplaintIsInFlight() {
+        return Stream.of(
+                arguments(Event.of("email.delivered", DELIVERED), new Expected("complained", null, DELIVERED, null)),
+                arguments(Event.of("email.opened", OPENED), new Expected("complained", null, null, OPENED)));
+    }
+
+    /**
+     * The complaint reads the row, then is held on its suppression INSERT while another event for the
+     * same message commits; its own recipient write must not put the stale columns back.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("eventsCommittedWhileAComplaintIsInFlight")
+    void anEventCommittedDuringAComplaintSurvivesIt(Event concurrent, Expected expected) throws Exception {
+        Seeded s = seed(fx.email("ooo-race"));
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "suppression_entries", "membership_id",
+                s.membershipId())) {
+            CompletableFuture<Void> complaint = CompletableFuture.runAsync(() -> {
+                try {
+                    deliver(s, Event.of("email.complained", COMPLAINED));
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            CompletableFuture<Void> other = null;
+            try {
+                pause.awaitBlocked(Duration.ofSeconds(10));
+                other = CompletableFuture.runAsync(() -> {
+                    try {
+                        deliver(s, concurrent);
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                });
+                try {
+                    other.get(5, TimeUnit.SECONDS);
+                } catch (TimeoutException waitingOnTheComplaintsRowLock) {
+                    // Also a valid order: it then applies after the complaint commits.
+                }
+            } finally {
+                pause.release();
+                complaint.get(10, TimeUnit.SECONDS);
+                if (other != null) other.get(10, TimeUnit.SECONDS);
+            }
+        }
+
+        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        assertThat(after.getStatus()).as("status").isEqualTo(expected.status());
+        assertThat(after.getErrorCode()).as("error_code").isEqualTo(expected.errorCode());
+        assertThat(after.getDeliveredAt()).as("delivered_at").isEqualTo(expected.deliveredAt());
+        assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(expected.openedAt());
+        // The held complaint writes last, so its own instant is the one left on the row.
+        assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(COMPLAINED);
     }
 
     /** The complaint branch needs a real membership; the campaign carries the org the projector derives. */

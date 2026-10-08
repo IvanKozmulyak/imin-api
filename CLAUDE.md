@@ -128,11 +128,8 @@ Docker must be running: `./mvnw test` starts one Postgres 17 container per JVM. 
 getters/records/DTO mapping, enum/constant/yaml echoes, "source file contains X", annotation/cron/pool-size reflection, framework behaviour (JPA round-trip, Jackson, Spring wiring), controller tests that mock the service and echo its return, the same rule asserted in several layers (pick one owner), one method per permutation (use `@ParameterizedTest`), log-level assertions, prompt wording via `contains()`.
 
 ### Context budget
-**At most three Spring contexts**, all on **one Postgres container** for the whole run; H2 goes away.
-- **Main** `@IminIntegrationTest` — ~95% of integration tests.
-- **Features-off / prod-config** (only if needed) — full flows where a bean is absent by property or a value is captured at startup and cannot be flipped at runtime.
-- **Reserve** — only by explicit decision, reason in code.
-Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). Migration tests run without Spring: `SharedPostgres.migratedDatabase(prefix, version)` copies a once-per-run template migrated to that version into a fresh database on the shared container (Flyway + JDBC), and `drop` removes it after the test; re-runs of a migration's data statements over seeded rows use `@IminIntegrationTest` + `@Transactional` rollback.
+**One Spring context** (`@IminIntegrationTest`) on **one Postgres container** for the whole run; no H2. A second context needs an explicit decision, with the reason in code.
+Only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). Migration tests run without Spring: `SharedPostgres.migratedDatabase(prefix, version)` copies a once-per-run template migrated to that version into a fresh database on the shared container (Flyway + JDBC), and `drop` removes it after the test; re-runs of a migration's data statements over seeded rows use `@IminIntegrationTest` + `@Transactional` rollback.
 
 ### Writing an integration test
 - Annotate the class `@IminIntegrationTest` and add nothing that changes the context: no `@MockitoBean`/`@MockitoSpyBean`/`@TestBean`, `@TestPropertySource`/`@SpringBootTest(properties=)`, `@DynamicPropertySource`, `@Import`, `@DirtiesContext`, `@ActiveProfiles`, nested `@TestConfiguration`/`@Configuration`, slice or own container (`@Testcontainers`/`@Container`). `SpringContextGuardTest` fails the build otherwise.

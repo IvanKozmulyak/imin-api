@@ -309,6 +309,39 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     int markDelivered(@Param("id") UUID id, @Param("at") java.time.Instant at);
 
     /**
+     * Project a Resend bounce in SQL, so a concurrent complaint or delivery is never reverted by a stale read.
+     * A complaint keeps its status, and a transient bounce never downgrades a permanent one.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = CASE WHEN r.status = 'complained' THEN r.status ELSE 'bounced' END,
+                   r.errorCode = CASE WHEN r.errorCode = 'hard_bounce' THEN r.errorCode ELSE :code END,
+                   r.lastEventAt = :at
+             WHERE r.id = :id
+            """)
+    int markBounced(@Param("id") UUID id, @Param("code") String code, @Param("at") java.time.Instant at);
+
+    /** Project a Resend complaint: it outranks every other status, and writes no other column. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.status = 'complained', r.lastEventAt = :at WHERE r.id = :id")
+    int markComplained(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Stamp an open without touching status, so it cannot revert a concurrent status change. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.openedAt = :at, r.lastEventAt = :at WHERE r.id = :id")
+    int markOpened(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Stamp a click without touching status, so it cannot revert a concurrent status change. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.clickedAt = :at, r.lastEventAt = :at WHERE r.id = :id")
+    int markClicked(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /**
      * Retire the rows that burned their whole attempt budget: {@code pending} with
      * {@code attempt_count >= :maxAttempts} becomes {@code failed} with an
      * {@code error_code}. Without this the drain simply stopped claiming them and they
@@ -364,10 +397,10 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * across every campaign this membership has ever been on, because the question the
      * threshold answers is "does mail to this person keep failing", not "did this campaign
      * have a bad day". Written by {@code ResendWebhookProjector}; nothing else sets
-     * {@code error_code='soft_bounce'}.
+     * {@code error_code='soft_bounce'}. A row later delivered keeps that code but is no longer failing.
      */
     @Query("select count(r) from CampaignRecipient r "
-            + "where r.membershipId = :membershipId and r.errorCode = 'soft_bounce'")
+            + "where r.membershipId = :membershipId and r.status = 'bounced' and r.errorCode = 'soft_bounce'")
     long countSoftBouncesByMembership(@Param("membershipId") UUID membershipId);
 
     /**
