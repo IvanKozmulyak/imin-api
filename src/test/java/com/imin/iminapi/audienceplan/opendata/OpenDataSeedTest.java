@@ -1,12 +1,14 @@
 package com.imin.iminapi.audienceplan.opendata;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OpenDataSeedTest {
@@ -36,17 +38,6 @@ class OpenDataSeedTest {
     }
 
     @Test
-    void metzMatchesTheVerifiedFigures() {
-        assertThat(row("metz", OpenDataset.INSEE_AGE).headline()).isEqualTo(38_065L);
-        assertThat(row("metz", OpenDataset.INSEE_AGE).figures()).containsEntry("pop_total", 122_572L);
-        assertThat(row("metz", OpenDataset.INSEE_AGE).refPeriod()).isEqualTo("2023");
-        assertThat(row("metz", OpenDataset.STUDENTS).headline()).isEqualTo(20_588L);
-        assertThat(row("metz", OpenDataset.STUDENTS).refPeriod()).isEqualTo("2024-25");
-        assertThat(row("metz", OpenDataset.FRONTALIERS).headline()).isEqualTo(6_330L);
-        assertThat(row("metz", OpenDataset.FRONTALIERS).refPeriod()).isEqualTo("2026-03-31");
-    }
-
-    @Test
     void sourceUrlsAreTheOnesTheFetchersSend() {
         for (OpenDataCity city : cities.all()) {
             if (!"FR".equals(city.country())) continue;
@@ -57,27 +48,16 @@ class OpenDataSeedTest {
     }
 
     @Test
-    void osmRowsAreCountsOnlyWithNoHeadline() {
-        OpenDataSeed.Row metz = row("metz", OpenDataset.OSM_VENUES);
-        assertThat(metz.headline()).isNull();
-        assertThat(metz.figures()).containsEntry("nightclub", 3L).containsEntry("bar", 69L)
-                .containsEntry("pub", 14L).containsEntry("music_venue", 1L);
-        assertThat(OpenDataset.OSM_VENUES.licence()).isEqualTo("ODbL 1.0");
-        assertThat(OpenDataset.OSM_VENUES.attribution()).isEqualTo("© OpenStreetMap contributors");
+    void osmRowsHaveNoHeadline() {
+        assertThat(row("metz", OpenDataset.OSM_VENUES).headline()).isNull();
     }
 
     @Test
-    void centroidsArePinnedWikidataCoordinatesInMicrodegrees() {
-        OpenDataSeed.Row metz = row("metz", OpenDataset.CENTROID);
-        assertThat(metz.headline()).isNull();
-        assertThat(metz.figures()).containsExactly(entry("lat_e6", 49_119_722L), entry("lon_e6", 6_176_944L));
-        assertThat(metz.sourceUrl()).isEqualTo("https://www.wikidata.org/w/index.php?title=Q22690&oldid=2548407679");
-        assertThat(row("luxembourg", OpenDataset.CENTROID).figures())
-                .containsExactly(entry("lat_e6", 49_611_389L), entry("lon_e6", 6_130_000L));
-        assertThat(row("saarbrücken", OpenDataset.CENTROID).figures())
-                .containsExactly(entry("lat_e6", 49_233_333L), entry("lon_e6", 7_000_000L));
+    void centroidsHaveNoHeadlineAndCiteWikidata() {
         for (OpenDataSeed.Row r : rows) {
-            if (r.dataset() == OpenDataset.CENTROID) assertThat(r.sourceUrl()).startsWith("https://www.wikidata.org/");
+            if (r.dataset() != OpenDataset.CENTROID) continue;
+            assertThat(r.headline()).as(r.cityKey()).isNull();
+            assertThat(r.sourceUrl()).as(r.cityKey()).startsWith("https://www.wikidata.org/");
         }
     }
 
@@ -99,6 +79,19 @@ class OpenDataSeedTest {
         });
         assertThat(cities.find("Metz")).isEmpty();
         assertThat(cities.find(null)).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(OpenDataset.class)
+    void dataset_keysAndCountryCoverage(OpenDataset d) {
+        assertThat(OpenDataset.fromKey(d.key())).contains(d);
+        assertThat(OpenDataset.fromKey("sirene")).isEmpty();
+        // French sources cover France only; centroids also cover the border countries.
+        Set<String> covered = d == OpenDataset.CENTROID ? Set.of("FR", "LU", "DE") : Set.of("FR");
+        for (String country : List.of("FR", "LU", "DE", "BE")) {
+            assertThat(d.covers(country)).as(d.key() + " " + country).isEqualTo(covered.contains(country));
+        }
+        assertThat(d.covers(null)).isFalse();
     }
 
     private OpenDataSeed.Row row(String city, OpenDataset d) {

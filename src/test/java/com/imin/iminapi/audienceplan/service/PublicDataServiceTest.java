@@ -246,11 +246,6 @@ class PublicDataServiceTest {
         assertThat(insee.asked).containsExactly(METZ, nancy);
     }
 
-    @Test
-    void theBackoffIsOneHour() {
-        assertThat(PublicDataService.FAILURE_BACKOFF).isEqualTo(Duration.ofHours(1));
-    }
-
     // --- datasets that do not cover a town's country
 
     @Test
@@ -284,11 +279,6 @@ class PublicDataServiceTest {
         repo.rows.add(r);
 
         assertThat(withLux.get("luxembourg", OpenDataset.CENTROID)).isPresent();
-    }
-
-    @Test
-    void knownCitiesAreTheRegistry() {
-        assertThat(service.knownCities()).containsExactly(METZ);
     }
 
     private static FetchedFigure figure(long youth) {

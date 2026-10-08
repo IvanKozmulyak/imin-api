@@ -3,16 +3,24 @@ package com.imin.iminapi.audienceplan.config;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.boot.context.properties.bind.BindException;
+import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.ContextConsumer;
 import org.springframework.http.HttpStatus;
 
-import java.util.Set;
+import java.util.List;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 class AudiencePlanAccessTest {
 
@@ -22,67 +30,39 @@ class AudiencePlanAccessTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(AudiencePlanConfig.class, AudiencePlanAccess.class);
 
-    @Test
-    void defaults_openToAnyOrg() {
-        // Plain construction: no property source or env var can override the field defaults.
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        assertThat(props.isEnabled()).isTrue();
-        assertThat(props.getBetaOrgIds()).isEmpty();
-        assertThatCode(() -> new AudiencePlanAccess(props).requireEnabled(A)).doesNotThrowAnyException();
+    static Stream<Arguments> accessRows() {
+        return Stream.of(
+                // enabled, betaOrgIds, org, allowed
+                arguments(null, null, A, true),                       // shipped defaults: open to any org
+                arguments("false", "" + A, A, false),                 // kill switch beats the allow-list
+                arguments("false", "", A, false),
+                arguments("true", "" + A, B, false),                  // org absent from a non-blank list
+                arguments("true", A + ", " + B, B, true),
+                arguments("true", "", A, true),                       // blank list allows any org
+                arguments("true", "", B, true),
+                arguments("true", A + ",", A, true),                  // trailing comma drops the blank element
+                arguments("true", A + ",", B, false),
+                arguments("true", "", null, false));                  // no org is never allowed
     }
 
-    @Test
-    void disabled_throws404_evenWhenOrgListed() {
-        runner.withPropertyValues("imin.audience-plan.enabled=false", "imin.audience-plan.beta-org-ids=" + A)
-                .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), A));
-    }
-
-    @Test
-    void disabled_blankList_throws404() {
-        runner.withPropertyValues("imin.audience-plan.enabled=false", "imin.audience-plan.beta-org-ids=")
-                .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), A));
-    }
-
-    @Test
-    void enabled_orgAbsentFromNonBlankList_throws404() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=" + A)
-                .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), B));
-    }
-
-    @Test
-    void enabled_orgListed_passes() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true",
-                        "imin.audience-plan.beta-org-ids=" + A + ", " + B)
-                .run(ctx -> assertThatCode(() -> ctx.getBean(AudiencePlanAccess.class).requireEnabled(B))
-                        .doesNotThrowAnyException());
-    }
-
-    @Test
-    void enabled_blankList_allowsAnyOrg() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=")
-                .run(ctx -> {
-                    assertThat(ctx.getBean(AudiencePlanProperties.class).getBetaOrgIds()).isEmpty();
-                    AudiencePlanAccess access = ctx.getBean(AudiencePlanAccess.class);
-                    assertThatCode(() -> access.requireEnabled(A)).doesNotThrowAnyException();
-                    assertThatCode(() -> access.requireEnabled(B)).doesNotThrowAnyException();
-                });
-    }
-
-    @Test
-    void enabled_trailingComma_dropsBlankElement() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=" + A + ",")
-                .run(ctx -> {
-                    assertThat(ctx.getBean(AudiencePlanProperties.class).getBetaOrgIds()).isEqualTo(Set.of(A));
-                    assertThatCode(() -> ctx.getBean(AudiencePlanAccess.class).requireEnabled(A))
-                            .doesNotThrowAnyException();
-                    assertNotFound(ctx.getBean(AudiencePlanAccess.class), B);
-                });
-    }
-
-    @Test
-    void nullOrgId_throws404_evenWithBlankList() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=")
-                .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), null));
+    @ParameterizedTest
+    @MethodSource("accessRows")
+    void access_followsTheKillSwitchAndTheAllowList(String enabled, String betaOrgs, UUID org, boolean allowed) {
+        ContextConsumer<AssertableApplicationContext> check = ctx -> {
+            AudiencePlanAccess access = ctx.getBean(AudiencePlanAccess.class);
+            assertThat(access.isEnabled(org)).isEqualTo(allowed);
+            if (allowed) {
+                assertThatCode(() -> access.requireEnabled(org)).doesNotThrowAnyException();
+            } else {
+                assertNotFound(access, org);
+            }
+        };
+        if (enabled == null) {
+            ShippedYaml.run(List.of("IMIN_AUDIENCE_PLAN_BETA_ORGS"), check);
+        } else {
+            runner.withPropertyValues("imin.audience-plan.enabled=" + enabled,
+                    "imin.audience-plan.beta-org-ids=" + betaOrgs).run(check);
+        }
     }
 
     @Test
@@ -96,220 +76,43 @@ class AudiencePlanAccessTest {
                 });
     }
 
-    @Test
-    void sendsEnabled_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getSendsEnabled()).isFalse();
+    static Stream<Arguments> protectingFlags() {
+        return Stream.of(
+                arguments("IMIN_AUDIENCE_PLAN_SENDS_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getSendsEnabled),
+                arguments("IMIN_AUDIENCE_PLAN_SOFT_OPT_IN", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getSoftOptInEnabled),
+                arguments("IMIN_AUDIENCE_RETENTION_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getRetentionJobEnabled),
+                arguments("IMIN_CONSENT_GATE_ALL_CAMPAIGNS", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getConsentGateAllCampaigns),
+                arguments("IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getLegalIdentityAllCampaigns),
+                arguments("IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getConsentConfirmationEmailsEnabled));
     }
 
-    @Test
-    void sendsEnabled_blankEnvVar_bindsFalse() {
-        // The shipped placeholder, with the env var stubbed to empty so a local value cannot leak in.
-        runner.withPropertyValues("IMIN_AUDIENCE_PLAN_SENDS_ENABLED=",
-                        "imin.audience-plan.sends-enabled=${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}")
-                .run(ctx -> {
-                    assertThat(ctx.getBean(AudiencePlanProperties.class).getSendsEnabled()).isFalse();
-                    assertThat(ctx.getBean(AudiencePlanAccess.class).sendsEnabled()).isFalse();
-                });
+    @ParameterizedTest
+    @MethodSource("protectingFlags")
+    void shippedYaml_withEnvVarsUnsetOrBlank_keepsEveryProtectingFlagOff(String envVar,
+                                                                         Function<AudiencePlanProperties, Boolean> flag) {
+        ShippedYaml.run(List.of(envVar),
+                ctx -> assertThat(flag.apply(ctx.getBean(AudiencePlanProperties.class))).isFalse());
     }
 
-    @Test
-    void sendsEnabled_shippedYamlDefaultsToFalse() throws Exception {
-        String yaml = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        assertThat(yaml).contains("sends-enabled: ${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}");
+    static Stream<Arguments> legalIdentityRows() {
+        return Stream.of(
+                // allCampaigns flag, origin, required
+                arguments(false, "audience_plan", true),
+                arguments(false, "manual", false),
+                arguments(false, "momentum", false),
+                arguments(false, null, false),
+                arguments(true, "audience_plan", true),
+                arguments(true, "manual", true),
+                arguments(true, "momentum", true),
+                arguments(true, null, true));
     }
 
-    @Test
-    void sendsEnabled_nullSetter_staysFalse() {
+    @ParameterizedTest
+    @MethodSource("legalIdentityRows")
+    void legalIdentityRequired_dependsOnTheFlagAndTheOrigin(boolean allCampaigns, String origin, boolean required) {
         AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setSendsEnabled(null);
-        assertThat(props.getSendsEnabled()).isFalse();
-    }
-
-    @Test
-    void softOptIn_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getSoftOptInEnabled()).isFalse();
-    }
-
-    @Test
-    void softOptIn_blankEnvVar_bindsFalse() {
-        runner.withPropertyValues("IMIN_AUDIENCE_PLAN_SOFT_OPT_IN=",
-                        "imin.audience-plan.soft-opt-in-enabled=${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getSoftOptInEnabled()).isFalse());
-    }
-
-    @Test
-    void softOptIn_true_binds() {
-        runner.withPropertyValues("imin.audience-plan.soft-opt-in-enabled=true")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getSoftOptInEnabled()).isTrue());
-    }
-
-    @Test
-    void softOptIn_shippedYamlDefaultsToFalse() throws Exception {
-        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
-        assertThat(main).contains("soft-opt-in-enabled: ${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}");
-        assertThat(test).contains("soft-opt-in-enabled: false");
-    }
-
-    @Test
-    void softOptIn_nullSetter_staysFalse() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setSoftOptInEnabled(null);
-        assertThat(props.getSoftOptInEnabled()).isFalse();
-    }
-
-    @Test
-    void retentionJob_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getRetentionJobEnabled()).isFalse();
-    }
-
-    @Test
-    void retentionJob_blankEnvVar_bindsFalse() {
-        runner.withPropertyValues("IMIN_AUDIENCE_RETENTION_ENABLED=",
-                        "imin.audience-plan.retention-job-enabled=${IMIN_AUDIENCE_RETENTION_ENABLED:false}")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getRetentionJobEnabled()).isFalse());
-    }
-
-    @Test
-    void retentionJob_true_binds() {
-        runner.withPropertyValues("imin.audience-plan.retention-job-enabled=true")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getRetentionJobEnabled()).isTrue());
-    }
-
-    @Test
-    void retentionJob_shippedYamlDefaultsToFalse() throws Exception {
-        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
-        assertThat(main).contains("retention-job-enabled: ${IMIN_AUDIENCE_RETENTION_ENABLED:false}");
-        assertThat(test).contains("retention-job-enabled: false");
-    }
-
-    @Test
-    void retentionJob_nullSetter_staysFalse() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setRetentionJobEnabled(null);
-        assertThat(props.getRetentionJobEnabled()).isFalse();
-    }
-
-    @Test
-    void consentGateAllCampaigns_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getConsentGateAllCampaigns()).isFalse();
-    }
-
-    @Test
-    void consentGateAllCampaigns_blankEnvVar_bindsFalse() {
-        runner.withPropertyValues("IMIN_CONSENT_GATE_ALL_CAMPAIGNS=",
-                        "imin.audience-plan.consent-gate-all-campaigns=${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getConsentGateAllCampaigns()).isFalse());
-    }
-
-    @Test
-    void consentGateAllCampaigns_true_binds() {
-        runner.withPropertyValues("imin.audience-plan.consent-gate-all-campaigns=true")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getConsentGateAllCampaigns()).isTrue());
-    }
-
-    @Test
-    void consentGateAllCampaigns_shippedYamlDefaultsToFalse() throws Exception {
-        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
-        assertThat(main).contains("consent-gate-all-campaigns: ${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}");
-        assertThat(test).contains("consent-gate-all-campaigns: false");
-    }
-
-    @Test
-    void consentGateAllCampaigns_nullSetter_staysFalse() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setConsentGateAllCampaigns(null);
-        assertThat(props.getConsentGateAllCampaigns()).isFalse();
-    }
-
-    @Test
-    void legalIdentityAllCampaigns_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getLegalIdentityAllCampaigns()).isFalse();
-        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).legalIdentityAllCampaigns()).isFalse();
-    }
-
-    @Test
-    void legalIdentityAllCampaigns_blankEnvVar_bindsFalse() {
-        runner.withPropertyValues("IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS=",
-                        "imin.audience-plan.legal-identity-all-campaigns=${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).legalIdentityAllCampaigns()).isFalse());
-    }
-
-    @Test
-    void legalIdentityAllCampaigns_true_binds() {
-        runner.withPropertyValues("imin.audience-plan.legal-identity-all-campaigns=true")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).legalIdentityAllCampaigns()).isTrue());
-    }
-
-    @Test
-    void legalIdentityAllCampaigns_shippedYamlDefaultsToFalse() throws Exception {
-        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
-        assertThat(main).contains("legal-identity-all-campaigns: ${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}");
-        assertThat(test).contains("legal-identity-all-campaigns: false");
-    }
-
-    @Test
-    void legalIdentityAllCampaigns_nullSetter_staysFalse() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setLegalIdentityAllCampaigns(null);
-        assertThat(props.getLegalIdentityAllCampaigns()).isFalse();
-    }
-
-    @Test
-    void consentConfirmationEmails_defaultsFalse() {
-        assertThat(new AudiencePlanProperties().getConsentConfirmationEmailsEnabled()).isFalse();
-        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).consentConfirmationEmailsEnabled()).isFalse();
-    }
-
-    @Test
-    void consentConfirmationEmails_blankEnvVar_bindsFalse() {
-        runner.withPropertyValues("IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED=",
-                        "imin.audience-plan.consent-confirmation-emails-enabled=${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).consentConfirmationEmailsEnabled()).isFalse());
-    }
-
-    @Test
-    void consentConfirmationEmails_true_binds() {
-        runner.withPropertyValues("imin.audience-plan.consent-confirmation-emails-enabled=true")
-                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).consentConfirmationEmailsEnabled()).isTrue());
-    }
-
-    @Test
-    void consentConfirmationEmails_shippedYamlDefaultsToFalse() throws Exception {
-        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
-        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
-        assertThat(main).contains("consent-confirmation-emails-enabled: ${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}");
-        assertThat(test).contains("consent-confirmation-emails-enabled: false");
-    }
-
-    @Test
-    void consentConfirmationEmails_nullSetter_staysFalse() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setConsentConfirmationEmailsEnabled(null);
-        assertThat(props.getConsentConfirmationEmailsEnabled()).isFalse();
-    }
-
-    @Test
-    void legalIdentityRequired_flagOff_onlyAudiencePlan() {
-        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
-        assertThat(access.legalIdentityRequired("audience_plan")).isTrue();
-        assertThat(access.legalIdentityRequired("manual")).isFalse();
-        assertThat(access.legalIdentityRequired("momentum")).isFalse();
-        assertThat(access.legalIdentityRequired(null)).isFalse();
-    }
-
-    @Test
-    void legalIdentityRequired_flagOn_everyOrigin() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setLegalIdentityAllCampaigns(true);
-        AudiencePlanAccess access = new AudiencePlanAccess(props);
-        assertThat(access.legalIdentityRequired("audience_plan")).isTrue();
-        assertThat(access.legalIdentityRequired("manual")).isTrue();
-        assertThat(access.legalIdentityRequired("momentum")).isTrue();
-        assertThat(access.legalIdentityRequired(null)).isTrue();
+        props.setLegalIdentityAllCampaigns(allCampaigns);
+        assertThat(new AudiencePlanAccess(props).legalIdentityRequired(origin)).isEqualTo(required);
     }
 
     @Test
@@ -332,61 +135,33 @@ class AudiencePlanAccessTest {
         assertThatCode(() -> access.requireLegalIdentity("manual", org)).doesNotThrowAnyException();
     }
 
-    @Test
-    void sendsOff_audiencePlanOrigin_throws409() {
-        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
-        assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))
-                .isInstanceOfSatisfying(ApiException.class, e -> {
-                    assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
-                    assertThat(e.code()).isEqualTo(ErrorCode.AUDIENCE_SENDS_DISABLED);
-                    assertThat(e.getMessage()).isEqualTo("Sending audience plan campaigns is not enabled yet");
-                });
+    static Stream<Arguments> sendsRows() {
+        return Stream.of(
+                // sends flag, origin, blocked
+                arguments(false, "audience_plan", true),
+                arguments(false, "manual", false),
+                arguments(false, "momentum", false),
+                arguments(false, null, false),
+                arguments(true, "audience_plan", false));
     }
 
-    @Test
-    void sendsOff_otherOrigins_pass() {
-        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
-        assertThatCode(() -> access.requireSendsAllowed("manual")).doesNotThrowAnyException();
-        assertThatCode(() -> access.requireSendsAllowed("momentum")).doesNotThrowAnyException();
-        assertThatCode(() -> access.requireSendsAllowed(null)).doesNotThrowAnyException();
-    }
-
-    @Test
-    void sendsOn_audiencePlanOrigin_passes() {
-        runner.withPropertyValues("imin.audience-plan.sends-enabled=true")
-                .run(ctx -> {
-                    AudiencePlanAccess access = ctx.getBean(AudiencePlanAccess.class);
-                    assertThat(access.sendsEnabled()).isTrue();
-                    assertThatCode(() -> access.requireSendsAllowed("audience_plan")).doesNotThrowAnyException();
-                });
-    }
-
-    // ---- isEnabled: the non-throwing form background work uses ----
-
-    @Test
-    void isEnabled_defaults_trueForAnyOrg() {
-        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).isEnabled(A)).isTrue();
-    }
-
-    @Test
-    void isEnabled_killSwitchOff_false() {
+    @ParameterizedTest
+    @MethodSource("sendsRows")
+    void requireSendsAllowed_blocksOnlyAudiencePlanCampaignsWhileTheSwitchIsOff(boolean sends, String origin,
+                                                                               boolean blocked) {
         AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setEnabled(false);
-        assertThat(new AudiencePlanAccess(props).isEnabled(A)).isFalse();
-    }
-
-    @Test
-    void isEnabled_nullOrg_false() {
-        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).isEnabled(null)).isFalse();
-    }
-
-    @Test
-    void isEnabled_nonBlankList_onlyListedOrgs() {
-        AudiencePlanProperties props = new AudiencePlanProperties();
-        props.setBetaOrgIds(Set.of(A));
+        props.setSendsEnabled(sends);
         AudiencePlanAccess access = new AudiencePlanAccess(props);
-        assertThat(access.isEnabled(A)).isTrue();
-        assertThat(access.isEnabled(B)).isFalse();
+        if (blocked) {
+            assertThatThrownBy(() -> access.requireSendsAllowed(origin))
+                    .isInstanceOfSatisfying(ApiException.class, e -> {
+                        assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+                        assertThat(e.code()).isEqualTo(ErrorCode.AUDIENCE_SENDS_DISABLED);
+                        assertThat(e.getMessage()).isEqualTo("Sending audience plan campaigns is not enabled yet");
+                    });
+        } else {
+            assertThatCode(() -> access.requireSendsAllowed(origin)).doesNotThrowAnyException();
+        }
     }
 
     private static void assertNotFound(AudiencePlanAccess access, UUID orgId) {

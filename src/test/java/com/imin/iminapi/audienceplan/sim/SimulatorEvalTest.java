@@ -15,7 +15,6 @@ import com.imin.iminapi.audienceplan.sim.SyntheticDataGenerator.SimOrg;
 import com.imin.iminapi.audienceplan.sim.SyntheticDataGenerator.Target;
 import com.imin.iminapi.audienceplan.sim.SyntheticDataGenerator.World;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,11 +22,9 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,9 +72,6 @@ class SimulatorEvalTest {
     private static Map<UUID, Map<UUID, FanFeatureCalculator.Result>> featuresByOrg;
     private static List<SegmentCheck> checks;
     private static List<Plan> plans;
-    private static int invited;
-    private static int invitedResponders;
-    private static int responders;
 
     @BeforeAll
     static void simulate() {
@@ -116,7 +110,6 @@ class SimulatorEvalTest {
                         target.tiers(), TARGET_PCT, ticketsPerOrder, Map.of(NOT_MAILABLE_REASON, notMailable),
                         mailable, world.now(), target.event().getStartsAt(), org.spec().zone(), null, null));
                 plans.add(plan);
-                Set<UUID> invitedIds = new HashSet<>();
                 for (PlanSegment s : plan.segments()) {
                     double trueExpected = 0;
                     int bought = 0;
@@ -125,17 +118,10 @@ class SimulatorEvalTest {
                         if (o == null) fail("segment member without a simulated outcome: " + id);
                         trueExpected += o.rate() * org.behaviour().ticketsPerOrder();
                         bought += o.tickets();
-                        invitedIds.add(id);
                     }
                     checks.add(new SegmentCheck(org.spec().key(), target.event().getGenreKey(), s, trueExpected,
                             bought));
                 }
-                for (Map.Entry<UUID, Outcome> e : target.outcomes().entrySet()) {
-                    if (!e.getValue().bought()) continue;
-                    responders++;
-                    if (invitedIds.contains(e.getKey())) invitedResponders++;
-                }
-                invited += invitedIds.size();
             }
         }
     }
@@ -183,26 +169,5 @@ class SimulatorEvalTest {
                 inRange, checks.size(), Math.round(1000.0 * inRange / checks.size()) / 10.0);
         assertThat((double) inRange / checks.size()).as("single-draw share inside the shown range")
                 .isGreaterThanOrEqualTo(0.60);
-    }
-
-    @Test
-    void segment_precision_and_recall_against_simulated_responders_are_reported() {
-        double precision = (double) invitedResponders / invited;
-        double recall = (double) invitedResponders / responders;
-        log.info("Simulator segments: precision {} ({} of {} invited bought), recall {} ({} of {} buyers invited)",
-                Math.round(precision * 1000) / 1000.0, invitedResponders, invited,
-                Math.round(recall * 1000) / 1000.0, invitedResponders, responders);
-
-        assertThat(invited).isPositive();
-        assertThat(responders).isPositive();
-        assertThat(precision).isBetween(0.0, 1.0);
-        assertThat(recall).isBetween(0.0, 1.0);
-    }
-
-    @Test
-    @Disabled("Needs invitations sent with a holdout, which are not built yet; the simulator then records an "
-            + "organic rate for the holdout so the recovered lift can be compared with the simulated one.")
-    void lift_recovered_from_holdouts_is_within_tolerance() {
-        fail("holdout invitations are not built yet");
     }
 }

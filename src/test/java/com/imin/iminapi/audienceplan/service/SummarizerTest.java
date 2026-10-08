@@ -151,63 +151,44 @@ class SummarizerTest {
 
     // ── refusal / empty / malformed / exception ─────────────────────────────
 
-    @Test
-    void refusal_fallsBackToTheTemplate_withoutRetry() {
-        SummaryFixtures.expectAnswer(server, "refusal.json");
+    private static final org.springframework.test.web.client.RequestMatcher ANY_REQUEST =
+            org.springframework.test.web.client.match.MockRestRequestMatchers.anything();
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> unusableAnswers() {
+        // row: the model's answer, the client to call (null = the replaying one), model calls spent
+        return java.util.stream.Stream.of(
+                row("refusal", t -> SummaryFixtures.expectAnswer(t.server, "refusal.json"), 1),
+                row("empty answer", t -> SummaryFixtures.expectAnswer(t.server, "empty.json"), 1),
+                row("content filter", t -> SummaryFixtures.expectAnswer(t.server, "content-filter.json"), 1),
+                row("wrong number of segment lines",
+                        t -> SummaryFixtures.expectAnswer(t.server, "wrong-shape-en.json"), 1),
+                row("line over 400 chars", t -> t.server.expect(ANY_REQUEST).andRespond(
+                        withContent(validContent().replace("You still need 160–230 tickets",
+                                "You still need 160–230 tickets" + " very".repeat(80)))), 1),
+                row("malformed json", t -> t.server.expect(ANY_REQUEST).andRespond(withContent(
+                        "{\"headline\": \"Your list could bring 25–95\", \"segmentLines\": [}")), 1),
+                row("client throws", t -> {
+                    t.chat = mock(ChatClient.class);
+                    when(t.chat.prompt()).thenThrow(new IllegalStateException("upstream 503"));
+                }, 0));
+    }
+
+    private static org.junit.jupiter.params.provider.Arguments row(String name,
+            java.util.function.Consumer<SummarizerTest> arrange, int modelCalls) {
+        return org.junit.jupiter.params.provider.Arguments.of(name, arrange, modelCalls);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.MethodSource("unusableAnswers")
+    void unusableAnswer_fallsBackToTheTemplate_withoutRetry(String name,
+            java.util.function.Consumer<SummarizerTest> arrange, int modelCalls) {
+        arrange.accept(this);
 
         Summarizer.Generated g = generate("en");
 
         server.verify();
         assertTemplate(g.summary(), "en");
-        assertThat(g.spend().calls()).isEqualTo(1);
-    }
-
-    @Test
-    void emptyAnswer_fallsBackToTheTemplate() {
-        SummaryFixtures.expectAnswer(server, "empty.json");
-
-        assertTemplate(generate("en").summary(), "en");
-        server.verify();
-    }
-
-    @Test
-    void contentFilter_fallsBackToTheTemplate() {
-        SummaryFixtures.expectAnswer(server, "content-filter.json");
-
-        assertTemplate(generate("en").summary(), "en");
-        server.verify();
-    }
-
-    @Test
-    void wrongNumberOfSegmentLines_fallsBackToTheTemplate() {
-        SummaryFixtures.expectAnswer(server, "wrong-shape-en.json");
-
-        assertTemplate(generate("en").summary(), "en");
-        server.verify();
-    }
-
-    @Test
-    void exception_fallsBackToTheTemplate_withNothingSpent() {
-        ChatClient failing = mock(ChatClient.class);
-        when(failing.prompt()).thenThrow(new IllegalStateException("upstream 503"));
-
-        Summarizer.Generated g = summarizer(failing).generate(ORG, SummaryFixtures.warm(), "en");
-
-        assertTemplate(g.summary(), "en");
-        assertThat(g.spend()).isEqualTo(Summarizer.Spend.NONE);
-    }
-
-    @Test
-    void lineOver400Chars_fallsBackToTheTemplate() {
-        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.anything())
-                .andRespond(withContent(validContent().replace("You still need 160–230 tickets",
-                        "You still need 160–230 tickets" + " very".repeat(80))));
-
-        Summarizer.Generated g = generate("en");
-
-        server.verify();
-        assertTemplate(g.summary(), "en");
-        assertThat(g.spend().calls()).isEqualTo(1);
+        assertThat(g.spend().calls()).isEqualTo(modelCalls);
     }
 
     @Test
@@ -219,18 +200,6 @@ class SummarizerTest {
                         "You still need 160–230 tickets from people who are not on your list.", padded)));
 
         assertThat(generate("en").summary().gapLine()).hasSize(Summarizer.MAX_LINE_CHARS);
-    }
-
-    @Test
-    void malformedJson_fallsBackToTheTemplate_withoutRetry() {
-        server.expect(org.springframework.test.web.client.match.MockRestRequestMatchers.anything())
-                .andRespond(withContent("{\"headline\": \"Your list could bring 25–95\", \"segmentLines\": [}"));
-
-        Summarizer.Generated g = generate("en");
-
-        server.verify();
-        assertTemplate(g.summary(), "en");
-        assertThat(g.spend().calls()).isEqualTo(1);
     }
 
     // ── daily cap ────────────────────────────────────────────────────────────

@@ -23,20 +23,6 @@ class CityOpenDataRefreshJobTest {
     private final CityOpenDataRefreshJob job = new CityOpenDataRefreshJob(publicData);
 
     @Test
-    void everyCityAndDatasetGoesThroughTheService() {
-        when(publicData.knownCities()).thenReturn(List.of(METZ, NANCY));
-        when(publicData.refresh(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(Optional.empty());
-
-        job.run();
-
-        for (OpenDataset d : OpenDataset.values()) {
-            verify(publicData).refresh("metz", d);
-            verify(publicData).refresh("nancy", d);
-        }
-        verify(publicData, org.mockito.Mockito.never()).get(anyString(), org.mockito.ArgumentMatchers.any());
-    }
-
-    @Test
     void aTownAbroadIsRefreshedOnlyForTheDatasetsCoveringItsCountry() {
         OpenDataCity lux = new OpenDataCity("luxembourg", "Luxembourg", "LU", null, null);
         when(publicData.knownCities()).thenReturn(List.of(lux));

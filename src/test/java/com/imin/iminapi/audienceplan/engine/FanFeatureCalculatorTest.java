@@ -334,6 +334,25 @@ class FanFeatureCalculatorTest {
 
     // ---- taste ----
 
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> tasteRows() {
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of("no genre key",
+                        List.of(new TasteCalculator.Purchase(null, NOW), new TasteCalculator.Purchase(POP, NOW)),
+                        Map.of(POP, 1.0)),
+                org.junit.jupiter.params.provider.Arguments.of("no purchase time",
+                        List.of(new TasteCalculator.Purchase(TECHNO, null), new TasteCalculator.Purchase(POP, NOW)),
+                        Map.of(POP, 1.0)),
+                org.junit.jupiter.params.provider.Arguments.of("nothing qualifies",
+                        List.of(new TasteCalculator.Purchase(null, null)), Map.of()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.MethodSource("tasteRows")
+    void taste_skipsPurchasesWithoutGenreOrTime(String name, List<TasteCalculator.Purchase> purchases,
+                                                Map<String, Double> expected) {
+        assertThat(TasteCalculator.taste(purchases, java.util.Set.of(POP, TECHNO), 180, NOW)).isEqualTo(expected);
+    }
+
     @Test
     void nonWhitelistedGenre_contributesNothing() {
         paidOrder(event("minimal", daysAgo(10)), daysAgo(10), 1);
