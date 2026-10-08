@@ -1,15 +1,14 @@
 package com.imin.iminapi.audience;
 
 import com.imin.iminapi.audience.service.ConsentExportService;
+import com.imin.iminapi.support.SharedPostgres;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
+import javax.sql.DataSource;
 import java.io.StringWriter;
 import java.time.Clock;
 import java.util.UUID;
@@ -18,17 +17,19 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** V150 backfills the provenance key from the proof-text prefix, and the export joins on it, on real Postgres. */
-@Testcontainers(disabledWithoutDocker = true)
 class ConsentExportPostgresTest {
 
-    @Container
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
+    private DataSource ds;
+
+    @AfterEach
+    void dropDatabase() {
+        if (ds != null) SharedPostgres.drop(ds);
+    }
 
     @Test
     void v150_backfillsTheRealImportRecordOnly_andTheExportJoinsOnIt() {
-        DriverManagerDataSource ds = new DriverManagerDataSource(PG.getJdbcUrl(), PG.getUsername(), PG.getPassword());
+        ds = SharedPostgres.migratedDatabase("consent_export", "145");
         JdbcTemplate jdbc = new JdbcTemplate(ds);
-        flyway(ds, "145").migrate();
 
         UUID orgId = UUID.randomUUID();
         UUID consumerId = UUID.randomUUID();
@@ -64,7 +65,7 @@ class ConsentExportPostgresTest {
                 VALUES (?, ?, ?, 7, 'none', FALSE, 'not_opted_in')
                 """, rejectedRow, importId, membershipId);
 
-        flyway(ds, "latest").migrate();
+        flyway(ds).migrate();
 
         assertThat(jdbc.queryForObject("SELECT consent_record_id FROM import_row_provenance WHERE id = ?",
                 UUID.class, acceptedRow)).isEqualTo(realRecord);
@@ -83,8 +84,7 @@ class ConsentExportPostgresTest {
                 .endsWith(",typed by hand,,,,,,false,");
     }
 
-    private static Flyway flyway(DriverManagerDataSource ds, String target) {
-        return Flyway.configure().dataSource(ds).locations("classpath:db/migration")
-                .target(target).load();
+    private static Flyway flyway(DataSource ds) {
+        return Flyway.configure().dataSource(ds).locations("classpath:db/migration").load();
     }
 }

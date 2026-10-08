@@ -115,7 +115,7 @@ public class MomentumTestSupport {
             o.setToken("tok-" + UUID.randomUUID());
             o.setEventId(eventId);
             o.setOrgId(orgId);
-            o.setEmail("buyer" + i + "@example.com");
+            o.setEmail("buyer" + i + "-" + UUID.randomUUID() + "@example.com");
             o.setTotalMinor(2500);
             o.setCurrency("EUR");
             o.setPaymentMethod("free");

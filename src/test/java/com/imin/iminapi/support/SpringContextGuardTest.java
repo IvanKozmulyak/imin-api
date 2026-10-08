@@ -4,6 +4,8 @@ import com.imin.iminapi.support.SpringContextGuard.Kind;
 import com.imin.iminapi.support.SpringContextGuard.Violation;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -38,6 +40,7 @@ class SpringContextGuardTest {
     @SpringBootTest static class LegacyBoot {}
     @DataJpaTest static class LegacySlice {}
     @ContextConfiguration static class LegacyContextConfig {}
+    @ExtendWith(SpringExtension.class) static class LegacyBareExtension {}
 
     @SpringBootTest static class LegacyOuter {
         @Nested class Inner {}
@@ -92,7 +95,7 @@ class SpringContextGuardTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"LegacyBoot", "LegacySlice", "LegacyContextConfig"})
+    @ValueSource(strings = {"LegacyBoot", "LegacySlice", "LegacyContextConfig", "LegacyBareExtension"})
     void bootingClassWithoutNamedContext_isLegacy(String name) throws Exception {
         assertThat(kinds(fixture(name))).containsExactly(Kind.LEGACY);
     }

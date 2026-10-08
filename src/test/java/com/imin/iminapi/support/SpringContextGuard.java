@@ -18,6 +18,8 @@ import org.springframework.test.context.ContextHierarchy;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestContextAnnotationUtils;
 import org.springframework.test.context.TestExecutionListeners;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -67,7 +69,21 @@ final class SpringContextGuard {
 
     static boolean boots(Class<?> c) {
         return TestContextAnnotationUtils.hasAnnotation(c, BootstrapWith.class)
-                || TestContextAnnotationUtils.hasAnnotation(c, ContextConfiguration.class);
+                || TestContextAnnotationUtils.hasAnnotation(c, ContextConfiguration.class)
+                || extendsWithSpring(c);
+    }
+
+    // ponytail: annotation scan only; a context built in a test method (new AnnotationConfigApplicationContext,
+    // SpringApplication) is invisible to it.
+    private static boolean extendsWithSpring(Class<?> c) {
+        for (Class<?> level = c; level != null; level = level.getEnclosingClass()) {
+            if (MergedAnnotations.from(level, MergedAnnotations.SearchStrategy.TYPE_HIERARCHY)
+                    .stream(ExtendWith.class)
+                    .anyMatch(a -> List.of(a.getClassArray("value")).contains(SpringExtension.class))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean named(Class<?> c) {
