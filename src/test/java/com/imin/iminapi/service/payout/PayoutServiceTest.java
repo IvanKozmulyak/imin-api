@@ -159,6 +159,7 @@ class PayoutServiceTest {
         assertThat(summary.thisMonth()).isEqualTo(30_000L);
         assertThat(summary.thisMonthCount()).isEqualTo(3);
         assertThat(summary.arrivesOnLabel()).isEqualTo("Jun 20");
+        assertThat(summary.arrivesOn()).isEqualTo(java.time.LocalDate.parse("2026-06-20"));
     }
 
     // ── stripe-5 — the pending tile is PAYOUT-scoped, not a lifetime transfer total ──
@@ -204,6 +205,31 @@ class PayoutServiceTest {
         assertThat(summary.thisMonth()).isZero();
         assertThat(summary.thisMonthCount()).isNull();   // optional → omitted when zero
         assertThat(summary.arrivesOnLabel()).isNull();   // optional → null when no in-transit arrival
+        assertThat(summary.arrivesOn()).isNull();
+    }
+
+    // The earliest arrival wins even when the newest-created row arrives later; a
+    // transfer row is not a payout arrival; a 22:30Z instant is the 20th (UTC bank
+    // date), not the 21st it would be in Paris.
+    @Test
+    void summary_arrivesOnIsSoonestInTransitPayoutDateInUtc() {
+        when(settlements.sumAmountByOrgAndTypeAndStatus(any(), any(), any())).thenReturn(0L);
+        when(settlements.countAndSumPaidByOrgAndTypeInWindow(eq(ORG), eq(SettlementObjectType.PAYOUT),
+                eq(SettlementStatus.PAID), any(Instant.class), any(Instant.class)))
+                .thenReturn(java.util.Collections.singletonList(new Object[]{0L, 0L}));
+        when(settlements.findByOrgIdAndStatusOrderByCreatedAtDesc(ORG, SettlementStatus.IN_TRANSIT))
+                .thenReturn(List.of(
+                        settlement(SettlementStatus.IN_TRANSIT, SettlementObjectType.PAYOUT,
+                                1_000L, null, Instant.parse("2026-06-25T00:00:00Z")),
+                        settlement(SettlementStatus.IN_TRANSIT, SettlementObjectType.TRANSFER,
+                                1_000L, null, Instant.parse("2026-06-18T00:00:00Z")),
+                        settlement(SettlementStatus.IN_TRANSIT, SettlementObjectType.PAYOUT,
+                                1_000L, null, Instant.parse("2026-06-20T22:30:00Z"))));
+
+        PayoutsSummaryResponse summary = sut.summary(ORG);
+
+        assertThat(summary.arrivesOn()).isEqualTo(java.time.LocalDate.parse("2026-06-20"));
+        assertThat(summary.arrivesOnLabel()).isEqualTo("Jun 20");
     }
 
     @Test

@@ -597,6 +597,7 @@ Response: {
   "thisMonth": 508800,
   "pending": 124800,
   "arrivesOnLabel"?: "Mon, Apr 22",
+  "arrivesOn"?: "2026-04-22",   // ISO date (UTC bank date), null when no in-transit payout
   "thisMonthCount"?: 3
 }
 ```

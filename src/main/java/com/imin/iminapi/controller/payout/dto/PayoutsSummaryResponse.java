@@ -1,5 +1,7 @@
 package com.imin.iminapi.controller.payout.dto;
 
+import java.time.LocalDate;
+
 /**
  * Response of {@code GET /api/v1/payouts/summary}. Mirrors the FE
  * {@code PayoutsSummary} interface (imin-webapp src/shared/api/types.ts:230-238)
@@ -10,6 +12,7 @@ package com.imin.iminapi.controller.payout.dto;
  *   thisMonth       number   — sum(amount) of payouts PAID this calendar month (minor units)
  *   pending         number   — sum(amount) of pending settlements (minor units)
  *   arrivesOnLabel  string?  — optional; next expected arrival, null when unknown
+ *   arrivesOn       string?  — ISO date (UTC bank date) of the next in-transit payout, null when none
  *   thisMonthCount  number?  — optional; count of payouts this month, null when n/a
  * </pre>
  *
@@ -23,5 +26,6 @@ public record PayoutsSummaryResponse(
         long thisMonth,
         long pending,
         String arrivesOnLabel,
+        LocalDate arrivesOn,
         Integer thisMonthCount
 ) {}

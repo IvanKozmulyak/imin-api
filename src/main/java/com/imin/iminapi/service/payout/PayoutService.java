@@ -31,6 +31,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.TextStyle;
@@ -158,14 +159,15 @@ public class PayoutService {
             thisMonth = toLong(tuple[1]);
         }
 
-        // arrivesOnLabel: the soonest arrival among in-transit payouts, if any.
-        String arrivesOnLabel = nextArrivalLabel(orgId);
+        // The soonest arrival among in-transit payouts, if any.
+        LocalDate arrivesOn = nextArrivalDate(orgId);
 
         return new PayoutsSummaryResponse(
                 inTransit,
                 thisMonth,
                 pending,
-                arrivesOnLabel,                                   // optional → null when unknown
+                arrivesOn == null ? null : formatArrivalLabel(arrivesOn),
+                arrivesOn,
                 thisMonthCount == 0 ? null : thisMonthCount);     // optional → null when n/a
     }
 
@@ -291,23 +293,25 @@ public class PayoutService {
         return names;
     }
 
-    /** Soonest arrival label among in-transit payouts for the org (or null). */
-    private String nextArrivalLabel(UUID orgId) {
+    /**
+     * Soonest arrival date among in-transit payouts (or null). UTC on purpose: Stripe's
+     * arrival_date is a UTC-midnight timestamp standing for a bank calendar date.
+     */
+    private LocalDate nextArrivalDate(UUID orgId) {
         Instant soonest = null;
         for (Settlement s : settlements.findByOrgIdAndStatusOrderByCreatedAtDesc(orgId, SettlementStatus.IN_TRANSIT)) {
             Instant a = s.getArrivalAt();
-            if (a != null && (soonest == null || a.isBefore(soonest))) {
+            if (s.getObjectType() == SettlementObjectType.PAYOUT
+                    && a != null && (soonest == null || a.isBefore(soonest))) {
                 soonest = a;
             }
         }
-        return soonest == null ? null : formatArrivalLabel(soonest);
+        return soonest == null ? null : soonest.atZone(ZoneOffset.UTC).toLocalDate();
     }
 
-    /** "Jun 18" style short arrival label (UTC). */
-    private static String formatArrivalLabel(Instant arrival) {
-        ZonedDateTime z = arrival.atZone(ZoneOffset.UTC);
-        String month = z.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH);
-        return month + " " + z.getDayOfMonth();
+    /** "Jun 18" style short arrival label (UTC), kept until the webapp reads the ISO date. */
+    private static String formatArrivalLabel(LocalDate arrival) {
+        return arrival.getMonth().getDisplayName(TextStyle.SHORT, Locale.ENGLISH) + " " + arrival.getDayOfMonth();
     }
 
     private static Instant startOfCurrentMonthUtc() {
