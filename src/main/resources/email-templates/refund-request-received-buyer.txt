@@ -4,5 +4,3 @@ Thanks — we got your refund request.
 
 The organiser will review and reply by email. You don't need to do
 anything else for now.
-
-Reference: {{requestId}}

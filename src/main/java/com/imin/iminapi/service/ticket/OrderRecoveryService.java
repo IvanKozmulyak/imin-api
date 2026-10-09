@@ -8,6 +8,8 @@ import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import org.slf4j.Logger;
@@ -17,6 +19,8 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -37,6 +41,7 @@ public class OrderRecoveryService {
     private static final Logger log = LoggerFactory.getLogger(OrderRecoveryService.class);
 
     private final OrderRepository orders;
+    private final EventRepository events;
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
@@ -45,6 +50,7 @@ public class OrderRecoveryService {
     private final IpHasher ipHasher;
 
     public OrderRecoveryService(OrderRepository orders,
+                                 EventRepository events,
                                  EmailService email,
                                  EmailTemplateRenderer renderer,
                                  EmailProperties emailProps,
@@ -52,6 +58,7 @@ public class OrderRecoveryService {
                                  OrderRecoveryAttemptRepository attempts,
                                  IpHasher ipHasher) {
         this.orders = orders;
+        this.events = events;
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
@@ -101,20 +108,21 @@ public class OrderRecoveryService {
             return;
         }
 
+        // One mail can span several orders in different languages; there is no "the"
+        // locale. Use the most recent order's — findRecentForRecovery is newest-first, so
+        // that is the buyer's latest expressed preference. Null ⇒ English.
+        String locale = found.get(0).getBuyerLocale();
+
         String base = baseUrl();
         StringBuilder linksHtml = new StringBuilder();
         StringBuilder linksText = new StringBuilder();
         for (Order o : found) {
             String url = base + "/order/" + o.getToken();
+            String label = orderLabel(o, locale);
             linksHtml.append("<li><a href=\"").append(url)
-                    .append("\" style=\"color:#0a66c2;\">").append(url).append("</a></li>");
-            linksText.append("- ").append(url).append('\n');
+                    .append("\" style=\"color:#0a66c2;\">").append(htmlEscape(label)).append("</a></li>");
+            linksText.append("- ").append(label).append('\n').append("  ").append(url).append('\n');
         }
-
-        // One mail can span several orders in different languages; there is no "the"
-        // locale. Use the most recent order's — findRecentForRecovery is newest-first, so
-        // that is the buyer's latest expressed preference. Null ⇒ English.
-        String locale = found.get(0).getBuyerLocale();
 
         // Renderer escapes by default; sidestep with placeholder + post-render replace.
         Map<String, String> values = new LinkedHashMap<>();
@@ -135,6 +143,27 @@ public class OrderRecoveryService {
         } catch (Exception e) {
             log.warn("Recovery email failed for {}: {}", LogSafe.email(normalized), LogSafe.redact(e.getMessage()));
         }
+    }
+
+    /** Event name + purchase date in the event's zone: what the buyer recognises, never an id. */
+    private String orderLabel(Order o, String locale) {
+        Event ev = events.findById(o.getEventId()).orElse(null);
+        String name = ev == null || ev.getName() == null ? "" : ev.getName();
+        ZoneId zone = ZoneId.of("UTC");
+        if (ev != null && ev.getTimezone() != null) {
+            try {
+                zone = ZoneId.of(ev.getTimezone());
+            } catch (Exception ignored) {
+                // bad stored zone ⇒ UTC date is still a usable label
+            }
+        }
+        String date = DateTimeFormatter.ofPattern("d LLL yyyy", Locale.forLanguageTag(EmailLocale.normalize(locale)))
+                .withZone(zone).format(o.getCreatedAt());
+        return name.isBlank() ? date : name + " · " + date;
+    }
+
+    private static String htmlEscape(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
     private void recordAttempt(String emailNormalized, String clientIp) {

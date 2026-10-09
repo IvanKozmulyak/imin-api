@@ -97,7 +97,6 @@ public class RefundConfirmationEmailer {
 
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName);
-        values.put("orderShortCode", order.getId().toString().substring(0, 8));
         values.put("ticketCount", String.valueOf(ticketCount));
         values.put("amountFormatted", MoneyFormat.format(refund.getAmountMinor(), refund.getCurrency()));
         values.put("organizerContact", organizerContact);

@@ -26,6 +26,9 @@ import static org.mockito.Mockito.when;
 
 class OrderRecoveryServiceTest {
 
+    private final com.imin.iminapi.repository.EventRepository events =
+            mock(com.imin.iminapi.repository.EventRepository.class);
+
     private OrderRecoveryService build(OrderRepository orders,
                                         EmailService email,
                                         OrderRecoveryAttemptRepository attempts) {
@@ -35,7 +38,7 @@ class OrderRecoveryServiceTest {
         tp.setSigningSecret("x".repeat(32));
         tp.setRecoveryWindowDays(90);
         tp.setRecoveryMaxPerHour(5);
-        return new OrderRecoveryService(orders, email, new EmailTemplateRenderer(),
+        return new OrderRecoveryService(orders, events, email, new EmailTemplateRenderer(),
                 ep, tp, attempts, new com.imin.iminapi.security.IpHasher("test-ip-hash-secret"));
     }
 

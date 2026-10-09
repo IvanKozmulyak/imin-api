@@ -98,7 +98,6 @@ public class RefundRequestEmailer {
             ? "" : " · " + rr.getBuyerPhone();
 
         Map<String, String> base = new LinkedHashMap<>();
-        base.put("requestId", rr.getId().toString());
         base.put("orgId", rr.getOrgId().toString());
         base.put("eventName", eventName);
         base.put("buyerEmail", rr.getBuyerEmail());
