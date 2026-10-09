@@ -52,7 +52,6 @@ class DashboardServiceTest {
 
     private void stubEmptyAuxiliary(UUID orgId) {
         when(revenue.forOrgWindow(eq(orgId), any(), any())).thenReturn(new Window(0, 0));
-        when(orders.orderCountsByEmailSince(eq(orgId), any())).thenReturn(List.of());
         Page<com.imin.iminapi.model.AuditLog> emptyPage = new PageImpl<>(List.of());
         when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any())).thenReturn(emptyPage);
     }
@@ -80,7 +79,6 @@ class DashboardServiceTest {
         assertThat(r.lastEvent().event()).isNull();
         assertThat(r.lastEvent().metrics().capacity()).isZero();
         assertThat(r.business().totalRevenueMinor()).isZero();
-        assertThat(r.business().repeatRatePct()).isZero();
         assertThat(r.activity()).isEmpty();
         assertThat(r.prediction()).isNull();
     }
@@ -334,32 +332,5 @@ class DashboardServiceTest {
         past.setStatus(EventStatus.PAST);
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
         return past;
-    }
-
-    @Test
-    void business_repeat_rate_counts_buyers_with_more_than_one_order() {
-        UUID orgId = UUID.randomUUID();
-        AuthPrincipal p = owner(orgId);
-        User u = new User(); u.setId(p.userId()); u.setEmail("j@x.com");
-        when(users.findById(p.userId())).thenReturn(Optional.of(u));
-        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of());
-        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
-        when(events.countLive(orgId)).thenReturn(0L);
-        when(events.countPublished(orgId)).thenReturn(0L);
-        when(events.countPast(orgId)).thenReturn(0L);
-        when(revenue.forOrgWindow(eq(orgId), any(), any())).thenReturn(new Window(0, 0));
-        Page<com.imin.iminapi.model.AuditLog> emptyPage = new PageImpl<>(List.of());
-        when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any())).thenReturn(emptyPage);
-
-        // 4 buyers, 2 of them returned → 50%.
-        when(orders.orderCountsByEmailSince(eq(orgId), any())).thenReturn(List.of(
-                new Object[]{"a@x.com", 1L},
-                new Object[]{"b@x.com", 2L},
-                new Object[]{"c@x.com", 3L},
-                new Object[]{"d@x.com", 1L}
-        ));
-
-        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-        assertThat(r.business().repeatRatePct()).isEqualTo(50);
     }
 }

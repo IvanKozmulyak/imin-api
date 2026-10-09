@@ -118,7 +118,7 @@ class AttributionServiceTest {
      * Visits no longer decide revenue; orders do.
      */
     @Test
-    void attribution_shape_channels_untagged_pct_and_repeat_buyer() {
+    void attribution_shape_channels_and_untagged_pct() {
         // tagged visits: 3 instagram, 1 newsletter; untagged: 1 (no source)
         visit("s1", "instagram", "instagram.com");
         visit("s2", "instagram", "instagram.com");
@@ -126,7 +126,6 @@ class AttributionServiceTest {
         visit("s4", "newsletter", "mail.google.com");
         visit("s5", null, "blog.example.com");
 
-        // repeat buyer: a@ has 2 orders, b@ has 1 → 50%
         order("a@example.com", 4000, "instagram");
         order("a@example.com", 4000, "instagram");
         order("b@example.com", 2000, "newsletter");
@@ -139,8 +138,6 @@ class AttributionServiceTest {
 
         // 5 total visits, 1 untagged → 20%
         assertThat(r.untaggedPct()).isEqualTo(20);
-        // 2 distinct buyers, 1 repeat → 50%
-        assertThat(r.repeatBuyerPct()).isEqualTo(50);
 
         // channels sorted by visits desc: instagram (3) first, newsletter (1)
         assertThat(r.channels()).extracting(AttributionResponse.Channel::source)
@@ -196,7 +193,6 @@ class AttributionServiceTest {
         AttributionResponse r = service.attribution(principal);
         assertThat(r.attributedRevenueMinor()).isZero();
         assertThat(r.untaggedPct()).isZero();
-        assertThat(r.repeatBuyerPct()).isZero();
         assertThat(r.channels()).isEmpty();
     }
 

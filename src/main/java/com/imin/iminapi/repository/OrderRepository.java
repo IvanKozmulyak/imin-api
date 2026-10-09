@@ -256,19 +256,6 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                                         @Param("normalizedEmails") Collection<String> normalizedEmails);
 
     /**
-     * Distinct (lowercased) buyer emails with their order-count for an org since
-     * a cutoff. Lets us compute repeat-rate in Java without a window function.
-     */
-    @Query("""
-            select lower(o.email), count(o) from Order o
-             where o.orgId = :orgId
-               and o.createdAt >= :since
-             group by lower(o.email)
-            """)
-    List<Object[]> orderCountsByEmailSince(@Param("orgId") UUID orgId,
-                                            @Param("since") Instant since);
-
-    /**
      * Distinct (orgId, lower(email)) pairs for all paid orders.
      * Used by {@link com.imin.iminapi.audience.service.AudienceBackfillJob}.
      */

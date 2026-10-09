@@ -410,8 +410,7 @@ Response: {
     "totalRevenueMinor": 1420800,
     "eventsPublished": 6,
     "eventsCompleted": 4,
-    "audienceCount": 2847,
-    "repeatRatePct": 41
+    "audienceCount": 2847
   },
   "activity": [ { "time": "2m ago", "label": "4-person squad bought ANTRUM tickets" } ]
 }

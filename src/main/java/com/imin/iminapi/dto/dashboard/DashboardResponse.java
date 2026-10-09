@@ -60,8 +60,7 @@ public record DashboardResponse(
             long totalRevenueMinor,
             long eventsPublished, long eventsCompleted,
             @Schema(description = "People in the org's audience, all time; the Audience page total. Not windowed.")
-            long audienceCount,
-            int repeatRatePct) {}
+            long audienceCount) {}
 
     public record Activity(String time, String label) {}
 }

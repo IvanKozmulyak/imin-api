@@ -156,9 +156,8 @@ public class DashboardService {
     private Business buildBusiness(AuthPrincipal p, Instant now, DashboardPeriod period) {
         Instant since = period.isAll() ? Instant.EPOCH : now.minus(period.duration());
         long total = revenue.forOrgWindow(p.orgId(), since, now).netRevenueMinor();
-        int repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), since));
         return new Business(total, events.countPublished(p.orgId()), events.countPast(p.orgId()),
-                memberships.countByOrgId(p.orgId()), repeatRate);
+                memberships.countByOrgId(p.orgId()));
     }
 
     /**
@@ -179,18 +178,6 @@ public class DashboardService {
 
     private Activity toActivity(AuditLog a) {
         return new Activity(ACTIVITY_TIME_FMT.format(a.getOccurredAt()), a.getSummary());
-    }
-
-    /**
-     * % of distinct buyers in window who placed >1 order. Returns 0 when no
-     * orders, or when only single-order buyers exist (so the UI shows "0%
-     * come back" instead of NaN/empty).
-     */
-    private static int repeatRatePct(List<Object[]> rows) {
-        if (rows.isEmpty()) return 0;
-        long total = rows.size();
-        long repeat = rows.stream().filter(r -> ((Number) r[1]).longValue() > 1).count();
-        return (int) Math.round(100.0 * repeat / total);
     }
 
     /** Null when the prior window is empty: a percentage of nothing is not a number to show. */

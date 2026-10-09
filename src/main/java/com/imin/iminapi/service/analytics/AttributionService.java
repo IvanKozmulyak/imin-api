@@ -8,7 +8,6 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -100,17 +99,13 @@ public class AttributionService {
         int untaggedPct = totalVisits == 0 ? 0
                 : (int) Math.round(100.0 * untaggedVisits / totalVisits);
 
-        // Reuse the existing repeat-rate definition: share of distinct buyers
-        // (by email) who placed >1 order. Instant.EPOCH = all-time window.
-        int repeatBuyerPct = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), Instant.EPOCH));
-
         // Total attributed revenue = the sum actually assigned to channels above. A source
         // with orders but no recorded visits still counts as attributed revenue, so sum the
         // map rather than the (visit-derived) channel list.
         long attributedRevenueMinor = revenueBySource.values().stream()
                 .mapToLong(Long::longValue).filter(v -> v > 0).sum();
 
-        return new AttributionResponse(attributedRevenueMinor, untaggedPct, repeatBuyerPct, channels);
+        return new AttributionResponse(attributedRevenueMinor, untaggedPct, channels);
     }
 
     @Transactional(readOnly = true)
@@ -147,16 +142,5 @@ public class AttributionService {
             // fact. Fall back to every client.
             default -> funnel.countVisitsBySourceForOrg(p.orgId());
         };
-    }
-
-    /**
-     * % of distinct buyers who placed >1 order. Mirrors
-     * {@code DashboardService.repeatRatePct} — 0 when there are no orders.
-     */
-    private static int repeatRatePct(List<Object[]> rows) {
-        if (rows.isEmpty()) return 0;
-        long total = rows.size();
-        long repeat = rows.stream().filter(r -> ((Number) r[1]).longValue() > 1).count();
-        return (int) Math.round(100.0 * repeat / total);
     }
 }
