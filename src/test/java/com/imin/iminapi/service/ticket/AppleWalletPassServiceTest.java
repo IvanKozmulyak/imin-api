@@ -8,7 +8,11 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -206,6 +210,102 @@ class AppleWalletPassServiceTest {
                 new EmailProperties());
 
         assertThat(readZipEntry(svc.generatePass("TKT_TZ2"), "pass.json")).contains("20:00");
+    }
+
+    /**
+     * A pass is forwarded freely, so it carries no order reference (the order token opens
+     * every ticket on the order) and prints nothing under the QR (it printed the ticket token).
+     */
+    @Test
+    void thePassCarriesNoOrderReferenceAndNoAltTextUnderTheQr() throws Exception {
+        TicketRepository tickets = mock(TicketRepository.class);
+        OrderRepository orders = mock(OrderRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        Ticket t = liveTicket("TKT_ALT");
+        when(tickets.findByToken("TKT_ALT")).thenReturn(Optional.of(t));
+        Order o = orderFor(t);
+        o.setToken("ORDER_SECRET_TOKEN");
+        when(orders.findById(t.getOrderId())).thenReturn(Optional.of(o));
+        when(events.findById(t.getEventId())).thenReturn(Optional.of(eventFor(t)));
+
+        AppleWalletPassService svc = new AppleWalletPassService(
+                configuredProps(), tickets, orders, events, mock(OrganizationRepository.class),
+                signer(), new EmailProperties());
+        String passJson = readZipEntry(svc.generatePass("TKT_ALT"), "pass.json");
+
+        assertThat(passJson).doesNotContain("ORDER_SECRET_TOKEN").doesNotContain("altText");
+        JSONObject pass = new JSONObject(passJson);
+        JSONArray back = pass.getJSONObject("eventTicket").getJSONArray("backFields");
+        for (int i = 0; i < back.length(); i++) {
+            assertThat(back.getJSONObject(i).getString("key")).isIn("address", "manage");
+        }
+        JSONObject barcode = pass.getJSONArray("barcodes").getJSONObject(0);
+        assertThat(barcode.has("altText")).isFalse();
+        assertThat(barcode.getString("message")).startsWith("imin1.TKT_ALT.");
+    }
+
+    /** The ticket token authenticates the pass endpoint; a lookup failure must not log it. */
+    @ParameterizedTest
+    @ValueSource(strings = {"ticket", "order", "event"})
+    void aMissingRowNeverPutsTheTicketTokenInTheExceptionMessage(String missing) throws Exception {
+        TicketRepository tickets = mock(TicketRepository.class);
+        OrderRepository orders = mock(OrderRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        Ticket t = liveTicket("TKT_SECRET_LOOKUP");
+        when(tickets.findByToken("TKT_SECRET_LOOKUP"))
+                .thenReturn("ticket".equals(missing) ? Optional.empty() : Optional.of(t));
+        when(orders.findById(t.getOrderId()))
+                .thenReturn("order".equals(missing) ? Optional.empty() : Optional.of(orderFor(t)));
+        when(events.findById(t.getEventId()))
+                .thenReturn("event".equals(missing) ? Optional.empty() : Optional.of(eventFor(t)));
+
+        AppleWalletPassService svc = new AppleWalletPassService(
+                configuredProps(), tickets, orders, events, mock(OrganizationRepository.class),
+                signer(), new EmailProperties());
+
+        assertThatThrownBy(() -> svc.generatePass("TKT_SECRET_LOOKUP"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageNotContaining("TKT_SECRET_LOOKUP");
+    }
+
+    private static AppleWalletProperties configuredProps() throws Exception {
+        WalletTestCerts.Bundle bundle = WalletTestCerts.generate();
+        AppleWalletProperties props = new AppleWalletProperties();
+        props.setPassTypeId("pass.test.imin");
+        props.setTeamId("TESTTEAMID");
+        props.setCertP12Base64(bundle.p12Base64());
+        props.setCertPassword(bundle.password());
+        props.setWwdrPemBase64(bundle.wwdrPemBase64());
+        return props;
+    }
+
+    private static Ticket liveTicket(String token) {
+        Ticket t = new Ticket();
+        t.setId(UUID.randomUUID());
+        t.setToken(token);
+        t.setOrderId(UUID.randomUUID());
+        t.setEventId(UUID.randomUUID());
+        t.setTierId(UUID.randomUUID());
+        t.setTierName("GA");
+        t.setState("issued");
+        return t;
+    }
+
+    private static Order orderFor(Ticket t) {
+        Order o = new Order();
+        o.setId(t.getOrderId());
+        o.setEventId(t.getEventId());
+        o.setOrgId(UUID.randomUUID());
+        return o;
+    }
+
+    private static Event eventFor(Ticket t) {
+        Event e = new Event();
+        e.setId(t.getEventId());
+        e.setName("Saturn Night");
+        e.setStartsAt(OffsetDateTime.parse("2026-06-15T22:00:00+02:00").toInstant());
+        e.setTimezone("Europe/Paris");
+        return e;
     }
 
     private static QrPayloadSigner signer() {

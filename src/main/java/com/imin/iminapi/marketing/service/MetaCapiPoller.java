@@ -132,14 +132,22 @@ public class MetaCapiPoller {
         Map<String, Object> event = new java.util.HashMap<>();
         event.put("event_name", e.getEventName());
         event.put("event_time", e.getEventTime());
-        // event_id = order TOKEN (the only order identifier the buyer site can echo;
-        // PublicOrderResponse never exposes the order UUID). Browser pixel passes the
-        // same order.token as eventID → Meta dedups the browser + server Purchase.
-        event.put("event_id", e.getOrderToken());
+        // event_id = sha256(order token), hashed at send time; a browser pixel can derive the
+        // same value with SubtleCrypto. The raw token opens the whole order, so Meta never gets it.
+        event.put("event_id", sha256Hex(e.getOrderToken()));
         event.put("action_source", "website");
         event.put("user_data", userData);
         event.put("custom_data", customData);
         return event;
+    }
+
+    private static String sha256Hex(String s) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private void fail(MetaCapiEvent e, String error) {

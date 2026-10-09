@@ -87,8 +87,7 @@ class GoogleWalletModelsTest {
                   "state": "ACTIVE",
                   "barcode": {
                     "type": "QR_CODE",
-                    "value": "imin1.abc-DEF_123.QUJD",
-                    "alternateText": "abc-DEF_123"
+                    "value": "imin1.abc-DEF_123.QUJD"
                   },
                   "ticketType": {"defaultValue": {"language": "en-US", "value": "Early Bird"}},
                   "validTimeInterval": {"end": {"date": "2026-06-16T20:00:00+02:00"}},
@@ -223,7 +222,8 @@ class GoogleWalletModelsTest {
         JSONObject barcode = object.getJSONObject("barcode");
         assertThat(barcode.getString("type")).isEqualTo("QR_CODE");
         assertThat(barcode.getString("value")).isEqualTo(QR).startsWith("imin1.");
-        assertThat(barcode.getString("alternateText")).isEqualTo(TOKEN);
+        // No human-readable line under the QR: it used to print the bearer ticket token.
+        assertThat(barcode.has("alternateText")).isFalse();
     }
 
     @Test

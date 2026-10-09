@@ -332,7 +332,8 @@ public final class GoogleWalletModels {
                 objectId(issuerId, ticket.getToken()),
                 classId(issuerId, event.getId()),
                 STATE_ACTIVE,
-                new Barcode("QR_CODE", qrPayload, ticket.getToken()),
+                // No alternateText: it printed the bearer ticket token under the QR.
+                new Barcode("QR_CODE", qrPayload, null),
                 LocalizedString.of(ticket.getTierName()),
                 validity,
                 links);

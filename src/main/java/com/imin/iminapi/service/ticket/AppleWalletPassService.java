@@ -235,7 +235,8 @@ public class AppleWalletPassService {
             throw new IllegalStateException("Apple Wallet not configured");
         }
         Ticket t = tickets.findByToken(ticketToken)
-                .orElseThrow(() -> new IllegalArgumentException("Ticket not found: " + ticketToken));
+                // The token is the endpoint's bearer credential, so it stays out of messages.
+                .orElseThrow(() -> new IllegalArgumentException("Ticket not found"));
 
         // Before anything else, and before any further reads: a refunded or
         // revoked ticket does not get a fresh, signed, official-looking artifact.
@@ -244,9 +245,9 @@ public class AppleWalletPassService {
         WalletEligibility.assertLive(t);
 
         Order order = orders.findById(t.getOrderId())
-                .orElseThrow(() -> new IllegalStateException("Order missing for ticket " + ticketToken));
+                .orElseThrow(() -> new IllegalStateException("Order missing for ticket " + t.getId()));
         Event event = events.findById(t.getEventId())
-                .orElseThrow(() -> new IllegalStateException("Event missing for ticket " + ticketToken));
+                .orElseThrow(() -> new IllegalStateException("Event missing for ticket " + t.getId()));
         // Nullable on purpose: a missing organization row must degrade the logo
         // text, not 500 a ticket endpoint.
         Organization org = organizations.findById(order.getOrgId()).orElse(null);
@@ -308,9 +309,7 @@ public class AppleWalletPassService {
                     .dataDetectorType(PKDataDetectorType.PKDataDetectorTypeAddress)
                     .build());
         }
-        if (order.getToken() != null && !order.getToken().isBlank()) {
-            eventTicket.backField(field("order", "Order", order.getToken()));
-        }
+        // No order reference on the pass: it is forwarded freely and the order token opens every ticket.
         eventTicket.backField(PKField.builder()
                 .key("manage")
                 .label("Manage this ticket")
@@ -335,8 +334,8 @@ public class AppleWalletPassService {
                         .message(qrPayload)
                         // Apple's documented recommendation for QR. The payload
                         // is base64url + dots — pure ASCII, so this is lossless.
-                        .messageEncoding("iso-8859-1")
-                        .altText(t.getToken()))
+                        // No altText: it printed the bearer ticket token under the QR.
+                        .messageEncoding("iso-8859-1"))
                 .semantics(semanticsFor(event, doors, ends))
                 .pass(eventTicket);
 

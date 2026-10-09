@@ -12,18 +12,25 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
 import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @IminIntegrationTest
@@ -143,6 +150,32 @@ class MetaCapiPollerTest {
         assertThat(reloaded.getAttempts()).isEqualTo((short) 1);
         assertThat(reloaded.getSentAt()).isNull();
         assertThat(reloaded.getLastError()).startsWith("Token decrypt failed");
+    }
+
+    /** The order token opens the buyer's whole order; Meta receives only its sha256 as event_id. */
+    @Test
+    void sendsTheSha256OfTheOrderTokenAsEventIdAndNeverTheRawToken() throws Exception {
+        UUID orgId = orgWithPixel();
+        MetaCapiEvent e = pending(orgId);
+        String rawToken = e.getOrderToken();
+        when(graphClient.sendEvents(ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
+                ArgumentMatchers.isNull(), ArgumentMatchers.anyList()))
+                .thenReturn(new MetaTestEventResult(true, 1, null, "trace"));
+
+        poller.drain();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Map<String, Object>>> sent = ArgumentCaptor.forClass(List.class);
+        verify(graphClient, org.mockito.Mockito.atLeastOnce()).sendEvents(
+                ArgumentMatchers.eq("PIX-1"), ArgumentMatchers.anyString(), ArgumentMatchers.isNull(),
+                sent.capture());
+        String expected = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(rawToken.getBytes(StandardCharsets.UTF_8)));
+        Map<String, Object> ours = sent.getAllValues().stream().flatMap(List::stream)
+                .filter(ev -> expected.equals(ev.get("event_id")))
+                .findFirst().orElseThrow(() -> new AssertionError("no event with event_id=sha256(token)"));
+        assertThat(ours.get("event_id")).isEqualTo(expected);
+        assertThat(sent.getAllValues().toString()).doesNotContain(rawToken);
     }
 
     // Helper: encrypt with the same cipher the poller uses (test key from application-test).

@@ -374,9 +374,9 @@ class GoogleWalletEndpointTest {
         assertThat(object.get("id").asText()).isEqualTo(OBJECT_ID);
         assertThat(object.get("classId").asText()).isEqualTo(CLASS_ID);
         assertThat(object.get("state").asText()).isEqualTo("ACTIVE");
-        assertThat(object.at("/barcode/alternateText").asText())
-                .as("the human-readable fallback is the bare token, as at the door")
-                .isEqualTo(TOKEN);
+        assertThat(object.at("/barcode").has("alternateText"))
+                .as("no human-readable line under the QR: it used to print the bearer token")
+                .isFalse();
     }
 
     // ── Google saying no ─────────────────────────────────────────────────────

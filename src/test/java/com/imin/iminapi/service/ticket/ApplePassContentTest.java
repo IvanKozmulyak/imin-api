@@ -206,11 +206,10 @@ class ApplePassContentTest {
     }
 
     @Test
-    void theBackCarriesTheOrderTokenAndALinkBackToTheTicketPage() throws Exception {
+    void theBackCarriesALinkBackToTheTicketPageAndNoOrderToken() throws Exception {
         JsonNode pass = passJson(fixture());
 
-        assertThat(fieldByKey(pass, "backFields", "order").path("value").asText())
-                .isEqualTo("ORD_TOKEN_1");
+        assertThat(pass.path("backFields").toString()).doesNotContain("ORD_TOKEN_1");
 
         JsonNode manage = fieldByKey(pass, "backFields", "manage");
         assertThat(manage.path("value").asText())

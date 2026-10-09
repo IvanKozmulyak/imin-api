@@ -80,7 +80,7 @@ public class MetaCapiOutboxWriter {
         e.setId(UUID.randomUUID());
         e.setOrgId(order.getOrgId());
         e.setOrderId(orderId);
-        e.setOrderToken(order.getToken()); // shared browser<->CAPI dedup key (Meta event_id)
+        e.setOrderToken(order.getToken()); // the poller sends sha256(token) as Meta event_id, never the raw token
         e.setPixelId(conn.getPixelId());
         e.setEventName("Purchase");
         e.setEmailSha256(sha256Hex(EmailNormalizer.normalize(order.getEmail())));

@@ -118,7 +118,7 @@ class GoogleWalletProvisionerTest {
                 .andExpect(jsonPath("$.classId").value(CLASS_ID))
                 .andExpect(jsonPath("$.state").value("ACTIVE"))
                 .andExpect(jsonPath("$.barcode.value").value(QR))
-                .andExpect(jsonPath("$.barcode.alternateText").value(TOKEN))
+                .andExpect(jsonPath("$.barcode.alternateText").doesNotExist())
                 .andExpect(jsonPath("$.linksModuleData.uris[0].uri")
                         .value("https://app.imin.wtf/tickets/" + TOKEN))
                 .andRespond(withStatus(HttpStatus.OK));
