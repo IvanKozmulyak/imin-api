@@ -6,6 +6,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -18,6 +23,9 @@ import java.util.UUID;
 @Service
 public class CampaignVolumeGuard {
 
+    /** Ids bound per query; keeps the IN list far under Postgres's bind-parameter limit. */
+    static final int MAX_IDS_PER_QUERY = 1000;
+
     private final CampaignRecipientRepository recipientRepo;
     private final MarketingGuardProperties props;
 
@@ -27,10 +35,16 @@ public class CampaignVolumeGuard {
         this.props = props;
     }
 
+    /** The members contacted within the frequency floor before {@code now}. */
     @Transactional(readOnly = true)
-    public boolean isFrequencyCapped(UUID membershipId, Instant now) {
-        if (membershipId == null) return false;
+    public Set<UUID> frequencyCapped(Collection<UUID> membershipIds, Instant now) {
+        List<UUID> ids = membershipIds.stream().filter(Objects::nonNull).distinct().toList();
         Instant since = now.minus(props.getFrequencyFloorHours(), ChronoUnit.HOURS);
-        return recipientRepo.countRecentSendsForMembership(membershipId, since) > 0;
+        Set<UUID> capped = new HashSet<>();
+        for (int from = 0; from < ids.size(); from += MAX_IDS_PER_QUERY) {
+            capped.addAll(recipientRepo.findRecentlySentMembershipIds(
+                    ids.subList(from, Math.min(from + MAX_IDS_PER_QUERY, ids.size())), since));
+        }
+        return capped;
     }
 }

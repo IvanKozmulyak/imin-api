@@ -10,6 +10,7 @@ import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.repository.CampaignRecipientBulkInsert;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignVolumeGuard;
@@ -20,9 +21,11 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 
@@ -41,18 +44,21 @@ public class RecipientMaterializer {
     private final SendGateService sendGate;
     private final ConsumerRepository consumers;
     private final CampaignRecipientRepository recipients;
+    private final CampaignRecipientBulkInsert bulkInsert;
     private final CampaignRepository campaigns;
     private final CampaignVolumeGuard volumeGuard;
     private final SendPathGuard sendPathGuard;
 
     public RecipientMaterializer(SegmentService segmentService, SendGateService sendGate,
                                  ConsumerRepository consumers,
-                                 CampaignRecipientRepository recipients, CampaignRepository campaigns,
+                                 CampaignRecipientRepository recipients, CampaignRecipientBulkInsert bulkInsert,
+                                 CampaignRepository campaigns,
                                  CampaignVolumeGuard volumeGuard, SendPathGuard sendPathGuard) {
         this.segmentService = segmentService;
         this.sendGate = sendGate;
         this.consumers = consumers;
         this.recipients = recipients;
+        this.bulkInsert = bulkInsert;
         this.campaigns = campaigns;
         this.volumeGuard = volumeGuard;
         this.sendPathGuard = sendPathGuard;
@@ -92,60 +98,52 @@ public class RecipientMaterializer {
         Instant now = Instant.now();
         // Holdout, per-event and 30-day caps, and ConsentGate (plan campaigns, or all when flagged); checked again per batch.
         Map<UUID, String> guarded = sendPathGuard.skipReasons(c, gate.sendable(), now);
+        // Per-member frequency floor (spec §7), asked only for members no guard skipped. Read before the
+        // inserts: this snapshot writes only pending/skipped rows, which the floor does not count.
+        Set<UUID> frequencyCapped = volumeGuard.frequencyCapped(
+                gate.sendable().stream().filter(mid -> !guarded.containsKey(mid)).toList(), now);
+        List<CampaignRecipientBulkInsert.Row> rows =
+                new ArrayList<>(gate.sendable().size() + gate.excluded().size());
         int pending = 0;
         int sendableSkipped = 0;
         for (UUID mid : gate.sendable()) {
-            Membership m = byId.get(mid);
-            CampaignRecipient r = new CampaignRecipient();
-            r.setId(UUID.randomUUID());
-            r.setCampaignId(c.getId());
-            r.setMembershipId(mid);
-            r.setEmail(m == null ? null : emailByConsumer.get(m.getConsumerId()));
-            r.setLastEventAt(now);
+            String email = emailOf(byId.get(mid), emailByConsumer);
             String guardReason = guarded.get(mid);
             if (guardReason != null) {
-                r.setStatus("skipped");
-                r.setSkipReason(guardReason);
+                rows.add(new CampaignRecipientBulkInsert.Row(mid, email, "skipped", guardReason));
                 summary.merge(guardReason, 1, Integer::sum);
                 sendableSkipped++;
-            } else if (volumeGuard.isFrequencyCapped(mid, now)) {
-                // Per-member frequency floor (spec §7): a member contacted within the floor
-                // window is diverted to a skipped row rather than sent again.
-                r.setStatus("skipped");
-                r.setSkipReason("frequency_capped");
+            } else if (frequencyCapped.contains(mid)) {
+                rows.add(new CampaignRecipientBulkInsert.Row(mid, email, "skipped", "frequency_capped"));
                 summary.merge("frequency_capped", 1, Integer::sum);
                 sendableSkipped++;
             } else if (canceled) {
                 // Still counted in recipientCount: the audience the campaign was stopped against.
-                r.setStatus("skipped");
-                r.setSkipReason(CampaignRecipient.SKIP_CAMPAIGN_CANCELED);
+                rows.add(new CampaignRecipientBulkInsert.Row(mid, email, "skipped",
+                        CampaignRecipient.SKIP_CAMPAIGN_CANCELED));
                 pending++;
             } else {
-                r.setStatus("pending");
+                rows.add(new CampaignRecipientBulkInsert.Row(mid, email, "pending", null));
                 pending++;
             }
-            recipients.save(r);
         }
 
         for (ExclusionReason ex : gate.excluded()) {
-            Membership m = byId.get(ex.membershipId());
-            CampaignRecipient r = new CampaignRecipient();
-            r.setId(UUID.randomUUID());
-            r.setCampaignId(c.getId());
-            r.setMembershipId(ex.membershipId());
-            r.setEmail(m == null ? null : emailByConsumer.get(m.getConsumerId()));
-            r.setStatus("skipped");
-            r.setSkipReason(ex.reason());
-            r.setLastEventAt(now);
-            recipients.save(r);
+            String email = emailOf(byId.get(ex.membershipId()), emailByConsumer);
+            rows.add(new CampaignRecipientBulkInsert.Row(ex.membershipId(), email, "skipped", ex.reason()));
             summary.merge(ex.reason(), 1, Integer::sum);
         }
+        bulkInsert.insert(c.getId(), now, rows);
 
         c.setRecipientCount(pending);
         c.setExcludedCount(gate.excluded().size() + sendableSkipped);
         c.setExclusionSummary(toJson(summary));
         // Targeted: a full save of this drive's copy would write its status back over a concurrent cancel.
         campaigns.recordMaterialized(c.getId(), c.getRecipientCount(), c.getExcludedCount(), c.getExclusionSummary());
+    }
+
+    private static String emailOf(Membership m, Map<UUID, String> emailByConsumer) {
+        return m == null ? null : emailByConsumer.get(m.getConsumerId());
     }
 
     private static String toJson(Map<String, Integer> m) {

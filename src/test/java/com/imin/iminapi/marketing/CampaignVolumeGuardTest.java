@@ -16,6 +16,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,12 +68,23 @@ class CampaignVolumeGuardTest {
     @Test
     void memberSentRecentlyIsFrequencyCapped() {
         UUID member = sentMembership(Instant.now().minus(2, ChronoUnit.HOURS));
-        assertThat(guard.isFrequencyCapped(member, Instant.now())).isTrue();
+        assertThat(guard.frequencyCapped(List.of(member), Instant.now())).containsExactly(member);
     }
 
     @Test
     void memberNotSentWithinWindowIsNotCapped() {
         UUID member = sentMembership(Instant.now().minus(10, ChronoUnit.DAYS));
-        assertThat(guard.isFrequencyCapped(member, Instant.now())).isFalse();
+        assertThat(guard.frequencyCapped(List.of(member), Instant.now())).isEmpty();
+    }
+
+    @Test
+    void aRecentlySentMemberPastTheFirstQueryChunkIsStillCapped() {
+        UUID member = sentMembership(Instant.now().minus(2, ChronoUnit.HOURS));
+        List<UUID> ids = new ArrayList<>();
+        // The guard queries 1,000 ids at a time; the sent member is the 1,001st.
+        for (int i = 0; i < 1000; i++) ids.add(UUID.randomUUID());
+        ids.add(member);
+
+        assertThat(guard.frequencyCapped(ids, Instant.now())).containsExactly(member);
     }
 }

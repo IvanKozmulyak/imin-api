@@ -190,18 +190,17 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                                 @Param("since") java.time.Instant since);
 
     /**
-     * Count recent sends for a membership across all campaigns — backs the per-member
-     * frequency floor in {@link com.imin.iminapi.marketing.service.CampaignVolumeGuard}
-     * (spec §7). A member contacted within the floor window is skipped.
+     * Which of these members were sent anything, on any campaign, since {@code since} — backs the per-member
+     * frequency floor in {@link com.imin.iminapi.marketing.service.CampaignVolumeGuard} (spec §7).
      */
     @Query("""
-            select count(r) from CampaignRecipient r
-             where r.membershipId = :membershipId
+            select distinct r.membershipId from CampaignRecipient r
+             where r.membershipId in :membershipIds
                and r.status in ('sent','delivered','opened','clicked')
                and r.lastEventAt >= :since
             """)
-    long countRecentSendsForMembership(@Param("membershipId") UUID membershipId,
-                                       @Param("since") java.time.Instant since);
+    List<UUID> findRecentlySentMembershipIds(@Param("membershipIds") java.util.Collection<UUID> membershipIds,
+                                             @Param("since") java.time.Instant since);
 
     /**
      * Rows of {@code [membershipId, sends]}: EMAILS that left for the event's campaigns, per given
