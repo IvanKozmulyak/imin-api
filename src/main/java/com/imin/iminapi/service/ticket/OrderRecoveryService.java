@@ -7,6 +7,7 @@ import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.util.OrderNumber;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
@@ -159,7 +160,9 @@ public class OrderRecoveryService {
         }
         String date = DateTimeFormatter.ofPattern("d LLL yyyy", Locale.forLanguageTag(EmailLocale.normalize(locale)))
                 .withZone(zone).format(o.getCreatedAt());
-        return name.isBlank() ? date : name + " · " + date;
+        String number = EmailLocale.choose(locale, "Order ", "Pedido ", "Commande ", "Замовлення ")
+                + OrderNumber.display(o.getId());
+        return (name.isBlank() ? date : name + " · " + date) + " · " + number;
     }
 
     private static String htmlEscape(String s) {

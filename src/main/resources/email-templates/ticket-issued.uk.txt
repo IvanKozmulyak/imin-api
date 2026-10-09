@@ -1,6 +1,7 @@
 ВИ У СПИСКУ · imin
 
 Ви йдете на {{eventName}}.
+Замовлення {{orderNumber}}
 {{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
 
 ВАШІ КВИТКИ

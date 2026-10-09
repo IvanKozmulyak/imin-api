@@ -1,6 +1,7 @@
 C'EST CONFIRMÉ · imin
 
 C'est confirmé pour {{eventName}}.
+Commande {{orderNumber}}
 {{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
 
 VOS BILLETS

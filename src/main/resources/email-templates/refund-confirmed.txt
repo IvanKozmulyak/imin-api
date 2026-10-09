@@ -2,7 +2,7 @@ REFUND CONFIRMED
 
 Your refund for {{eventName}} has been processed.
 
-{{ticketCount}} ticket(s) have been refunded.
+{{ticketCount}} ticket(s) from order {{orderNumber}} have been refunded.
 
 Amount refunded: {{amountFormatted}}
 

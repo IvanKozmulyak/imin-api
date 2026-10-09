@@ -1,6 +1,7 @@
 YOU'RE IN · imin
 
 You're in for {{eventName}}.
+Order {{orderNumber}}
 {{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
 
 YOUR TICKETS

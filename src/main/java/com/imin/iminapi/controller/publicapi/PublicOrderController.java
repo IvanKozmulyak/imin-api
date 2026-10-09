@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.imin.iminapi.util.OrderNumber;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -84,6 +85,7 @@ public class PublicOrderController {
 
         var body = new PublicOrderResponse(
                 order.getToken(),
+                OrderNumber.code(order.getId()),
                 order.getEmail(),
                 order.getTotalMinor(),
                 order.getCurrency(),

@@ -1,6 +1,7 @@
 YA ESTÁS DENTRO · imin
 
 Ya tienes tu entrada para {{eventName}}.
+Pedido {{orderNumber}}
 {{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
 
 TUS ENTRADAS

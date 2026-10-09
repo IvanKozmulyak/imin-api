@@ -31,30 +31,31 @@ class BuyerEmailLocaleVariantsTest {
     private static final Map<String, Map<String, String>> TEMPLATES = new LinkedHashMap<>();
 
     static {
-        TEMPLATES.put("ticket-issued", Map.of(
-                "eventName", "Warehouse 7",
-                "eventWhen", "Friday, 5 Jun 2026 · 23:00",
-                "eventWhereSeparator", " · ",
-                "eventWhere", "Sala Apolo, Barcelona",
-                "ticketBlocks", "__TICKETS_BLOCK_PLACEHOLDER__",
-                "orderUrl", "https://app.imin.wtf/order/abc",
-                "recoverUrl", "https://app.imin.wtf/recover",
-                "priceTicketsMinor", "49.99 EUR",
-                "priceBookingFeeMinor", "1.99 EUR",
-                "priceTotalMinor", "51.98 EUR"));
+        TEMPLATES.put("ticket-issued", Map.ofEntries(
+                Map.entry("eventName", "Warehouse 7"),
+                Map.entry("orderNumber", "#a1b2c3d4"),
+                Map.entry("eventWhen", "Friday, 5 Jun 2026 · 23:00"),
+                Map.entry("eventWhereSeparator", " · "),
+                Map.entry("eventWhere", "Sala Apolo, Barcelona"),
+                Map.entry("ticketBlocks", "__TICKETS_BLOCK_PLACEHOLDER__"),
+                Map.entry("orderUrl", "https://app.imin.wtf/order/abc"),
+                Map.entry("recoverUrl", "https://app.imin.wtf/recover"),
+                Map.entry("priceTicketsMinor", "49.99 EUR"),
+                Map.entry("priceBookingFeeMinor", "1.99 EUR"),
+                Map.entry("priceTotalMinor", "51.98 EUR")));
 
         TEMPLATES.put("order-recovery", Map.of(
                 "links", "__LINKS_PLACEHOLDER__"));
 
         TEMPLATES.put("refund-confirmed", Map.of(
                 "eventName", "Warehouse 7",
-                "orderShortCode", "a1b2c3d4",
+                "orderNumber", "#a1b2c3d4",
                 "ticketCount", "2",
                 "amountFormatted", "€53.48",
                 "organizerContact", "hola@sala.example"));
 
         TEMPLATES.put("refund-request-received-buyer", Map.of(
-                "requestId", "6f1c2f18-9a0e-4c1e-8f2a-1d3b5c7e9a11"));
+                "orderNumber", "#a1b2c3d4"));
 
         TEMPLATES.put("refund-request-link", Map.of(
                 "link", "https://app.imin.wtf/refund/abc123",

@@ -4,3 +4,5 @@ Gracias — hemos recibido tu solicitud de reembolso.
 
 El organizador la revisará y te responderá por correo. De momento no
 tienes que hacer nada más.
+
+Pedido {{orderNumber}}

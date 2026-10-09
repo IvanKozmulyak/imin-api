@@ -2,7 +2,7 @@ REMBOURSEMENT CONFIRMÉ
 
 Votre remboursement pour {{eventName}} a été traité.
 
-{{ticketCount}} billet(s) ont été remboursés.
+{{ticketCount}} billet(s) de la commande {{orderNumber}} ont été remboursés.
 
 Montant remboursé : {{amountFormatted}}
 

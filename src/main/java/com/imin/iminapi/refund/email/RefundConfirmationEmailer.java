@@ -1,6 +1,7 @@
 package com.imin.iminapi.refund.email;
 
 import com.imin.iminapi.util.LogSafe;
+import com.imin.iminapi.util.OrderNumber;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -97,6 +98,7 @@ public class RefundConfirmationEmailer {
 
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName);
+        values.put("orderNumber", OrderNumber.display(order.getId()));
         values.put("ticketCount", String.valueOf(ticketCount));
         values.put("amountFormatted", MoneyFormat.format(refund.getAmountMinor(), refund.getCurrency()));
         values.put("organizerContact", organizerContact);

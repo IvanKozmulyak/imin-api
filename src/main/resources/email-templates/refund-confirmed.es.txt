@@ -2,7 +2,7 @@ REEMBOLSO CONFIRMADO
 
 Tu reembolso de {{eventName}} se ha procesado.
 
-Se han reembolsado {{ticketCount}} entrada(s).
+Se han reembolsado {{ticketCount}} entrada(s) del pedido {{orderNumber}}.
 
 Importe reembolsado: {{amountFormatted}}
 

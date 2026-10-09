@@ -8,10 +8,12 @@ import java.util.UUID;
  * Public read-side of a buyer's order, surfaced by
  * {@code GET /api/v1/public/orders/{token}}.
  *
- * <p>Tokenized; the buyer-id and the database UUIDs are never exposed.
+ * <p>Tokenized; the buyer-id and the database UUIDs are never exposed. {@code orderNumber}
+ * is the 8-char human reference (first 8 chars of the order UUID), never the full id.
  */
 public record PublicOrderResponse(
         String token,
+        String orderNumber,
         String email,
         long totalMinor,
         String currency,

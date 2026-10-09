@@ -70,6 +70,7 @@ class PublicOrderControllerTest {
         mvc.perform(get("/api/v1/public/orders/" + f.order.getToken()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").value(f.order.getToken()))
+                .andExpect(jsonPath("$.orderNumber").value(f.order.getId().toString().substring(0, 8)))
                 .andExpect(jsonPath("$.email").value(buyer))
                 .andExpect(jsonPath("$.totalMinor").value(1500))
                 .andExpect(jsonPath("$.currency").value("EUR"))
@@ -155,7 +156,7 @@ class PublicOrderControllerTest {
         JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
 
         Set<String> expectedRootKeys = Set.of(
-                "token", "email", "totalMinor", "currency",
+                "token", "orderNumber", "email", "totalMinor", "currency",
                 "paymentMethod", "createdAt", "event", "tickets",
                 // Receipt breakdown (spec §4.6). All four are money the buyer was
                 // already shown at checkout, restated so the receipt reconciles to

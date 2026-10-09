@@ -7,6 +7,7 @@ import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.util.OrderNumber;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.refund.RefundRequest;
@@ -110,8 +111,10 @@ public class RefundRequestEmailer {
         String buyerLocale = orders.findById(rr.getOrderId())
             .map(Order::getBuyerLocale)
             .orElse(null);
+        Map<String, String> buyerValues = new LinkedHashMap<>(base);
+        buyerValues.put("orderNumber", OrderNumber.display(rr.getOrderId()));
         EmailTemplateRenderer.Rendered buyer =
-            renderer.render("refund-request-received-buyer", buyerLocale, base);
+            renderer.render("refund-request-received-buyer", buyerLocale, buyerValues);
         String buyerSubject = EmailLocale.choose(buyerLocale,
             "We got your refund request · imin",
             "Hemos recibido tu solicitud de reembolso · imin",

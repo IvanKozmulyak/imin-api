@@ -1,6 +1,7 @@
 package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.util.LogSafe;
+import com.imin.iminapi.util.OrderNumber;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -122,6 +123,7 @@ public class TicketIssuanceEmailer {
         // placeholder and replace afterwards.
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", nullSafe(event.getName()));
+        values.put("orderNumber", OrderNumber.display(order.getId()));
         values.put("eventWhen", whenText);
         values.put("eventWhere", whereText);
         values.put("eventWhereSeparator", whereSep);

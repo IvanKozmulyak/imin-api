@@ -41,8 +41,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** Real templates and real emailers: no order, request or ticket identifier is shown as text. */
-class NoOrderCodeInEmailsTest {
+/** Real templates and real emailers: the order number is the only identifier shown as text, in every locale. */
+class OrderNumberInEmailsTest {
 
     private final EmailService email = mock(EmailService.class);
     private final EmailTemplateRenderer renderer = new EmailTemplateRenderer();
@@ -59,7 +59,7 @@ class NoOrderCodeInEmailsTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"en", "es", "fr", "uk"})
-    void refundConfirmation_doesNotShowTheOrderId(String locale) {
+    void refundConfirmation_showsTheOrderNumber(String locale) {
         RefundRepository refunds = mock(RefundRepository.class);
         RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
         OrderRepository orders = mock(OrderRepository.class);
@@ -97,14 +97,16 @@ class NoOrderCodeInEmailsTest {
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
         verify(email).send(eq("buyer@example.com"), subject.capture(), html.capture(), text.capture());
-        String code = orderId.toString().substring(0, 8);
+        String number = "#" + orderId.toString().substring(0, 8);
+        assertThat(html.getValue()).contains("<strong>" + number + "</strong>");
+        assertThat(text.getValue()).contains(number);
         assertThat(subject.getValue() + html.getValue() + text.getValue())
-                .doesNotContain(code).contains("Saturn Night").contains("50.00");
+                .doesNotContain(orderId.toString()).contains("Saturn Night").contains("50.00");
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"en", "es", "fr", "uk"})
-    void refundRequestAck_doesNotShowTheRequestId(String locale) {
+    void refundRequestAck_showsTheOrderNumber_notTheRequestId(String locale) {
         RefundRequestRepository requests = mock(RefundRequestRepository.class);
         EventRepository events = mock(EventRepository.class);
         OrderRepository orders = mock(OrderRepository.class);
@@ -136,11 +138,15 @@ class NoOrderCodeInEmailsTest {
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
         verify(email).send(eq("buyer@example.com"), anyString(), html.capture(), text.capture());
-        assertThat(html.getValue() + text.getValue()).doesNotContain(requestId.toString());
+        String number = "#" + orderId.toString().substring(0, 8);
+        assertThat(html.getValue()).contains(number);
+        assertThat(text.getValue()).contains(number);
+        assertThat(html.getValue() + text.getValue())
+                .doesNotContain(requestId.toString()).doesNotContain(requestId.toString().substring(0, 8));
     }
 
     @Test
-    void orderRecovery_labelsEachOrderByEventAndPurchaseDate_notByTokenText() {
+    void orderRecovery_labelsEachOrderByEventDateAndOrderNumber_notByTokenText() {
         OrderRepository orders = mock(OrderRepository.class);
         EventRepository events = mock(EventRepository.class);
         OrderRecoveryAttemptRepository attempts = mock(OrderRecoveryAttemptRepository.class);
@@ -148,7 +154,9 @@ class NoOrderCodeInEmailsTest {
         when(attempts.countByIpHashAndAttemptedAtAfter(anyString(), any())).thenReturn(0L);
         when(events.findById(eventId)).thenReturn(Optional.of(event()));
         Order o = new Order();
-        o.setId(UUID.randomUUID());
+        UUID orderId = UUID.randomUUID();
+        String number = "#" + orderId.toString().substring(0, 8);
+        o.setId(orderId);
         o.setToken("ORDTOK123");
         o.setEmail("buyer@example.com");
         o.setEventId(eventId);
@@ -170,9 +178,51 @@ class NoOrderCodeInEmailsTest {
         verify(email).send(eq("buyer@example.com"), anyString(), html.capture(), text.capture());
         assertThat(html.getValue())
                 .contains("<a href=\"https://app.imin.wtf/order/ORDTOK123\"")
-                .contains(">Saturn Night · 9 Oct 2026</a>")
+                .contains(">Saturn Night · 9 Oct 2026 · Order " + number + "</a>")
                 .doesNotContain(">https://app.imin.wtf/order/");
         assertThat(text.getValue())
-                .contains("- Saturn Night · 9 Oct 2026\n  https://app.imin.wtf/order/ORDTOK123");
+                .contains("- Saturn Night · 9 Oct 2026 · Order " + number + "\n  https://app.imin.wtf/order/ORDTOK123");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"en", "es", "fr", "uk"})
+    void ticketConfirmation_showsTheOrderNumber_notTheOrderOrTicketToken(String locale) {
+        OrderRepository orders = mock(OrderRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        com.imin.iminapi.repository.TicketRepository tickets = mock(com.imin.iminapi.repository.TicketRepository.class);
+        UUID orderId = UUID.randomUUID();
+        Order order = new Order();
+        order.setId(orderId);
+        order.setToken("ORDTOK123");
+        order.setEventId(eventId);
+        order.setEmail("buyer@example.com");
+        order.setBuyerLocale(locale);
+        com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+        t.setToken("TKTTOK456");
+        t.setTierName("GA");
+        when(orders.findById(orderId)).thenReturn(Optional.of(order));
+        when(events.findById(eventId)).thenReturn(Optional.of(event()));
+        when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of(t));
+        EmailProperties ep = new EmailProperties();
+        ep.setBuyerSiteBaseUrl("https://app.imin.wtf");
+        TicketProperties tp = new TicketProperties();
+        tp.setSigningSecret("x".repeat(32));
+        tp.setApiPublicBaseUrl("https://api.imin.test");
+        var apple = mock(com.imin.iminapi.service.ticket.AppleWalletPassService.class);
+        var google = mock(com.imin.iminapi.service.ticket.google.GoogleWalletPassService.class);
+
+        new com.imin.iminapi.service.ticket.TicketIssuanceEmailer(orders, tickets, events, email, renderer, ep, tp,
+                new com.imin.iminapi.service.ticket.WalletOffers(apple, google, tp)).send(orderId);
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(email).send(eq("buyer@example.com"), anyString(), html.capture(), text.capture());
+        String number = "#" + orderId.toString().substring(0, 8);
+        assertThat(html.getValue()).contains(number);
+        assertThat(text.getValue()).contains(number);
+        // Tokens appear only inside links, never as visible text.
+        assertThat(html.getValue()).doesNotContain(">ORDTOK123<").doesNotContain(">TKTTOK456<")
+                .doesNotContain(orderId.toString());
+        assertThat(text.getValue()).doesNotContain(orderId.toString());
     }
 }
