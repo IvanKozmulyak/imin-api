@@ -32,6 +32,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -96,10 +97,17 @@ public class TimingArmScheduler {
         if (start == null || !start.isAfter(now)) throw ApiException.invalidState("The event has already started");
 
         if (SLUMP.equals(arm.getArm())) {
-            if (!"draft".equals(c.getStatus())) throw ApiException.invalidState("Campaign is not in draft");
-            if (arm.getArmedAt() != null) throw ApiException.invalidState("This slump arm is already armed");
-            arm.setArmedAt(now.truncatedTo(ChronoUnit.MICROS));
-            experiments.save(arm);
+            // Same row lock as an edit; an edit committed since this request loaded the draft wins.
+            if (campaigns.lockIfDraft(c.getId(), c.getOrgId()).isEmpty()) {
+                throw ApiException.invalidState("Campaign is not in draft");
+            }
+            if (!Objects.equals(campaigns.findUpdatedAtById(c.getId()).orElse(null), c.getUpdatedAt())) {
+                throw ApiException.invalidState("The campaign was edited meanwhile; review it and approve again");
+            }
+            // ponytail: "loaded the draft" is this request's read, not the organizer's screen; a client version is the ceiling.
+            if (experiments.arm(arm.getId(), now.truncatedTo(ChronoUnit.MICROS)) == 0) {
+                throw ApiException.invalidState("This slump arm is already armed");
+            }
             return Optional.of(new Approval(null, true));
         }
 
@@ -126,12 +134,7 @@ public class TimingArmScheduler {
     @Transactional
     public void disarm(Campaign c) {
         if (c.getId() == null) return;
-        experiments.findFirstByCampaignIdAndOrgId(c.getId(), c.getOrgId())
-                .filter(arm -> arm.getArmedAt() != null)
-                .ifPresent(arm -> {
-                    arm.setArmedAt(null);
-                    experiments.save(arm);
-                });
+        experiments.disarm(c.getId(), c.getOrgId());
     }
 
     /** Whether a new invitation may pick the early-bird arm: its 18:00 send is still ahead and before D-3. */
@@ -165,6 +168,9 @@ public class TimingArmScheduler {
         int scheduled = 0;
         for (AudienceExperiment arm : armed) {
             if (arm.getCampaignId() == null) continue;
+            // Locked like an edit, then re-read: an edit that disarmed the draft after the list was read wins.
+            if (campaigns.lockIfDraft(arm.getCampaignId(), orgId).isEmpty()
+                    || !experiments.existsByIdAndArmedAtIsNotNull(arm.getId())) continue;
             // Only a draft moves; a deleted, cancelled or already scheduled campaign is left alone.
             if (campaigns.markScheduledIfDraft(arm.getCampaignId(), orgId, at) == 1) {
                 scheduled++;

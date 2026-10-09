@@ -1,6 +1,7 @@
 package com.imin.iminapi.audienceplan.repository;
 
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
@@ -24,6 +25,20 @@ public interface AudienceExperimentRepository extends Repository<AudienceExperim
 
     /** Approved arms of one kind waiting for a trigger (slump). */
     List<AudienceExperiment> findByOrgIdAndEventIdAndArmAndArmedAtIsNotNull(UUID orgId, UUID eventId, String arm);
+
+    /** Arms one experiment, only while it is unarmed; 0 rows means it already was. Writes {@code armed_at} alone. */
+    @Modifying
+    @Query("update AudienceExperiment e set e.armedAt = :at where e.id = :id and e.armedAt is null")
+    int arm(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Clears the arming of a campaign's experiment, only if it is armed. Writes {@code armed_at} alone. */
+    @Modifying
+    @Query("update AudienceExperiment e set e.armedAt = null"
+            + " where e.campaignId = :campaignId and e.orgId = :orgId and e.armedAt is not null")
+    int disarm(@Param("campaignId") UUID campaignId, @Param("orgId") UUID orgId);
+
+    /** The stored arming, read fresh rather than from a loaded entity. */
+    boolean existsByIdAndArmedAtIsNotNull(UUID id);
 
     /** This event's experiments for one class × genre fit, across every plan generation, oldest first. */
     @Query("""

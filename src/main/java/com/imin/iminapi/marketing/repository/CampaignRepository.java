@@ -128,6 +128,15 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("UPDATE Campaign c SET c.status='sending', c.updatedAt=:now WHERE c.id=:id AND c.status=:expected")
     int markSendingIf(@Param("id") UUID id, @Param("expected") String expected, @Param("now") java.time.Instant now);
 
+    /** Locks a draft's row like an edit does; empty when it is no longer a draft (re-checked after the wait). */
+    @Query(value = "SELECT id FROM campaigns WHERE id = :id AND org_id = :orgId AND status = 'draft' FOR NO KEY UPDATE",
+            nativeQuery = true)
+    List<UUID> lockIfDraft(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
+    /** The stored {@code updated_at}, read from the row rather than a loaded entity. */
+    @Query("select c.updatedAt from Campaign c where c.id = :id")
+    Optional<java.time.Instant> findUpdatedAtById(@Param("id") UUID id);
+
     /** Row lock that serializes materialization of one campaign; also makes the claim's SKIP LOCKED pass it over. */
     @Query(value = "SELECT id FROM campaigns WHERE id = :id FOR NO KEY UPDATE", nativeQuery = true)
     List<UUID> lockForMaterialize(@Param("id") UUID id);
