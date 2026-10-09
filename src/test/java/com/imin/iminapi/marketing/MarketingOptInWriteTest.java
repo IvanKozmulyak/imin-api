@@ -61,6 +61,7 @@ class MarketingOptInWriteTest {
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanLogic planLogic;
     @Autowired PlatformTransactionManager txManager;
+    @Autowired com.imin.iminapi.audience.repository.ErasedAddressRepository erasedAddresses;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
@@ -335,7 +336,7 @@ class MarketingOptInWriteTest {
                 CheckoutAttribution.NONE, null, null, new CheckoutConsent(true, label, version));
         assertThat(orders.findById(order.getId()).orElseThrow().getMarketingOptInTextVersion()).isEqualTo(version);
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         // The context's own async projector may record the same order a second time.
@@ -393,7 +394,7 @@ class MarketingOptInWriteTest {
                 new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
 
         // Plain instance so the projection runs synchronously on this thread.
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         var m = membershipFor(addr("free-optin"));

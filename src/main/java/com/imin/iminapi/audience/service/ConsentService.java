@@ -120,6 +120,15 @@ public class ConsentService {
     public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, String textVersion, UUID orderId,
                         UUID eventId, ConsentOrigin origin, AuthPrincipal principal) {
+        return capture(orgId, membershipId, basis, source, proofText, channel, textVersion, orderId,
+                eventId, origin, principal, null);
+    }
+
+    /** As above, dated {@code occurredAt} when the consent was given earlier than now (a restored grant); null = now. */
+    @Transactional
+    public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
+                        String proofText, String channel, String textVersion, UUID orderId,
+                        UUID eventId, ConsentOrigin origin, AuthPrincipal principal, Instant occurredAt) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
@@ -133,6 +142,7 @@ public class ConsentService {
         r.setOrderId(orderId);
         r.setEventId(eventId);
         r.setConfirmationRequired(ConsentConfirmation.required(source));
+        if (occurredAt != null) r.setOccurredAt(occurredAt);
         consentRepo.save(r);
 
         // An unconfirmed address grants nothing yet: membership state and any objection wait for the confirmation.
@@ -321,6 +331,24 @@ public class ConsentService {
             log.error("Sticky opt-out write failed for membership={} org={} channel={}: {}",
                     m.getMembershipId(), orgId, channel, e.getMessage(), e);
         }
+    }
+
+    /** Whether the member already holds this order's checkout email grant, under the current or the pre-V132 shape. */
+    @Transactional
+    public boolean hasCheckoutGrant(UUID membershipId, UUID orderId) {
+        return consentRepo.existsCheckoutGrant(membershipId, orderId, "%, order " + orderId);
+    }
+
+    /** Whether the member unsubscribed from email at or after {@code since}. */
+    @Transactional
+    public boolean unsubscribedFromEmailSince(UUID membershipId, Instant since) {
+        return consentRepo.existsEmailUnsubscribeSince(membershipId, since);
+    }
+
+    /** Whether the member's email state just before {@code at} was unsubscribed, by the latest record in force then. */
+    @Transactional
+    public boolean unsubscribedFromEmailAt(UUID membershipId, Instant at) {
+        return consentRepo.latestEmailRecordBeforeIsUnsubscribe(membershipId, at);
     }
 
     /**

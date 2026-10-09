@@ -106,7 +106,7 @@ public class AudienceBackfillJob {
                 continue;
             }
             try {
-                projector.upsertMembership(orgId, normalizedEmail, email);
+                projector.backfillMembership(orgId, normalizedEmail, email);
                 processed++;
             } catch (Exception e) {
                 log.error("Backfill failed for org={} email={}: {}", orgId, LogSafe.email(normalizedEmail),

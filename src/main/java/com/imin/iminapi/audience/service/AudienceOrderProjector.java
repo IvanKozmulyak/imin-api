@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.service;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.model.Organization;
@@ -21,6 +22,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.text.Normalizer;
@@ -44,6 +46,7 @@ import java.util.UUID;
 public class AudienceOrderProjector {
 
     private static final Logger log = LoggerFactory.getLogger(AudienceOrderProjector.class);
+    private static final String ERASE_PENDING = "erase_pending";
 
     private final OrderRepository orderRepo;
     private final ConsumerRepository consumerRepo;
@@ -54,6 +57,7 @@ public class AudienceOrderProjector {
     private final OrganizationRepository orgRepo;
     private final AudiencePlanLogic logic;
     private final TransactionTemplate requiresNew;
+    private final ErasedAddressRepository erasedAddressRepo;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
@@ -63,7 +67,9 @@ public class AudienceOrderProjector {
                                    ApplicationEventPublisher events,
                                    OrganizationRepository orgRepo,
                                    AudiencePlanLogic logic,
-                                   PlatformTransactionManager transactionManager) {
+                                   PlatformTransactionManager transactionManager,
+                                   ErasedAddressRepository erasedAddressRepo) {
+        this.erasedAddressRepo = erasedAddressRepo;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.orgRepo = orgRepo;
@@ -205,6 +211,61 @@ public class AudienceOrderProjector {
                                  String phoneE164, boolean smsOptIn,
                                  boolean emailOptIn, java.util.UUID orderIdForProof,
                                  String proofTextOverride, String textVersion) {
+        Membership m = projectMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn);
+
+        // 4. Checkout email opt-in: the box is unticked by default, so a tick with the
+        // sentence the buyer read is explicit consent; an opt-in without that sentence is not proof.
+        if (!emailOptIn || "unsubscribed".equals(m.getConsentStatus())) {
+            return;
+        }
+        if (proofTextOverride == null || proofTextOverride.isBlank()) {
+            log.warn("AudienceOrderProjector: opt-in without proof text for org {} order {} — no consent recorded",
+                    orgId, orderIdForProof);
+            return;
+        }
+        // Under the membership lock, so a backfill row restoring this order cannot also miss it.
+        if (orderIdForProof != null && consentService.hasCheckoutGrant(m.getMembershipId(), orderIdForProof)) {
+            return;
+        }
+        captureCheckoutConsent(orgId, m, orderIdForProof, proofTextOverride, textVersion, null);
+    }
+
+    /** The backfill's form: also records each checkout email grant a failed live projection lost, from the order. */
+    @Transactional
+    public void backfillMembership(UUID orgId, String normalizedEmail, String displayName) {
+        Membership m = projectMembership(orgId, normalizedEmail, displayName, null, false);
+        // The job's ledger snapshot can be stale; under the lock an erasure committed since is final.
+        // This method owns its transaction (the job has none), so rollback-only rolls back quietly.
+        if (erasedAddressRepo.existsPlatformWide(normalizedEmail)
+                || erasedAddressRepo.existsForOrg(orgId, normalizedEmail)) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            return;
+        }
+        for (Order order : orderRepo.findByOrgIdAndNormalizedEmail(orgId, normalizedEmail)) {
+            if (restorable(m, order)) {
+                captureCheckoutConsent(orgId, m, order.getId(), order.getMarketingOptInProof(),
+                        provenTextVersion(order), order.getCreatedAt());
+            }
+        }
+    }
+
+    /** Whether the order's checkout grant is missing and nothing the member did since, or before it, refuses it. */
+    private boolean restorable(Membership m, Order order) {
+        if (!order.isMarketingOptIn()) return false;
+        String proof = order.getMarketingOptInProof();
+        if (proof == null || proof.isBlank()) return false;
+        if (ERASE_PENDING.equals(m.getStatus())) return false;
+        if ("unsubscribed".equals(m.getConsentStatus())) return false;
+        if (m.isObjectedProfiling()) return false;
+        if (consentService.hasCheckoutGrant(m.getMembershipId(), order.getId())) return false;
+        // Unsubscribed when the order came in: the live path refused this grant on purpose.
+        if (consentService.unsubscribedFromEmailAt(m.getMembershipId(), order.getCreatedAt())) return false;
+        // An unsubscribe after the order wins.
+        return !consentService.unsubscribedFromEmailSince(m.getMembershipId(), order.getCreatedAt());
+    }
+
+    private Membership projectMembership(UUID orgId, String normalizedEmail, String displayName,
+                                         String phoneE164, boolean smsOptIn) {
         // 1. Get-or-create Consumer, race-safe.
         Consumer consumer = getOrCreateConsumer(consumerRepo, normalizedEmail, displayName);
 
@@ -225,20 +286,14 @@ public class AudienceOrderProjector {
         projector.recompute(m, normalizedEmail);
 
         membershipRepo.save(m);
+        return m;
+    }
 
-        // 4. Checkout email opt-in: the box is unticked by default, so a tick with the
-        // sentence the buyer read is explicit consent; an opt-in without that sentence is not proof.
-        if (!emailOptIn || "unsubscribed".equals(m.getConsentStatus())) {
-            return;
-        }
-        if (proofTextOverride == null || proofTextOverride.isBlank()) {
-            log.warn("AudienceOrderProjector: opt-in without proof text for org {} order {} — no consent recorded",
-                    orgId, orderIdForProof);
-            return;
-        }
+    private void captureCheckoutConsent(UUID orgId, Membership m, UUID orderId, String proofText, String textVersion,
+                                        Instant occurredAt) {
         consentService.capture(orgId, m.getMembershipId(), "explicit", "checkout",
-                "Ticked the marketing opt-in at checkout next to: \"" + proofTextOverride + "\""
-                        + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
-                "email", textVersion, orderIdForProof, ConsentOrigin.DATA_SUBJECT, null);
+                "Ticked the marketing opt-in at checkout next to: \"" + proofText + "\""
+                        + (orderId != null ? ", order " + orderId : ""),
+                "email", textVersion, orderId, null, ConsentOrigin.DATA_SUBJECT, null, occurredAt);
     }
 }

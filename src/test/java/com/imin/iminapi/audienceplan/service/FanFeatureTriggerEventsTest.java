@@ -75,6 +75,7 @@ class FanFeatureTriggerEventsTest {
     @Autowired MembershipRepository memberships;
     @Autowired MembershipProjector membershipProjector;
     @Autowired PlatformTransactionManager txManager;
+    @Autowired com.imin.iminapi.audience.repository.ErasedAddressRepository erasedAddresses;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor liveExecutor;
     @Autowired @Qualifier(FanFeatureExecutors.RECOMPUTE) Executor recomputeExecutor;
@@ -231,7 +232,7 @@ class FanFeatureTriggerEventsTest {
                 "  " + email.toUpperCase() + " ", Instant.now(), Ticket.STATE_ISSUED);
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses)
                 .onTicketsIssued(new TicketsIssuedEvent(o.getId()));
 
         assertThat(captured).containsExactly(new MembershipProjected(org.id(), email));
@@ -241,7 +242,7 @@ class FanFeatureTriggerEventsTest {
     void ticketsIssued_unknownOrder_publishesNothing() {
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses)
                 .onTicketsIssued(new TicketsIssuedEvent(UUID.randomUUID()));
 
         assertThat(captured).isEmpty();
