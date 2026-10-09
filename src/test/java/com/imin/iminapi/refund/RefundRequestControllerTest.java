@@ -113,6 +113,55 @@ class RefundRequestControllerTest {
                 .andExpect(jsonPath("$[0].reference").value(quoted.getReference()));
     }
 
+    /** The count is the list's pending set grouped by event: decided rows of every status stay out. */
+    @Test
+    void pendingCount_matchesTheListsPendingSet_perEvent() throws Exception {
+        User owner = fx.owner(org);
+        Event second = fx.event(org, owner, EventStatus.LIVE, clock.instant().plus(Duration.ofDays(40)));
+        pendingRequest(event);
+        pendingRequest(event);
+        pendingRequest(second);
+        // Oldest-first fixtures would hide an ordering bug; these decided rows must not count.
+        for (RefundRequestStatus decided : List.of(RefundRequestStatus.APPROVED,
+                RefundRequestStatus.REJECTED, RefundRequestStatus.WITHDRAWN)) {
+            RefundRequest rr = pendingRequest(second);
+            rr.setStatus(decided);
+            rr.setPendingMarker(null);
+            requests.save(rr);
+        }
+
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", org.getId())
+                        .param("status", "pending").with(auth(me)))
+                .andExpect(jsonPath("$", hasSize(3)));
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests/pending-count", org.getId()).with(auth(me)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(3))
+                .andExpect(jsonPath("$.events", hasSize(2)))
+                // Newest pending request first: `second` got its pending row last.
+                .andExpect(jsonPath("$.events[0].eventId").value(second.getId().toString()))
+                .andExpect(jsonPath("$.events[0].eventName").value(second.getName()))
+                .andExpect(jsonPath("$.events[0].count").value(1))
+                .andExpect(jsonPath("$.events[1].eventId").value(event.getId().toString()))
+                .andExpect(jsonPath("$.events[1].count").value(2));
+    }
+
+    /** Another org's id is 404, and its pending rows never reach this org's count. */
+    @Test
+    void pendingCount_isOrgScoped() throws Exception {
+        Organization other = fx.org();
+        orgIds.add(other.getId());
+        User otherOwner = fx.owner(other);
+        pendingRequest(fx.event(other, otherOwner, EventStatus.LIVE, clock.instant().plus(Duration.ofDays(30))));
+
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests/pending-count", other.getId()).with(auth(me)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests/pending-count", org.getId()).with(auth(me)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(0))
+                .andExpect(jsonPath("$.events", hasSize(0)));
+    }
+
     /** A typo or stale bookmark in ?status= is a client mistake, not a 500. */
     @Test
     void list_withAnUnknownStatus_is400() throws Exception {

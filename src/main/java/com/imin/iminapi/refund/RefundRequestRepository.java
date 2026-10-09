@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.refund.dto.RefundRequestPendingCountResponse;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -13,6 +14,13 @@ import java.util.UUID;
 
 @RepositoryRestResource(exported = false)
 public interface RefundRequestRepository extends JpaRepository<RefundRequest, UUID> {
+
+    /** The org / event / status filter every operator list and count shares, so "pending" means one thing. */
+    String ORG_EVENT_STATUS = """
+        rr.orgId = :orgId
+          and (:eventId is null or rr.eventId = :eventId)
+          and rr.status in :statuses
+    """;
 
     Optional<RefundRequest> findByIdAndOrgId(UUID id, UUID orgId);
 
@@ -28,9 +36,7 @@ public interface RefundRequestRepository extends JpaRepository<RefundRequest, UU
 
     @Query("""
         select rr from RefundRequest rr
-        where rr.orgId = :orgId
-          and (:eventId is null or rr.eventId = :eventId)
-          and rr.status in :statuses
+        where """ + ORG_EVENT_STATUS + """
         order by rr.createdAt desc, rr.id desc
     """)
     List<RefundRequest> page(@Param("orgId") UUID orgId,
@@ -57,9 +63,7 @@ public interface RefundRequestRepository extends JpaRepository<RefundRequest, UU
      */
     @Query("""
         select rr from RefundRequest rr
-        where rr.orgId = :orgId
-          and (:eventId is null or rr.eventId = :eventId)
-          and rr.status in :statuses
+        where """ + ORG_EVENT_STATUS + """
           and (rr.reference = :reference
                or lower(rr.buyerEmail) like lower(concat('%', :term, '%')))
         order by rr.createdAt desc, rr.id desc
@@ -70,6 +74,21 @@ public interface RefundRequestRepository extends JpaRepository<RefundRequest, UU
                                    @Param("reference") String reference,
                                    @Param("term") String term,
                                    Pageable pageable);
+
+    /** Counts per event over the same filter as {@link #page}; one aggregate, newest request first. */
+    @Query("""
+        select new com.imin.iminapi.refund.dto.RefundRequestPendingCountResponse$EventCount(
+                   rr.eventId, e.name, count(rr))
+        from RefundRequest rr
+        left join Event e on e.id = rr.eventId
+        where """ + ORG_EVENT_STATUS + """
+        group by rr.eventId, e.name
+        order by max(rr.createdAt) desc, rr.eventId
+    """)
+    List<RefundRequestPendingCountResponse.EventCount> countByEvent(
+            @Param("orgId") UUID orgId,
+            @Param("eventId") UUID eventId,
+            @Param("statuses") List<RefundRequestStatus> statuses);
 
     boolean existsByOrderIdAndStatus(UUID orderId, RefundRequestStatus status);
 

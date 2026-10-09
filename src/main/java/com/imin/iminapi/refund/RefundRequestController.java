@@ -3,6 +3,7 @@ package com.imin.iminapi.refund;
 import com.imin.iminapi.refund.dto.RefundRequestApproveRequest;
 import com.imin.iminapi.refund.dto.RefundRequestDecisionResponse;
 import com.imin.iminapi.refund.dto.RefundRequestDetailResponse;
+import com.imin.iminapi.refund.dto.RefundRequestPendingCountResponse;
 import com.imin.iminapi.refund.dto.RefundRequestRejectRequest;
 import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.security.ApiException;
@@ -53,6 +54,14 @@ public class RefundRequestController {
         // `search` = the refund reference a customer quoted (REQ-8K2M-26 / 8K2M-26)
         // or part of their email. Blank/absent behaves exactly as before.
         return service.listRequests(orgId, eventId, statuses, search, limit);
+    }
+
+    /** Cheap alternative to listing pending rows just to count them (dashboard "Waiting on you"). */
+    @GetMapping("/pending-count")
+    public RefundRequestPendingCountResponse pendingCount(@PathVariable UUID orgId,
+                                                          @CurrentUser AuthPrincipal principal) {
+        if (!orgId.equals(principal.orgId())) throw ApiException.notFound("Org");
+        return service.pendingCounts(orgId);
     }
 
     @GetMapping("/{id}")

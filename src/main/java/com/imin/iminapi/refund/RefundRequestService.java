@@ -17,6 +17,7 @@ import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
 import com.imin.iminapi.refund.dto.RefundRequestApproveRequest;
 import com.imin.iminapi.refund.dto.RefundRequestDecisionResponse;
 import com.imin.iminapi.refund.dto.RefundRequestDetailResponse;
+import com.imin.iminapi.refund.dto.RefundRequestPendingCountResponse;
 import com.imin.iminapi.refund.dto.RefundRequestRejectRequest;
 import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
@@ -563,6 +564,14 @@ public class RefundRequestService {
                 rr.getRefundId(),
                 rr.getRefundId() == null ? null : refundStatuses.get(rr.getRefundId()));
         }).toList();
+    }
+
+    /** Pending requests per event in one aggregate query, with no per-row mapping. */
+    @Transactional(readOnly = true)
+    public RefundRequestPendingCountResponse pendingCounts(UUID orgId) {
+        var events = requests.countByEvent(orgId, null, List.of(RefundRequestStatus.PENDING));
+        return new RefundRequestPendingCountResponse(
+            events.stream().mapToLong(RefundRequestPendingCountResponse.EventCount::count).sum(), events);
     }
 
     /** Wire form of a linked refund's status ({@code "failed"}, {@code "succeeded"}, …). */
