@@ -167,6 +167,32 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
     }
 
+    private static final Instant OPENED_AGAIN = Instant.parse("2026-07-11T10:15:00Z");
+
+    static Stream<Arguments> repeatedEngagementInBothOrders() {
+        // opened_at / clicked_at keep the earliest instant; last_event_at is the last arrival's instant.
+        return Stream.of(
+                arguments("email.opened", List.of(OPENED, OPENED_AGAIN), OPENED, OPENED_AGAIN),
+                arguments("email.opened", List.of(OPENED_AGAIN, OPENED), OPENED, OPENED),
+                arguments("email.clicked", List.of(OPENED, OPENED_AGAIN), OPENED, OPENED_AGAIN),
+                arguments("email.clicked", List.of(OPENED_AGAIN, OPENED), OPENED, OPENED));
+    }
+
+    @ParameterizedTest(name = "{0} arriving {1}")
+    @MethodSource("repeatedEngagementInBothOrders")
+    void aRepeatedOpenOrClickKeepsTheFirstInstant(String type, List<Instant> arrivals, Instant first, Instant lastEventAt)
+            throws Exception {
+        Seeded s = seed(fx.email("ooo-repeat"));
+        for (Instant at : arrivals) deliver(s, Event.of(type, at));
+
+        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        Instant stamped = type.equals("email.opened") ? after.getOpenedAt() : after.getClickedAt();
+        Instant other = type.equals("email.opened") ? after.getClickedAt() : after.getOpenedAt();
+        assertThat(stamped).as(type + " stamp").isEqualTo(first);
+        assertThat(other).as("the other engagement stamp").isNull();
+        assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
+    }
+
     static Stream<Arguments> eventsCommittedWhileAComplaintIsInFlight() {
         return Stream.of(
                 arguments(Event.of("email.delivered", DELIVERED), new Expected("complained", null, DELIVERED, null)),
