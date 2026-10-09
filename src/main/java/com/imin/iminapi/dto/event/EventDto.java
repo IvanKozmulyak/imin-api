@@ -17,13 +17,26 @@ public record EventDto(
         Instant onSaleAt, Instant saleClosesAt,
         UUID createdBy, Instant createdAt, Instant updatedAt,
         Instant publishedAt, Instant deletedAt,
-        List<TicketTierDto> tiers, List<PromoCodeDto> promoCodes, PredictionDto prediction) {
+        List<TicketTierDto> tiers, List<PromoCodeDto> promoCodes, PredictionDto prediction,
+        Boolean almostGone, Integer ticketsLeft) {
 
     /**
      * Summary form used by GET /events (no tiers/promos/prediction). Sales figures come from
      * live totals; the event's own sold/revenue columns are never written.
      */
     public static EventDto summary(Event e, EventSalesFigures f) {
+        return build(e, f, null, null);
+    }
+
+    /**
+     * Summary with the almost-gone fields: {@code ticketsLeft} is the scarcest almost-gone tier's remaining
+     * count (null when no tier is almost gone or the event is not on sale), not a total across tiers.
+     */
+    public static EventDto summaryWithAlmostGone(Event e, EventSalesFigures f, Integer ticketsLeft) {
+        return build(e, f, ticketsLeft != null, ticketsLeft);
+    }
+
+    private static EventDto build(Event e, EventSalesFigures f, Boolean almostGone, Integer ticketsLeft) {
         return new EventDto(e.getId(), e.getOrgId(), e.getName(), e.getSlug(),
                 e.getVisibility().wireValue(), e.getStatus().wireValue(), e.getGenre(), e.getSubGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(), venue(e),
@@ -32,7 +45,8 @@ public record EventDto(
                 e.getOnSaleAt(), e.getSaleClosesAt(),
                 e.getCreatedBy(), e.getCreatedAt(), e.getUpdatedAt(),
                 e.getPublishedAt(), e.getDeletedAt(),
-                null, null, null);
+                null, null, null,
+                almostGone, ticketsLeft);
     }
 
     /** Detail form including tiers/promos/prediction (prediction may be null). */
@@ -47,7 +61,7 @@ public record EventDto(
                 base.onSaleAt, base.saleClosesAt,
                 base.createdBy, base.createdAt, base.updatedAt,
                 base.publishedAt, base.deletedAt,
-                tiers, promos, prediction);
+                tiers, promos, prediction, null, null);
     }
 
     private static VenueDto venue(Event e) {

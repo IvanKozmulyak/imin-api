@@ -209,8 +209,15 @@ public class EventService {
         var result = events.findVisibleByOrg(p.orgId(), status, pg);
         Map<UUID, EventSalesFigures> figures = salesTotals == null ? Map.of()
                 : salesTotals.forEvents(result.getContent().stream().map(Event::getId).toList());
+        List<UUID> ids = result.getContent().stream().map(Event::getId).toList();
+        Map<UUID, List<TicketTier>> pageTiers = ids.isEmpty() ? Map.of()
+                : tiers.findByEventIdInOrderBySortOrderAsc(ids).stream()
+                        .collect(java.util.stream.Collectors.groupingBy(TicketTier::getEventId));
+        Instant now = Instant.now();
         return PageResponse.from(result,
-                e -> EventDto.summary(e, figures.getOrDefault(e.getId(), EventSalesFigures.EMPTY)));
+                e -> EventDto.summaryWithAlmostGone(e, figures.getOrDefault(e.getId(), EventSalesFigures.EMPTY),
+                        AlmostGone.scarcestLeft(e, pageTiers.getOrDefault(e.getId(), List.of()), now)
+                                .stream().boxed().findFirst().orElse(null)));
     }
 
     @Transactional(readOnly = true)
