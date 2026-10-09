@@ -28,6 +28,8 @@ public final class AuditActions {
     public static final String TICKET_REDEEMED = "TICKET_REDEEMED";
     /** A copy of an event's attendee list — names, addresses — left the platform. */
     public static final String ATTENDEES_EXPORTED = "ATTENDEES_EXPORTED";
+    /** A copy of an event's orders — buyer emails, totals — left the platform. */
+    public static final String ORDERS_EXPORTED = "ORDERS_EXPORTED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
     public static final String SEGMENT_CREATED          = "SEGMENT_CREATED";

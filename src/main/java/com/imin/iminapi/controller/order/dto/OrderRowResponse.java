@@ -24,13 +24,17 @@ public record OrderRowResponse(
     Instant createdAt,
     List<TicketRow> tickets,
     @Schema(description = "The governing chargeback on this order, null when there is none.")
-    DisputeRow dispute
+    DisputeRow dispute,
+    @Schema(description = "The promo code the buyer applied, null when none was used or the code was since deleted.")
+    String promoCode
 ) {
     public record TicketRow(
         UUID id,
         String tierName,
         int priceMinor,
-        String state
+        String state,
+        @Schema(description = "When the ticket was scanned at the door, null until then.")
+        Instant redeemedAt
     ) {}
 
     /**

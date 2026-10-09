@@ -7,11 +7,13 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.support.IminFixtures;
@@ -53,6 +55,7 @@ class EventOrdersControllerTest {
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired DisputeRepository disputes;
+    @Autowired PromoCodeRepository promos;
     @Autowired JdbcTemplate jdbc;
     @Autowired MutableClock clock;
 
@@ -63,6 +66,7 @@ class EventOrdersControllerTest {
     private Event event;
     private TicketTier ga;
     private Authentication auth;
+    private final List<UUID> extraOrgIds = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -86,7 +90,9 @@ class EventOrdersControllerTest {
     /** Disputes are swept across every org, so the open ones this class leaves must go with their org. */
     @AfterEach
     void tearDown() {
-        OrgRows.delete(jdbc, List.of(org.getId()));
+        List<UUID> all = new ArrayList<>(extraOrgIds);
+        all.add(org.getId());
+        OrgRows.delete(jdbc, all);
     }
 
     private Order newOrder(long totalMinor) {
@@ -229,5 +235,85 @@ class EventOrdersControllerTest {
             .andExpect(jsonPath("$[0].status").value("disputed"))
             .andExpect(jsonPath("$[0].dispute.status").value("open"))
             .andExpect(jsonPath("$[0].dispute.amountMinor").value(1149));
+    }
+
+    private static final Instant SCANNED_AT = Instant.parse("2026-09-02T19:45:12Z");
+
+    /** An order with a promo code and one scanned ticket, the two fields the drawer adds. */
+    private Order orderWithCodeAndScan() {
+        PromoCode code = new PromoCode();
+        code.setEventId(event.getId());
+        code.setCode("VIP" + UUID.randomUUID().toString().substring(0, 4).toUpperCase());
+        code.setDiscountPct(20);
+        code.setMaxUses(10);
+        code = promos.save(code);
+        Order o = newOrder(1149);
+        o.setPromoCodeId(code.getId());
+        o = orders.save(o);
+        Ticket t = newTicket(o, Ticket.STATE_REDEEMED);
+        t.setRedeemedAt(SCANNED_AT);
+        tickets.save(t);
+        return o;
+    }
+
+    @Test
+    void list_rows_carry_the_promo_code_and_the_scan_time() throws Exception {
+        Order o = orderWithCodeAndScan();
+        String code = promos.findById(o.getPromoCodeId()).orElseThrow().getCode();
+        Order plain = newOrder(1149);
+        plain.setCreatedAt(o.getCreatedAt().minusSeconds(60));
+        orders.save(plain);
+        newTicket(plain, Ticket.STATE_ISSUED);
+
+        mvc.perform(get("/api/v1/events/{id}/orders", event.getId()).with(authentication(auth)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$[0].id").value(o.getId().toString()))
+            .andExpect(jsonPath("$[0].promoCode").value(code))
+            .andExpect(jsonPath("$[0].tickets[0].redeemedAt").value(SCANNED_AT.toString()))
+            .andExpect(jsonPath("$[1].id").value(plain.getId().toString()))
+            .andExpect(jsonPath("$[1].promoCode").doesNotExist())
+            .andExpect(jsonPath("$[1].tickets[0].redeemedAt").doesNotExist());
+    }
+
+    @Test
+    void detail_returns_the_one_row() throws Exception {
+        Order o = newOrder(1149);
+        newTicket(o, Ticket.STATE_ISSUED);
+
+        mvc.perform(get("/api/v1/events/{id}/orders/{orderId}", event.getId(), o.getId())
+                    .with(authentication(auth)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(o.getId().toString()))
+            .andExpect(jsonPath("$.status").value("paid"));
+    }
+
+    @Test
+    void detail_of_another_orgs_order_is_404() throws Exception {
+        Order o = newOrder(1149);
+        newTicket(o, Ticket.STATE_ISSUED);
+        Organization other = fx.org();
+        extraOrgIds.add(other.getId());
+        Authentication stranger = new UsernamePasswordAuthenticationToken(fx.principal(fx.owner(other)),
+                null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
+
+        mvc.perform(get("/api/v1/events/{id}/orders/{orderId}", event.getId(), o.getId())
+                    .with(authentication(stranger)))
+            .andExpect(status().isNotFound());
+    }
+
+    /** The order exists and is the caller's, but not under this event: same 404 as a missing one. */
+    @Test
+    void detail_of_an_order_from_another_event_is_404() throws Exception {
+        Event sibling = fx.event(org, owner, EventStatus.LIVE, clock.instant().plusSeconds(86_400L * 20));
+        Order elsewhere = fx.order(sibling, fx.email("buyer"));
+        fx.ticket(elsewhere, Ticket.STATE_ISSUED);
+
+        mvc.perform(get("/api/v1/events/{id}/orders/{orderId}", event.getId(), elsewhere.getId())
+                    .with(authentication(auth)))
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        mvc.perform(get("/api/v1/events/{id}/orders/{orderId}", sibling.getId(), elsewhere.getId())
+                    .with(authentication(auth)))
+            .andExpect(status().isOk());
     }
 }

@@ -6,6 +6,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.util.CsvCell;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -63,25 +64,8 @@ public class AttendeeExportService {
         return currency + " " + String.format(Locale.ROOT, "%.2f", minor / 100.0);
     }
 
-    /**
-     * RFC-4180 escaping (wrap in quotes and double any embedded quote when needed), plus a
-     * CSV-injection guard.
-     *
-     * <p>The guard is the same one {@code AudienceController.csvField} applies: a value whose
-     * first character is one of {@code = + - @}, tab or CR is prefixed with a single quote so
-     * Excel and Sheets treat it as text. {@code buyer_email} is buyer-controlled — checkout
-     * validates only that the address contains an "@" — and
-     * {@code =cmd|'/C calc'!A0@example.com} satisfies that while being valid RFC-5322 atext
-     * (events-20).
-     */
+    /** Formula-injection guard included: {@code buyer_email} is buyer-controlled. */
     private static String csv(String v) {
-        if (v == null) return "";
-        if (!v.isEmpty() && "=+-@\t\r".indexOf(v.charAt(0)) >= 0) {
-            v = "'" + v;
-        }
-        if (v.contains(",") || v.contains("\"") || v.contains("\n") || v.contains("\r")) {
-            return "\"" + v.replace("\"", "\"\"") + "\"";
-        }
-        return v;
+        return CsvCell.escape(v);
     }
 }

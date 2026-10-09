@@ -3,18 +3,27 @@ package com.imin.iminapi.controller.order;
 import com.imin.iminapi.controller.order.dto.OrderRowResponse;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
-import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrderStatusSearch;
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,7 +37,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -60,38 +71,118 @@ public class EventOrdersController {
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final DisputeRepository disputes;
+    private final PromoCodeRepository promos;
+    private final OrderStatusSearch search;
+    private final AuditLogger audit;
 
     public EventOrdersController(EventRepository events,
                                  OrderRepository orders,
                                  TicketRepository tickets,
-                                 DisputeRepository disputes) {
+                                 DisputeRepository disputes,
+                                 PromoCodeRepository promos,
+                                 OrderStatusSearch search,
+                                 AuditLogger audit) {
         this.events = events;
         this.orders = orders;
         this.tickets = tickets;
         this.disputes = disputes;
+        this.promos = promos;
+        this.search = search;
+        this.audit = audit;
     }
 
     @GetMapping
     public List<OrderRowResponse> list(@PathVariable UUID eventId,
+                                       @Parameter(schema = @Schema(allowableValues =
+                                               {"paid", "partially_refunded", "refunded", "disputed"}))
+                                       @RequestParam(name = "status", required = false) String status,
+                                       @Parameter(description = "Case-insensitive email substring or shortCode prefix")
+                                       @RequestParam(name = "q", required = false) String q,
                                        @RequestParam(name = "limit", required = false) Integer limit,
                                        @CurrentUser AuthPrincipal principal) {
+        requireOwnEvent(eventId, principal);
+        int capped = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(1, limit), MAX_LIMIT);
+        return rows(search.find(eventId, statusFilter(status), searchTerm(q), capped));
+    }
+
+    /** One row; an order of another event, or of another org's event, is 404 like a missing one. */
+    @GetMapping("/{orderId}")
+    public OrderRowResponse detail(@PathVariable UUID eventId,
+                                   @PathVariable UUID orderId,
+                                   @CurrentUser AuthPrincipal principal) {
+        requireOwnEvent(eventId, principal);
+        List<OrderRowResponse> one = rows(search.findOne(eventId, orderId));
+        if (one.isEmpty()) throw ApiException.notFound("Order");
+        return one.get(0);
+    }
+
+    /**
+     * Every order matching the list's filters, uncapped, for any org member. Audited after the CSV
+     * is built so a refused request does not read as an export.
+     */
+    // ponytail: built in memory; stream it once one event reaches tens of thousands of orders.
+    @GetMapping(value = "/export", produces = "text/csv")
+    public ResponseEntity<String> export(@PathVariable UUID eventId,
+                                         @Parameter(schema = @Schema(allowableValues =
+                                                 {"paid", "partially_refunded", "refunded", "disputed"}))
+                                         @RequestParam(name = "status", required = false) String status,
+                                         @Parameter(description = "Case-insensitive email substring or shortCode prefix")
+                                         @RequestParam(name = "q", required = false) String q,
+                                         @CurrentUser AuthPrincipal principal) {
+        requireOwnEvent(eventId, principal);
+        List<OrderRowResponse> rows = rows(search.find(eventId, statusFilter(status), searchTerm(q), null));
+        String csv = OrdersCsv.write(rows);
+        audit.record(principal, AuditActions.ORDERS_EXPORTED, "event", eventId,
+                "Orders CSV exported (" + rows.size() + " row(s))");
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"orders-" + eventId + ".csv\"")
+                .contentType(MediaType.parseMediaType("text/csv; charset=utf-8"))
+                .body(csv);
+    }
+
+    private void requireOwnEvent(UUID eventId, AuthPrincipal principal) {
         Event event = events.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
         if (!event.getOrgId().equals(principal.orgId())) throw ApiException.notFound("Event");
+    }
 
-        int capped = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(1, limit), MAX_LIMIT);
-        List<Order> page = orders.findByEventIdOrderByCreatedAtDesc(
-                eventId, PageRequest.of(0, capped, Sort.by(Sort.Direction.DESC, "createdAt")));
-        if (page.isEmpty()) return List.of();
+    private static String statusFilter(String status) {
+        if (status == null || status.isBlank()) return null;
+        String s = status.trim();
+        if (!OrderStatusSearch.STATUSES.contains(s)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    Map.of("status", "must be one of paid, partially_refunded, refunded, disputed"));
+        }
+        return s;
+    }
 
-        List<UUID> orderIds = page.stream().map(Order::getId).toList();
+    private static String searchTerm(String q) {
+        return q == null || q.isBlank() ? null : q.trim();
+    }
+
+    /** Rows in the order of {@code hits}; tickets, disputes and promo codes loaded once for all of them. */
+    private List<OrderRowResponse> rows(List<OrderStatusSearch.Hit> hits) {
+        if (hits.isEmpty()) return List.of();
+        List<UUID> orderIds = hits.stream().map(OrderStatusSearch.Hit::orderId).toList();
+        Map<UUID, Order> byId = orders.findAllById(orderIds).stream()
+                .collect(Collectors.toMap(Order::getId, Function.identity()));
         Map<UUID, List<Ticket>> ticketsByOrder = loadTicketsByOrder(orderIds);
         Map<UUID, Dispute> disputeByOrder = loadGoverningDisputes(orderIds);
-        List<OrderRowResponse> rows = new ArrayList<>(page.size());
-        for (Order o : page) {
-            rows.add(toRow(o, ticketsByOrder.getOrDefault(o.getId(), List.of()),
-                    disputeByOrder.get(o.getId())));
+        Map<UUID, String> promoCodes = loadPromoCodes(byId.values());
+        List<OrderRowResponse> rows = new ArrayList<>(hits.size());
+        for (OrderStatusSearch.Hit hit : hits) {
+            Order o = byId.get(hit.orderId());
+            if (o == null) continue;
+            rows.add(toRow(o, hit.status(), ticketsByOrder.getOrDefault(o.getId(), List.of()),
+                    disputeByOrder.get(o.getId()),
+                    o.getPromoCodeId() == null ? null : promoCodes.get(o.getPromoCodeId())));
         }
         return rows;
+    }
+
+    private Map<UUID, String> loadPromoCodes(Collection<Order> page) {
+        List<UUID> ids = page.stream().map(Order::getPromoCodeId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        return promos.findAllById(ids).stream().collect(Collectors.toMap(PromoCode::getId, PromoCode::getCode));
     }
 
     private Map<UUID, List<Ticket>> loadTicketsByOrder(Collection<UUID> orderIds) {
@@ -117,32 +208,17 @@ public class EventOrdersController {
         return governing;
     }
 
-    private static OrderRowResponse toRow(Order o, List<Ticket> orderTickets, Dispute dispute) {
+    /** {@code status} comes from {@link OrderStatusSearch}, the one definition of it. */
+    private static OrderRowResponse toRow(Order o, String status, List<Ticket> orderTickets,
+                                          Dispute dispute, String promoCode) {
         int totalTickets = orderTickets.size();
         int refundedCount = (int) orderTickets.stream()
             .filter(t -> Ticket.STATE_REFUNDED.equals(t.getState()))
             .count();
-        // REVOKED tickets are no longer live either — counting them toward the
-        // "not still held" total keeps an order with every ticket revoked from
-        // mis-rendering as `paid` (which would offer a no-op Refund button).
-        int inactiveCount = (int) orderTickets.stream()
-            .filter(t -> Ticket.STATE_REFUNDED.equals(t.getState())
-                      || Ticket.STATE_REVOKED.equals(t.getState()))
-            .count();
-        String status = inactiveCount == 0 ? "paid"
-                      : inactiveCount == totalTickets ? "refunded"
-                      : "partially_refunded";
-        // A chargeback revokes the tickets, so the ticket-derived status above reads
-        // "refunded" — a different event, with a Refund button that Stripe would reject.
-        // OPEN and LOST override it; WON / WITHDRAWN_REINSTATED gave the money back, so the
-        // row keeps its ticket-derived status and only carries the dispute for context.
-        boolean withholding = dispute != null
-                && DisputeWithholding.STATUSES.contains(dispute.getStatus());
-        if (withholding) status = "disputed";
 
         List<OrderRowResponse.TicketRow> ticketRows = orderTickets.stream()
             .map(t -> new OrderRowResponse.TicketRow(
-                t.getId(), t.getTierName(), t.getPriceMinor(), t.getState()))
+                t.getId(), t.getTierName(), t.getPriceMinor(), t.getState(), t.getRedeemedAt()))
             .collect(Collectors.toList());
 
         return new OrderRowResponse(
@@ -160,7 +236,8 @@ public class EventOrdersController {
                 dispute.getStatus().toWire(),
                 dispute.getAmountMinor(),
                 dispute.getCurrency(),
-                dispute.getOpenedAt())
+                dispute.getOpenedAt()),
+            promoCode
         );
     }
 }
