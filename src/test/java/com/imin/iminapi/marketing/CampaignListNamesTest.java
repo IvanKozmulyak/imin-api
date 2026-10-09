@@ -6,6 +6,8 @@ import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.marketing.dto.CampaignDetailDto;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Event;
@@ -42,6 +44,7 @@ class CampaignListNamesTest {
     @Autowired CampaignService service;
     @Autowired SegmentService segmentService;
     @Autowired CampaignRepository campaigns;
+    @Autowired MomentumSuggestionRepository suggestions;
     @Autowired SegmentRepository segments;
     @Autowired EventRepository events;
     @Autowired IminFixtures fx;
@@ -62,6 +65,7 @@ class CampaignListNamesTest {
 
     @AfterEach
     void tearDown() {
+        jdbc.update("DELETE FROM momentum_suggestions WHERE org_id IN (?, ?)", orgId, otherOrgId);
         CampaignRows.delete(jdbc, List.of(orgId, otherOrgId));
     }
 
@@ -202,6 +206,44 @@ class CampaignListNamesTest {
     @Test
     void detail_noEvent_hasNoTimezone() {
         assertThat(service.detailWithStats(owner, campaign(null, null)).eventTimezone()).isNull();
+    }
+
+    @Test
+    void detail_momentumCampaign_carriesItsSuggestionsTrigger() {
+        UUID id = campaign(null, null);
+        link(id, orgId, "urgency_72h");
+
+        assertThat(service.detailWithStats(owner, id).triggerType()).isEqualTo("urgency_72h");
+    }
+
+    @Test
+    void detail_manualCampaign_hasNoTrigger() {
+        assertThat(service.detailWithStats(owner, campaign(null, null)).triggerType()).isNull();
+    }
+
+    @Test
+    void detail_suggestionOfAnotherOrg_hasNoTrigger() {
+        UUID id = campaign(null, null);
+        link(id, otherOrgId, "slump");
+
+        assertThat(service.detailWithStats(owner, id).triggerType()).isNull();
+    }
+
+    private void link(UUID campaignId, UUID suggestionOrg, String trigger) {
+        MomentumSuggestion s = new MomentumSuggestion();
+        s.setId(UUID.randomUUID());
+        s.setOrgId(suggestionOrg);
+        s.setEventId(UUID.randomUUID());
+        s.setTriggerType(trigger);
+        s.setStatus("approved");
+        s.setMetricsSnapshot("{}");
+        s.setDraftPayload("{}");
+        s.setCampaignId(campaignId);
+        suggestions.save(s);
+        Campaign c = campaigns.findById(campaignId).orElseThrow();
+        c.setOrigin("momentum");
+        c.setMomentumSuggestionId(s.getId());
+        campaigns.save(c);
     }
 
     private CampaignSummary row(UUID id) {

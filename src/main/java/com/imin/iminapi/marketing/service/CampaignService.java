@@ -81,6 +81,7 @@ public class CampaignService {
     private final SendPathGuard sendPathGuard;
     private final com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms;
     private final com.imin.iminapi.repository.AuditLogRepository auditLogs;
+    private final com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -99,8 +100,10 @@ public class CampaignService {
                            CampaignAiSuggestions aiSuggestions,
                            SendPathGuard sendPathGuard,
                            com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms,
-                           com.imin.iminapi.repository.AuditLogRepository auditLogs) {
+                           com.imin.iminapi.repository.AuditLogRepository auditLogs,
+                           com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions) {
         this.auditLogs = auditLogs;
+        this.momentumSuggestions = momentumSuggestions;
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -746,8 +749,14 @@ public class CampaignService {
         Campaign c = require(p.orgId(), id);
         String segmentName = c.getSegmentId() == null ? null : segments.nameOrNull(p.orgId(), c.getSegmentId());
         Event event = linkedEvent(c);
+        // Trigger comes from the suggestion this campaign was approved from; null for manual ones.
+        String triggerType = c.getMomentumSuggestionId() == null ? null
+                : momentumSuggestions.findById(c.getMomentumSuggestionId())
+                        .filter(sg -> p.orgId().equals(sg.getOrgId()))
+                        .map(com.imin.iminapi.marketing.model.MomentumSuggestion::getTriggerType)
+                        .orElse(null);
         return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(id), segmentName,
-                event == null ? null : event.getTimezone());
+                event == null ? null : event.getTimezone(), triggerType);
     }
 
     /**

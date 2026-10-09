@@ -42,15 +42,18 @@ public record CampaignDetailDto(
         /** Name of the org's segment {@code segmentId}, hidden plan/Momentum segments included; null when none or gone. */
         String segmentName,
         /** IANA zone of the linked active event, for showing its send times; null without one. */
-        String eventTimezone
+        String eventTimezone,
+        /** Momentum trigger (launch_push|slump|urgency_72h|sold_out) of the suggestion this campaign was approved from; null for manual campaigns. */
+        String triggerType
 ) {
-    public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone) {
+    public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
+                                         String triggerType) {
         return new CampaignDetailDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
-                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone);
+                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType);
     }
 }
