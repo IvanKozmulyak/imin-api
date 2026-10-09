@@ -10,9 +10,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeRefundService;
-import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.InvalidRequestException;
-import com.stripe.exception.RateLimitException;
 import com.imin.iminapi.model.UserRole;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,7 +42,12 @@ class RefundServiceTest {
     TicketTierRepository tierRepo = mock(TicketTierRepository.class);
     DisputeRepository disputes = mock(DisputeRepository.class);
     ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+    RefundAttemptStore store = mock(RefundAttemptStore.class);
+    // Real: the webhook tests below assert the tickets and tier it writes.
+    RefundInventoryRelease release = new RefundInventoryRelease(refundTickets, tickets, tierRepo, publisher);
     RefundService service;
+    /** The row the last {@code store.open} committed, as the store would return it. */
+    Refund opened;
 
     UUID orgId;
     UUID userId;
@@ -57,8 +60,21 @@ class RefundServiceTest {
         userId = UUID.randomUUID();
         orderId = UUID.randomUUID();
         principal = new AuthPrincipal(userId, orgId, UserRole.OWNER, UUID.randomUUID());
-        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds, tierRepo,
-            disputes, publisher, liveKey());
+        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds,
+            disputes, publisher, liveKey(), store, release, java.time.Clock.systemUTC());
+        when(store.open(any(), any(), any())).thenAnswer(inv -> {
+            opened = inv.getArgument(0);
+            opened.setId(UUID.randomUUID());
+            opened.setStatus(RefundStatus.REQUESTED);
+            return opened;
+        });
+        when(store.recordOutcome(any(), any())).thenAnswer(inv -> {
+            com.stripe.model.Refund sr = inv.getArgument(1);
+            opened.setStripeRefundId(sr.getId());
+            opened.setStripeChargeId(sr.getCharge());
+            opened.setStatus(RefundStatus.fromStripe(sr.getStatus()));
+            return opened;
+        });
     }
 
     /** Live key: these orders keep the default testMode=false, so their mode matches. */
@@ -241,7 +257,7 @@ class RefundServiceTest {
         stripeStub.setId("re_1");
         stripeStub.setStatus("pending");
         when(stripeRefunds.create(anyString(), anyLong(), anyString(), any(), anyLong(),
-                org.mockito.ArgumentMatchers.anyBoolean(), anyString())).thenReturn(stripeStub);
+                org.mockito.ArgumentMatchers.anyBoolean(), anyString(), anyString())).thenReturn(stripeStub);
         when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
             Refund r = inv.getArgument(0);
             if (r.getId() == null) r.setId(UUID.randomUUID());
@@ -297,7 +313,7 @@ class RefundServiceTest {
         stripeStub.setCharge("ch_1");
         stripeStub.setStatus("pending");
         when(stripeRefunds.create(eq("pi_x"), eq(5000L), eq("eur"),
-                eq(RefundReason.OTHER), eq(300L), eq(true), anyString())).thenReturn(stripeStub);
+                eq(RefundReason.OTHER), eq(300L), eq(true), anyString(), anyString())).thenReturn(stripeStub);
 
         // Capture saved Refund so we can verify computed fields. JPA save() returns the input.
         when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
@@ -319,11 +335,8 @@ class RefundServiceTest {
     }
 
     /**
-     * refund-2: the refund_tickets INSERTs must reach the database BEFORE the Stripe call,
-     * so UNIQUE(ticket_id) rejects the loser of a race while the money is still ours.
-     * With a plain saveAll() the INSERT is only queued (RefundTicket has an
-     * application-assigned @IdClass id, so save() merges), the violation surfaces at commit
-     * — after Stripe already refunded — and this catch is unreachable.
+     * The ticket claims commit BEFORE the Stripe call, so UNIQUE(ticket_id) rejects the loser of
+     * a race while the money is still ours.
      */
     @Test
     void concurrent_claim_on_a_ticket_is_rejected_before_stripe_is_called() throws Exception {
@@ -337,21 +350,42 @@ class RefundServiceTest {
         when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
         when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
         when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
-        when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
-            Refund r = inv.getArgument(0);
-            if (r.getId() == null) r.setId(UUID.randomUUID());
-            return r;
-        });
         // The other request won the UNIQUE(ticket_id) index a moment earlier.
-        when(refundTickets.saveAllAndFlush(any()))
-            .thenThrow(new org.springframework.dao.DataIntegrityViolationException(
-                "refund_tickets_ticket_id_unique"));
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataIntegrityViolationException(
+                "refund_tickets_ticket_id_unique"))
+            .when(store).open(any(), any(), any());
 
         ApiException ex = (ApiException) assertThatThrownBy(() ->
             service.createRefund(orderId, principal, "k", ids, RefundReason.OTHER))
             .isInstanceOf(ApiException.class).actual();
 
         assertThat(ex.code()).isEqualTo(ErrorCode.TICKET_ALREADY_REFUNDED);
+        verifyNoInteractions(stripeRefunds);
+    }
+
+    /** A double-clicked submit: the twin committed the same key first, so its row is the answer. */
+    @Test
+    void idempotencyKeyRaceOnOpen_replaysTheWinner() throws Exception {
+        Order o = paidOrder();
+        Ticket t1 = ticket(2500);
+        Ticket t2 = ticket(2500);
+        Refund winner = new Refund();
+        winner.setId(UUID.randomUUID());
+        when(orders.findById(orderId)).thenReturn(Optional.of(o));
+        when(refunds.findByOrderIdAndIdempotencyKey(orderId, "k"))
+            .thenReturn(Optional.empty(), Optional.of(winner));
+        when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenReturn(List.of(t1));
+        when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+        when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+        when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataIntegrityViolationException(
+                "insert into refunds", new org.hibernate.exception.ConstraintViolationException(
+                    "duplicate key", new java.sql.SQLException("23505"), "refunds_order_idem_unique")))
+            .when(store).open(any(), any(), any());
+
+        Refund out = service.createRefund(orderId, principal, "k", List.of(t1.getId()), RefundReason.OTHER);
+
+        assertThat(out).isSameAs(winner);
         verifyNoInteractions(stripeRefunds);
     }
 
@@ -383,7 +417,7 @@ class RefundServiceTest {
             when(refunds.findById(r.getId())).thenReturn(Optional.of(r));
 
             service.handleWebhookStatusChange("re_fail", RefundStatus.FAILED,
-                "expired_or_canceled_card", "The card has expired.", "pi_x", "ch_x", 3000L);
+                "expired_or_canceled_card", "The card has expired.", "pi_x", "ch_x", 3000L, null);
 
             org.mockito.Mockito.verify(refundTickets).deleteByRefundId(r.getId());
             assertThat(r.getFailureCode()).isEqualTo("expired_or_canceled_card");
@@ -396,7 +430,7 @@ class RefundServiceTest {
             when(refunds.updateStatusIfCurrent(r.getId(), RefundStatus.PENDING, RefundStatus.CANCELED))
                 .thenReturn(1);
 
-            service.handleWebhookStatusChange("re_fail", RefundStatus.CANCELED, null, null, "pi_x", "ch_x", 3000L);
+            service.handleWebhookStatusChange("re_fail", RefundStatus.CANCELED, null, null, "pi_x", "ch_x", 3000L, null);
 
             org.mockito.Mockito.verify(refundTickets).deleteByRefundId(r.getId());
         }
@@ -410,7 +444,7 @@ class RefundServiceTest {
             when(refundTickets.findTicketIdsByRefundId(r.getId())).thenReturn(List.of());
             when(tickets.findAllById(List.of())).thenReturn(List.of());
 
-            service.handleWebhookStatusChange("re_fail", RefundStatus.SUCCEEDED, null, null, "pi_x", "ch_x", 3000L);
+            service.handleWebhookStatusChange("re_fail", RefundStatus.SUCCEEDED, null, null, "pi_x", "ch_x", 3000L, null);
 
             org.mockito.Mockito.verify(refundTickets, org.mockito.Mockito.never())
                 .deleteByRefundId(any());
@@ -486,7 +520,7 @@ class RefundServiceTest {
             com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
             stripeRefund.setId("re_1");
             stripeRefund.setStatus("pending");
-            when(stripeRefunds.create(eq("pi_x"), eq(8000L), eq("eur"), any(), eq(400L), eq(true), anyString()))
+            when(stripeRefunds.create(eq("pi_x"), eq(8000L), eq("eur"), any(), eq(400L), eq(true), anyString(), anyString()))
                 .thenReturn(stripeRefund);
 
             service.createRefund(orderId, principal, "idem-1", ids, RefundReason.OTHER);
@@ -494,7 +528,7 @@ class RefundServiceTest {
             ArgumentCaptor<Long> amount = ArgumentCaptor.forClass(Long.class);
             ArgumentCaptor<Long> fee = ArgumentCaptor.forClass(Long.class);
             org.mockito.Mockito.verify(stripeRefunds)
-                .create(eq("pi_x"), amount.capture(), eq("eur"), any(), fee.capture(), eq(true), anyString());
+                .create(eq("pi_x"), amount.capture(), eq("eur"), any(), fee.capture(), eq(true), anyString(), anyString());
             assertThat(amount.getValue()).isEqualTo(8000L);
             assertThat(fee.getValue()).isEqualTo(400L);
         }
@@ -521,13 +555,13 @@ class RefundServiceTest {
             com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
             stripeRefund.setId("re_2");
             stripeRefund.setStatus("pending");
-            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString()))
+            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString(), anyString()))
                 .thenReturn(stripeRefund);
 
             service.createRefund(orderId, principal, "idem-1", ids, RefundReason.OTHER);
 
             org.mockito.Mockito.verify(stripeRefunds)
-                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString());
+                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString(), anyString());
         }
 
         @Test
@@ -552,13 +586,13 @@ class RefundServiceTest {
             com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
             stripeRefund.setId("re_3");
             stripeRefund.setStatus("pending");
-            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString()))
+            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString(), anyString()))
                 .thenReturn(stripeRefund);
 
             service.createRefund(orderId, principal, "idem-final", ids, RefundReason.OTHER);
 
             org.mockito.Mockito.verify(stripeRefunds)
-                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString());
+                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), eq(true), anyString(), anyString());
         }
 
         @Test
@@ -581,103 +615,6 @@ class RefundServiceTest {
                 .isInstanceOf(ApiException.class).actual();
             assertThat(ex.code()).isEqualTo(ErrorCode.ORDER_NOT_REFUNDABLE);
             verifyNoInteractions(stripeRefunds);
-        }
-    }
-
-    /**
-     * refund-1: the Stripe idempotency key must be a function of durable inputs. The whole
-     * createRefund transaction rolls back when the Stripe call fails, so the refund row id
-     * is NOT durable — deriving the key from it makes every retry a brand-new Stripe request.
-     *
-     * <p>Worked example used throughout: order total 9000 minor (3 x 3000 face tickets),
-     * applicationFeeMinor 450. Refunding ONE 3000 ticket = round(9000 * 3000 / 9000) = 3000;
-     * app-fee refund = round(450 * 3000 / 9000) = 150.
-     */
-    @org.junit.jupiter.api.Nested
-    class StripeIdempotencyKeyStability {
-
-        private Order order9000() {
-            Order o = new Order();
-            o.setId(orderId);
-            o.setOrgId(orgId);
-            o.setStripePaymentIntentId("pi_x");
-            o.setTotalMinor(9000);
-            o.setCurrency("eur");
-            o.setApplicationFeeMinor(450);
-            return o;
-        }
-
-        private void stubOneTicketRefund(Order o, Ticket t1, Ticket t2, Ticket t3, List<UUID> ids) {
-            when(orders.findById(orderId)).thenReturn(Optional.of(o));
-            when(refunds.findByOrderIdAndIdempotencyKey(eq(orderId), anyString()))
-                .thenReturn(Optional.empty());
-            when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenAnswer(inv -> {
-                List<UUID> asked = inv.getArgument(0);
-                return List.of(t1, t2, t3).stream().filter(t -> asked.contains(t.getId())).toList();
-            });
-            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2, t3));
-            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
-            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
-            // Each attempt mints a fresh in-memory row id, exactly as @GeneratedValue does.
-            when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
-                Refund r = inv.getArgument(0);
-                if (r.getId() == null) r.setId(UUID.randomUUID());
-                return r;
-            });
-        }
-
-        @Test
-        void retry_after_a_rolled_back_attempt_reuses_the_same_stripe_key() throws Exception {
-            Order o = order9000();
-            Ticket t1 = ticket(3000);
-            Ticket t2 = ticket(3000);
-            Ticket t3 = ticket(3000);
-            List<UUID> ids = List.of(t1.getId());
-            stubOneTicketRefund(o, t1, t2, t3, ids);
-            // Stripe created the refund but the response was lost -> our tx rolls back.
-            when(stripeRefunds.create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), eq(true), anyString()))
-                .thenThrow(new ApiConnectionException("connection reset"));
-
-            for (int attempt = 0; attempt < 2; attempt++) {
-                assertThatThrownBy(() ->
-                    service.createRefund(orderId, principal, "idem-retry", ids, RefundReason.OTHER))
-                    .isInstanceOf(ApiException.class)
-                    .extracting(e -> ((ApiException) e).code())
-                    .as("a connection error never reached Stripe — retryable, not a 422 dead end")
-                    .isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
-            }
-
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
-            org.mockito.Mockito.verify(stripeRefunds, org.mockito.Mockito.times(2))
-                .create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), eq(true), keys.capture());
-            assertThat(keys.getAllValues().get(0))
-                .as("a retry must replay the SAME Stripe idempotency key, or Stripe refunds 3000 twice")
-                .isEqualTo(keys.getAllValues().get(1));
-        }
-
-        @Test
-        void a_different_ticket_selection_gets_a_different_stripe_key() throws Exception {
-            Order o = order9000();
-            Ticket t1 = ticket(3000);
-            Ticket t2 = ticket(3000);
-            Ticket t3 = ticket(3000);
-            stubOneTicketRefund(o, t1, t2, t3, List.of(t1.getId()));
-            when(stripeRefunds.create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), eq(true), anyString()))
-                .thenThrow(new ApiConnectionException("connection reset"));
-
-            assertThatThrownBy(() -> service.createRefund(
-                orderId, principal, "idem-same", List.of(t1.getId()), RefundReason.OTHER))
-                .isInstanceOf(ApiException.class);
-            assertThatThrownBy(() -> service.createRefund(
-                orderId, principal, "idem-same", List.of(t2.getId()), RefundReason.OTHER))
-                .isInstanceOf(ApiException.class);
-
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
-            org.mockito.Mockito.verify(stripeRefunds, org.mockito.Mockito.times(2))
-                .create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), eq(true), keys.capture());
-            assertThat(keys.getAllValues().get(0))
-                .as("refunding a different ticket is a different refund and must not replay")
-                .isNotEqualTo(keys.getAllValues().get(1));
         }
     }
 
@@ -709,71 +646,40 @@ class RefundServiceTest {
         }
 
         @Test
-        void connectionTimeoutMapsToUpstreamUnavailable() throws Exception {
-            List<UUID> ids = stubRefundable();
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString()))
-                .thenThrow(new ApiConnectionException("read timeout"));
-
-            ApiException ex = (ApiException) assertThatThrownBy(() ->
-                service.createRefund(orderId, principal, "k", ids, RefundReason.OTHER))
-                .isInstanceOf(ApiException.class).actual();
-
-            assertThat(ex.code()).isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
-            assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_GATEWAY);
-        }
-
-        @Test
-        void rateLimitMapsToUpstreamUnavailable() throws Exception {
-            List<UUID> ids = stubRefundable();
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString()))
-                .thenThrow(new RateLimitException("slow down", null, null, "rate_limit", 429, null));
-
-            ApiException ex = (ApiException) assertThatThrownBy(() ->
-                service.createRefund(orderId, principal, "k", ids, RefundReason.OTHER))
-                .isInstanceOf(ApiException.class).actual();
-
-            assertThat(ex.code()).isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
-            assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
-        }
-
-        @Test
         void balanceInsufficientRetriesPlatformFunded() throws Exception {
             List<UUID> ids = stubRefundable();
+            when(store.switchToPlatform(any(), any())).thenReturn(true);
             com.stripe.model.Refund funded = new com.stripe.model.Refund();
             funded.setId("re_platform");
             funded.setCharge("ch_platform");
             funded.setStatus("pending");
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString()))
+            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString(), anyString()))
                 .thenThrow(new InvalidRequestException(
                     "Insufficient funds", "amount", null, "balance_insufficient", 400, null));
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(false), anyString()))
+            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(false), anyString(), anyString()))
                 .thenReturn(funded);
 
             Refund out = service.createRefund(orderId, principal, "k", ids, RefundReason.OTHER);
 
-            assertThat(out.isPlatformFunded())
-                .as("the platform fronted this refund and must be able to recover it")
-                .isTrue();
             assertThat(out.getStripeRefundId()).isEqualTo("re_platform");
-
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
-            org.mockito.Mockito.verify(stripeRefunds)
-                .create(any(), anyLong(), any(), any(), anyLong(), eq(true), keys.capture());
-            ArgumentCaptor<String> platformKeys = ArgumentCaptor.forClass(String.class);
-            org.mockito.Mockito.verify(stripeRefunds)
-                .create(any(), anyLong(), any(), any(), anyLong(), eq(false), platformKeys.capture());
-            assertThat(platformKeys.getValue())
+            org.mockito.Mockito.verify(store).switchToPlatform(eq(opened.getId()), any());
+            org.mockito.Mockito.verify(stripeRefunds).create(any(), anyLong(), any(), any(), anyLong(), eq(true),
+                eq(RefundService.stripeKeyFor(opened.getId(), false)), eq(opened.getId().toString()));
+            org.mockito.Mockito.verify(stripeRefunds).create(any(), anyLong(), any(), any(), anyLong(), eq(false),
+                eq(RefundService.stripeKeyFor(opened.getId(), true)), eq(opened.getId().toString()));
+            assertThat(RefundService.stripeKeyFor(opened.getId(), true))
                 .as("Stripe rejects a replayed key whose params differ, and reverse_transfer differs")
-                .isNotEqualTo(keys.getValue());
+                .isNotEqualTo(RefundService.stripeKeyFor(opened.getId(), false));
         }
 
         @Test
         void balanceInsufficientTwiceStillThrows409() throws Exception {
             List<UUID> ids = stubRefundable();
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString()))
+            when(store.switchToPlatform(any(), any())).thenReturn(true);
+            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(true), anyString(), anyString()))
                 .thenThrow(new InvalidRequestException(
                     "Insufficient funds", "amount", null, "balance_insufficient", 400, null));
-            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(false), anyString()))
+            when(stripeRefunds.create(any(), anyLong(), any(), any(), anyLong(), eq(false), anyString(), anyString()))
                 .thenThrow(new InvalidRequestException(
                     "Platform balance too low", "amount", null, "balance_insufficient", 400, null));
 
@@ -783,6 +689,9 @@ class RefundServiceTest {
 
             assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
             assertThat(ex.code()).isEqualTo(ErrorCode.ORDER_NOT_REFUNDABLE);
+            org.mockito.Mockito.verify(stripeRefunds).create(any(), anyLong(), any(), any(), anyLong(), eq(false),
+                eq(RefundService.stripeKeyFor(opened.getId(), true)), anyString());
+            org.mockito.Mockito.verify(store).recordRefusal(eq(opened.getId()), eq("balance_insufficient"), any());
         }
     }
 
@@ -823,7 +732,7 @@ class RefundServiceTest {
             when(tierRepo.findByIdForUpdate(any())).thenReturn(Optional.of(tier));
 
             service.handleWebhookStatusChange("re_dash", RefundStatus.SUCCEEDED, null, null,
-                "pi_x", "ch_dash", 10000L);
+                "pi_x", "ch_dash", 10000L, null);
 
             ArgumentCaptor<Refund> saved = ArgumentCaptor.forClass(Refund.class);
             org.mockito.Mockito.verify(refunds).save(saved.capture());
@@ -852,7 +761,7 @@ class RefundServiceTest {
             when(tickets.findAllById(any())).thenReturn(List.of());
 
             service.handleWebhookStatusChange("re_dash", RefundStatus.SUCCEEDED, null, null,
-                "pi_x", "ch_dash", 2500L);
+                "pi_x", "ch_dash", 2500L, null);
 
             ArgumentCaptor<Refund> saved = ArgumentCaptor.forClass(Refund.class);
             org.mockito.Mockito.verify(refunds).save(saved.capture());
@@ -869,7 +778,7 @@ class RefundServiceTest {
             when(orders.findByStripePaymentIntentId("pi_other")).thenReturn(Optional.empty());
 
             service.handleWebhookStatusChange("re_dash", RefundStatus.SUCCEEDED, null, null,
-                "pi_other", "ch_other", 2500L);
+                "pi_other", "ch_other", 2500L, null);
 
             verifyNoInteractions(refundTickets);
             org.mockito.Mockito.verify(refunds, org.mockito.Mockito.never()).save(any(Refund.class));

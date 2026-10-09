@@ -46,6 +46,8 @@ public enum ErrorCode {
     TICKET_ALREADY_REFUNDED,
     TICKET_REDEEMED,
     STRIPE_REFUND_FAILED,
+    /** Stripe outcome unknown; tickets stay claimed and the reconciler resolves it. 409. */
+    REFUND_IN_PROGRESS,
     REFUND_TOKEN_EXPIRED_OR_CONSUMED,
     REFUND_REQUEST_ALREADY_OPEN,
     NO_REFUNDABLE_TICKETS,

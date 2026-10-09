@@ -761,6 +761,64 @@ class RefundRequestServiceTest {
             assertThat(rr.getDecidedAt()).isNotNull();
         }
 
+        private void stubOneRefundableTicket() {
+            when(requests.findByIdAndOrgId(requestId, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(rr.getOrderId())).thenReturn(Optional.of(order));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+        }
+
+        /** Stripe's answer is unknown: the request stays PENDING so a later approve can decide it. */
+        @Test
+        void refundInProgress_leavesTheRequestPending() {
+            stubOneRefundableTicket();
+            java.util.UUID inFlight = java.util.UUID.randomUUID();
+            when(refundService.createRefund(eq(order.getId()), any(), eq("refund-request-" + rr.getId()), any(), any()))
+                .thenThrow(new com.imin.iminapi.security.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                    com.imin.iminapi.security.ErrorCode.REFUND_IN_PROGRESS, "unknown",
+                    java.util.Map.of("refundId", inFlight.toString())));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(com.imin.iminapi.security.ApiException.class,
+                () -> service.approveRequest(requestId, principal,
+                    new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(true, "ok")));
+
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_IN_PROGRESS);
+            assertThat(ex.fields()).containsEntry("refundId", inFlight.toString());
+            assertThat(rr.getStatus()).isEqualTo(RefundRequestStatus.PENDING);
+            assertThat(rr.getRefundId()).isNull();
+            verify(requests, never()).save(any());
+        }
+
+        /** A failed earlier refund under this key is not an answer: a new attempt is made. */
+        @Test
+        void earlierFailedRefund_fallsThroughToANewAttempt() {
+            stubOneRefundableTicket();
+            Refund failed = new Refund();
+            failed.setId(java.util.UUID.randomUUID());
+            failed.setStatus(RefundStatus.FAILED);
+            when(refunds.findByOrderIdAndIdempotencyKey(order.getId(), "refund-request-" + rr.getId()))
+                .thenReturn(Optional.of(failed));
+            Refund fresh = new Refund();
+            fresh.setId(java.util.UUID.randomUUID());
+            fresh.setStatus(RefundStatus.PENDING);
+            when(refundService.createRefund(eq(order.getId()), any(), eq("refund-request-" + rr.getId()), any(), any()))
+                .thenReturn(fresh);
+            when(requests.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            var resp = service.approveRequest(requestId, principal,
+                new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(true, "ok"));
+
+            assertThat(resp.refundId()).isEqualTo(fresh.getId());
+            assertThat(resp.refundStatus()).isEqualTo("pending");
+            assertThat(rr.getRefundId()).isEqualTo(fresh.getId());
+        }
+
         @Test
         void rejects_if_request_already_decided() {
             rr.setStatus(RefundRequestStatus.APPROVED);

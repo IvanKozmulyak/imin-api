@@ -22,9 +22,19 @@ import java.util.UUID;
  * Organizer-authenticated refund surface.
  *
  * <p>The {@code POST /refund} returns 202 Accepted because the refund is async:
- * Stripe takes the request and confirms it later via {@code charge.refund.updated}.
- * Idempotent replays (same {@code Idempotency-Key}) return 200 with the existing
- * row; this controller doesn't distinguish, but clients should treat both as success.
+ * Stripe takes the request and confirms it later via the refund webhooks. Responses:
+ * <ul>
+ *   <li>202 with {@code status} {@code pending}/{@code succeeded}: Stripe accepted the refund.</li>
+ *   <li>202 with {@code status:"failed"}/{@code "canceled"}: Stripe created the refund object and it
+ *       failed synchronously ({@code failureMessage}); its tickets are refundable again.</li>
+ *   <li>202 with {@code status:"requested"}: a same-key replay of an attempt whose Stripe outcome is
+ *       still unknown. Same-key replays always return the existing row.</li>
+ *   <li>409 {@code REFUND_IN_PROGRESS} (fields {@code refundId}, optional {@code stripeCode}): imin
+ *       could not learn Stripe's outcome; the tickets stay claimed and the reconciler resolves it.
+ *       Never re-issue with a new key.</li>
+ *   <li>409 {@code TICKET_ALREADY_REFUNDED}: a ticket is claimed by another refund, including one in
+ *       progress. 422 {@code STRIPE_REFUND_FAILED} (field {@code stripeCode}): Stripe refused.</li>
+ * </ul>
  */
 @RestController
 @RequestMapping("/api/v1/orders/{orderId}")

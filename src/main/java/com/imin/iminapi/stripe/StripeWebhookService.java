@@ -735,7 +735,8 @@ public class StripeWebhookService {
         log.info("[stripe-webhook] charge.refund.updated refundId={} status={} mapped={}",
             stripeRefund.getId(), stripeRefund.getStatus(), newStatus);
         // The payment intent, charge and amount travel with the status so a refund we never
-        // created (organizer refunded from the Stripe Dashboard) can be back-resolved to its Order.
+        // created (organizer refunded from the Stripe Dashboard) can be back-resolved to its Order;
+        // imin_refund_id maps one we created before its id was recorded.
         refundService.handleWebhookStatusChange(
             stripeRefund.getId(),
             newStatus,
@@ -743,7 +744,9 @@ public class StripeWebhookService {
             stripeRefund.getFailureReason(),   // Stripe Refund only exposes failure_reason
             stripeRefund.getPaymentIntent(),
             stripeRefund.getCharge(),
-            stripeRefund.getAmount());
+            stripeRefund.getAmount(),
+            stripeRefund.getMetadata() == null
+                ? null : stripeRefund.getMetadata().get(StripeRefundService.IMIN_REFUND_ID));
     }
 
     // ── Track A settlements ingestion handlers ──────────────────────────────────

@@ -185,4 +185,121 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
           and r.recoveredAt is null
     """)
     List<UUID> findOrgIdsWithUnrecoveredPlatformFunded();
+
+    // ── Refund attempts: every write below is conditional on the row still being unresolved ──
+
+    /**
+     * Records what Stripe answered for an attempt. Lands only while the row is REQUESTED and carries
+     * no other Stripe id, so a webhook that already moved the row wins and this returns 0.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.stripeRefundId = :sid,
+                   r.stripeChargeId = :chargeId,
+                   r.status = :status,
+                   r.failureCode = :failureCode,
+                   r.failureMessage = :failureMessage
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and (r.stripeRefundId is null or r.stripeRefundId = :sid)
+            """)
+    int recordOutcome(@Param("id") UUID id,
+                      @Param("sid") String stripeRefundId,
+                      @Param("chargeId") String stripeChargeId,
+                      @Param("status") RefundStatus status,
+                      @Param("failureCode") String failureCode,
+                      @Param("failureMessage") String failureMessage);
+
+    /**
+     * Stripe refused the attempt, so no refund exists: FAILED, and the client key is renamed to
+     * {@code failedKey} so a retry with the same key opens a fresh attempt.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.status = com.imin.iminapi.refund.RefundStatus.FAILED,
+                   r.failureCode = :failureCode,
+                   r.failureMessage = :failureMessage,
+                   r.idempotencyKey = :failedKey
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+            """)
+    int recordRefusal(@Param("id") UUID id,
+                      @Param("failureCode") String failureCode,
+                      @Param("failureMessage") String failureMessage,
+                      @Param("failedKey") String failedKey);
+
+    /** The connected balance was short: the next create is the platform-funded variant. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.platformFunded = true,
+                   r.stripeAttemptAt = :now,
+                   r.stripeAttempts = r.stripeAttempts + 1
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+               and r.platformFunded = false
+            """)
+    int switchToPlatform(@Param("id") UUID id, @Param("now") java.time.Instant now);
+
+    /**
+     * Claim of an unresolved attempt for one reconciler pass: lands only while the row still holds the
+     * attempt time {@code seenAttemptAt} and that time is older than {@code cutoff}, so a row another
+     * claimer (or the live call) has just bumped is never claimed again until it ages past the cutoff.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.stripeAttemptAt = :now,
+                   r.stripeAttempts = r.stripeAttempts + 1
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+               and r.stripeAttemptAt = :seen
+               and r.stripeAttemptAt < :cutoff
+            """)
+    int claimForReconcile(@Param("id") UUID id,
+                          @Param("seen") java.time.Instant seenAttemptAt,
+                          @Param("cutoff") java.time.Instant cutoff,
+                          @Param("now") java.time.Instant now);
+
+    /** A refund object Stripe answered failed/canceled frees its client key, as a refusal does. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update Refund r set r.idempotencyKey = :failedKey where r.id = :id")
+    int freeClientKey(@Param("id") UUID id, @Param("failedKey") String failedKey);
+
+    /** Links a Stripe refund found by its {@code imin_refund_id} metadata to its still-unresolved row. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.stripeRefundId = :sid,
+                   r.stripeChargeId = :chargeId
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+            """)
+    int adoptStripeRefund(@Param("id") UUID id,
+                          @Param("sid") String stripeRefundId,
+                          @Param("chargeId") String stripeChargeId);
+
+    /**
+     * Attempts with no known Stripe outcome, last touched before {@code cutoff}, on orders paid in
+     * the running key's mode; oldest first. Rows written before V179 have no attempt time and never match.
+     */
+    @Query("""
+            select r from Refund r
+              join com.imin.iminapi.model.Order o on o.id = r.orderId
+             where r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+               and r.stripeAttemptAt is not null
+               and r.stripeAttemptAt < :cutoff
+               and o.testMode = :testMode
+             order by r.stripeAttemptAt
+            """)
+    List<Refund> findUnresolvedAttempts(@Param("cutoff") java.time.Instant cutoff,
+                                        @Param("testMode") boolean testMode,
+                                        org.springframework.data.domain.Pageable page);
 }

@@ -152,11 +152,10 @@ class RefundRequestControllerTest {
         assertThat(params.getValue().getReverseTransfer()).isTrue();
         assertThat(params.getValue().getRefundApplicationFee()).isFalse();
         assertThat(params.getValue().getReason()).isEqualTo(RefundCreateParams.Reason.REQUESTED_BY_CUSTOMER);
-        UUID ticketId = jdbc.queryForObject("SELECT id FROM tickets WHERE order_id = ?", UUID.class, rr.getOrderId());
-        // A re-press of Confirm replays the same Stripe key.
-        assertThat(options.getValue().getIdempotencyKey()).isEqualTo(com.imin.iminapi.refund.RefundService
-                .stripeIdempotencyKey(rr.getOrderId(), "refund-request-" + rr.getId(), List.of(ticketId), 1500L, ""));
         RefundRequest decided = requests.findById(rr.getId()).orElseThrow();
+        // The Stripe key is the committed refund row's own, so no retry can mint a second one.
+        assertThat(options.getValue().getIdempotencyKey())
+                .isEqualTo(com.imin.iminapi.refund.RefundService.stripeKeyFor(decided.getRefundId(), false));
         assertThat(decided.getStatus()).isEqualTo(RefundRequestStatus.APPROVED);
         assertThat(decided.getPendingMarker()).as("the one-open-per-order slot is released").isNull();
         Refund refund = refunds.findById(decided.getRefundId()).orElseThrow();

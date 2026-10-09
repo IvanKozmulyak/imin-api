@@ -51,6 +51,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
@@ -592,6 +593,11 @@ public class RefundRequestService {
         return byId;
     }
 
+    /**
+     * Issues the refund and decides the request: 200 {@code approved} with {@code refundStatus}
+     * pending/succeeded/failed. 409 {@code REFUND_IN_PROGRESS} (fields {@code refundId}) while Stripe's
+     * answer is unknown leaves the request PENDING; approving again once it resolves decides it.
+     */
     @Transactional
     public RefundRequestDecisionResponse approveRequest(
             UUID id, AuthPrincipal principal, RefundRequestApproveRequest body) {
@@ -608,6 +614,22 @@ public class RefundRequestService {
 
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
+
+        // An earlier approve created the refund but did not decide the request (lost commit, or Stripe's
+        // answer still unknown): its tickets are claimed, so answer from that refund, never NO_REFUNDABLE_TICKETS.
+        // A refused or failed refund freed this key, so it is not found and a new attempt follows.
+        String refundKey = "refund-request-" + rr.getId();
+        if (body.confirm()) {
+            Optional<Refund> earlier = refunds.findByOrderIdAndIdempotencyKey(order.getId(), refundKey);
+            if (earlier.isPresent() && earlier.get().getStatus() == RefundStatus.REQUESTED) {
+                throw refundInProgress(earlier.get().getId());
+            }
+            if (earlier.isPresent() && (earlier.get().getStatus() == RefundStatus.PENDING
+                    || earlier.get().getStatus() == RefundStatus.SUCCEEDED)) {
+                return markApproved(rr, principal, body, earlier.get().getId(),
+                    earlier.get().getStatus().name().toLowerCase(Locale.ROOT));
+            }
+        }
 
         List<Ticket> refundable = eligibilityFor(order).refundable();
         if (refundable.isEmpty()) {
@@ -634,29 +656,40 @@ public class RefundRequestService {
                 Map.of("proposedRefund", proposed.toString()));
         }
 
-        // Deterministic idempotency key — a re-press of Confirm is a no-op.
+        // Deterministic idempotency key — a re-press of Confirm is a no-op. REFUND_IN_PROGRESS propagates
+        // and leaves the request PENDING: it is decided by a later approve once the refund resolves.
         Refund stripeRefund = refundService.createRefund(
             order.getId(), principal,
-            "refund-request-" + rr.getId(),
+            refundKey,
             refundable.stream().map(Ticket::getId).toList(),
             rr.getReason().toStripeReason());
 
+        return markApproved(rr, principal, body, stripeRefund.getId(),
+            stripeRefund.getStatus() == null
+                ? null
+                : stripeRefund.getStatus().name().toLowerCase(Locale.ROOT));
+    }
+
+    private static ApiException refundInProgress(UUID refundId) {
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.REFUND_IN_PROGRESS,
+            RefundService.IN_PROGRESS_MESSAGE, Map.of("refundId", refundId.toString()));
+    }
+
+    private RefundRequestDecisionResponse markApproved(RefundRequest rr, AuthPrincipal principal,
+                                                       RefundRequestApproveRequest body, UUID refundId,
+                                                       String refundStatus) {
         rr.setStatus(RefundRequestStatus.APPROVED);
         rr.setDecidedAt(Times.nowMicros());
         rr.setDecidedByUserId(principal.userId());
         rr.setDecisionNote(body.note());
-        rr.setRefundId(stripeRefund.getId());
+        rr.setRefundId(refundId);
         // Release the "one open per order" slot enforced by UNIQUE(pending_marker).
         rr.setPendingMarker(null);
         requests.save(rr);
 
-        log.info("[refund-request] approved id={} refundId={} by={}",
-            rr.getId(), stripeRefund.getId(), principal.userId());
-        return new RefundRequestDecisionResponse(
-            "approved", stripeRefund.getId(),
-            stripeRefund.getStatus() == null
-                ? null
-                : stripeRefund.getStatus().name().toLowerCase(Locale.ROOT));
+        log.info("[refund-request] approved id={} refundId={} refundStatus={} by={}",
+            rr.getId(), refundId, refundStatus, principal.userId());
+        return new RefundRequestDecisionResponse("approved", refundId, refundStatus);
     }
 
     @Transactional

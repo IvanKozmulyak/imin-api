@@ -256,7 +256,8 @@ class StripeWebhookServiceTest {
             org.mockito.ArgumentMatchers.isNull(),
             eq("pi_test_xyz"),
             eq("ch_test_xyz"),
-            eq(5000L));
+            eq(5000L),
+            org.mockito.ArgumentMatchers.isNull());
     }
 
     @org.junit.jupiter.api.Test
@@ -272,7 +273,8 @@ class StripeWebhookServiceTest {
             eq("expired_or_canceled_card"),
             eq("pi_test_xyz"),
             eq("ch_test_xyz"),
-            eq(5000L));
+            eq(5000L),
+            org.mockito.ArgumentMatchers.isNull());
     }
 
     @org.junit.jupiter.api.Test
@@ -284,7 +286,7 @@ class StripeWebhookServiceTest {
 
         // refundService called exactly once despite two webhook deliveries
         org.mockito.Mockito.verify(refundService, org.mockito.Mockito.times(1))
-            .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any(), any(), any(), any());
+            .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any(), any(), any(), any(), any());
     }
 
     @org.junit.jupiter.api.Test
@@ -302,7 +304,8 @@ class StripeWebhookServiceTest {
             org.mockito.ArgumentMatchers.isNull(),
             eq("pi_test_xyz"),
             eq("ch_test_xyz"),
-            eq(5000L));
+            eq(5000L),
+            org.mockito.ArgumentMatchers.isNull());
     }
 
     @org.junit.jupiter.api.Test
@@ -318,7 +321,29 @@ class StripeWebhookServiceTest {
             eq("lost_or_stolen_card"),
             eq("pi_test_xyz"),
             eq("ch_test_xyz"),
-            eq(5000L));
+            eq(5000L),
+            org.mockito.ArgumentMatchers.isNull());
+    }
+
+    /** The row id our create stamped lets the refund service map a refund it has not recorded yet. */
+    @org.junit.jupiter.api.Test
+    void refundEventMetadata_passesTheIminRefundId() throws Exception {
+        String rowId = UUID.randomUUID().toString();
+        String body = refundEvent("refund.updated", "evt_refund_meta", "re_test_meta", "succeeded", null)
+            .replace("\"status\": \"succeeded\",",
+                "\"status\": \"succeeded\", \"metadata\": {\"imin_refund_id\": \"" + rowId + "\"},");
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(refundService).handleWebhookStatusChange(
+            eq("re_test_meta"),
+            eq(com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+            org.mockito.ArgumentMatchers.isNull(),
+            org.mockito.ArgumentMatchers.isNull(),
+            eq("pi_test_xyz"),
+            eq("ch_test_xyz"),
+            eq(5000L),
+            eq(rowId));
     }
 
     // Signature rejection is owned by StripeWebhookHttpSeamTest; the missing-secret 503 stays here.

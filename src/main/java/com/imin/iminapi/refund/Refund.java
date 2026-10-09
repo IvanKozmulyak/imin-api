@@ -14,9 +14,11 @@ import java.util.UUID;
  * (Stripe supports multiple partial refunds per charge); each Refund maps 1:1
  * to a Stripe Refund object via {@link #stripeRefundId}.
  *
- * <p>The {@code idempotency_key} is supplied by the dashboard client and stored
- * here so a retried POST returns the same row instead of creating a duplicate
- * Stripe Refund.
+ * <p>The {@code idempotency_key} is supplied by the client and only replays this row on a
+ * retried POST. The Stripe idempotency key is derived from the row id
+ * ({@code RefundService.stripeKeyFor}): the row is committed before Stripe is called, so a
+ * rollback after Stripe answered can no longer mint a second Stripe refund. A definitive Stripe
+ * refusal renames the client key to {@code failed:<id>} so the same key can try again.
  */
 @Entity
 @Table(name = "refunds")
@@ -66,9 +68,20 @@ public class Refund {
     @Column(name = "initiated_by_user_id")
     private UUID initiatedByUserId;
 
-    /** True when the connected balance was short and the platform fronted this refund. */
-    @Column(name = "platform_funded", nullable = false)
+    /**
+     * True when the connected balance was short and the platform fronted this refund. Written on
+     * insert and by {@code RefundRepository.switchToPlatform} only, so a full save cannot revert it.
+     */
+    @Column(name = "platform_funded", nullable = false, updatable = false)
     private boolean platformFunded;
+
+    /** Last time a Stripe create was started for this row; null on rows written before V179. */
+    @Column(name = "stripe_attempt_at", updatable = false)
+    private Instant stripeAttemptAt;
+
+    /** Stripe creates started for this row (the live call plus reconciler passes). */
+    @Column(name = "stripe_attempts", nullable = false, updatable = false)
+    private int stripeAttempts;
 
     /** When the fronted money was pulled back from the connected account; null while still owed. */
     @Column(name = "recovered_at")

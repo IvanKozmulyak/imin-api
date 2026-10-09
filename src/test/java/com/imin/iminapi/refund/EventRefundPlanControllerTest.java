@@ -25,6 +25,8 @@ import com.stripe.param.RefundCreateParams;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -131,12 +133,14 @@ class EventRefundPlanControllerTest {
         assertThat(plan.get("totalAmountMinor").asLong()).isEqualTo(1500);
     }
 
-    @Test
-    void ticketClaimedByAPendingRefund_isLeftOut() throws Exception {
+    /** PENDING at Stripe, or REQUESTED with Stripe's outcome still unknown: both hold their tickets. */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = RefundStatus.class, names = {"PENDING", "REQUESTED"})
+    void ticketClaimedByAPendingRefund_isLeftOut(RefundStatus inFlight) throws Exception {
         Order order = paidOrder(3000);
         Ticket claimed = fx.ticket(order, Ticket.STATE_ISSUED);
         Ticket free = fx.ticket(order, Ticket.STATE_ISSUED);
-        pendingRefund(order, claimed, 1500);
+        pendingRefund(order, claimed, 1500, inFlight);
 
         // Remaining after the pending 1500: min(round(3000 × 1500 / 3000), 3000 − 1500) = 1500.
         JsonNode plan = plan(principal);
@@ -166,7 +170,7 @@ class EventRefundPlanControllerTest {
         Order covered = paidOrder(3000);
         Ticket claimed = fx.ticket(covered, Ticket.STATE_ISSUED);
         fx.ticket(covered, Ticket.STATE_ISSUED);
-        pendingRefund(covered, claimed, 3000);
+        pendingRefund(covered, claimed, 3000, RefundStatus.PENDING);
 
         // round(4500 × 1500 / 4500) = 1500 for the one live ticket.
         JsonNode plan = plan(principal);
@@ -310,16 +314,22 @@ class EventRefundPlanControllerTest {
         return tickets.save(t);
     }
 
-    private void pendingRefund(Order order, Ticket ticket, long amountMinor) {
+    /** PENDING carries a Stripe id; REQUESTED is an attempt whose Stripe outcome is not known yet. */
+    private void pendingRefund(Order order, Ticket ticket, long amountMinor, RefundStatus status) {
         Refund r = new Refund();
         r.setOrderId(order.getId());
         r.setStripePaymentIntentId(order.getStripePaymentIntentId());
-        r.setStripeRefundId("re_" + UUID.randomUUID());
+        if (status == RefundStatus.REQUESTED) {
+            r.setStripeAttemptAt(clock.instant());
+            r.setStripeAttempts(1);
+        } else {
+            r.setStripeRefundId("re_" + UUID.randomUUID());
+        }
         r.setAmountMinor(amountMinor);
         r.setCurrency(order.getCurrency());
         r.setApplicationFeeRefundMinor(0);
         r.setReason(RefundReason.OTHER);
-        r.setStatus(RefundStatus.PENDING);
+        r.setStatus(status);
         r.setIdempotencyKey("idem-" + UUID.randomUUID());
         r = refunds.saveAndFlush(r);
         refundTickets.saveAndFlush(new RefundTicket(r.getId(), ticket.getId()));

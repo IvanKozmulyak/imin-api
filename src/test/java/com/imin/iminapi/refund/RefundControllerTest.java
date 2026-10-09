@@ -154,7 +154,7 @@ class RefundControllerTest {
         assertThat(params.getValue().getRefundApplicationFee()).isTrue();
         assertThat(params.getValue().getReason()).isEqualTo(RefundCreateParams.Reason.REQUESTED_BY_CUSTOMER);
         assertThat(options.getValue().getIdempotencyKey()).isEqualTo(com.imin.iminapi.refund.RefundService
-                .stripeIdempotencyKey(order.getId(), clientKey, List.of(ticket.getId()), 1500L, ""));
+                .stripeKeyFor(UUID.fromString(id), false));
     }
 
     private Order paidOrder(Event e) {

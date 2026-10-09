@@ -59,7 +59,7 @@ class StripeRefundServiceTest {
 
         Refund out = service.create(
             "pi_test_1", 5000L, "eur",
-            RefundReason.REQUESTED_BY_CUSTOMER, 0L, true, "refund_xyz");
+            RefundReason.REQUESTED_BY_CUSTOMER, 0L, true, "refund_xyz", "row-1");
 
         assertThat(out.getId()).isEqualTo("re_test_123");
 
@@ -72,13 +72,14 @@ class StripeRefundServiceTest {
         assertThat(p.getAmount()).isEqualTo(5000L);
         assertThat(p.getReason()).isEqualTo(RefundCreateParams.Reason.REQUESTED_BY_CUSTOMER);
         assertThat(optsCap.getValue().getIdempotencyKey()).isEqualTo("refund_xyz");
+        assertThat(p.getMetadata()).isEqualTo(java.util.Map.of("imin_refund_id", "row-1"));
     }
 
     @Test
     void create_otherReason_omitsStripeReason() throws Exception {
         stubRefund("re_other");
 
-        service.create("pi_1", 1000L, "eur", RefundReason.OTHER, 0L, true, "k");
+        service.create("pi_1", 1000L, "eur", RefundReason.OTHER, 0L, true, "k", "row-2");
 
         ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
         verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
@@ -90,7 +91,7 @@ class StripeRefundServiceTest {
         stubRefund("re_test_2");
 
         service.create("pi_test_2", 2500L, "eur",
-                       RefundReason.REQUESTED_BY_CUSTOMER, 149L, true, "refund_pqr");
+                       RefundReason.REQUESTED_BY_CUSTOMER, 149L, true, "refund_pqr", "row-3");
 
         verifyNoInteractions(feeRefundSvc);
         verifyNoInteractions(appFeeSvc);
@@ -102,7 +103,7 @@ class StripeRefundServiceTest {
     void reverseTransferRefundAlsoRefundsTheApplicationFee() throws Exception {
         stubRefund("re_fee_share");
 
-        service.create("pi_fee", 1149L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 149L, true, "k_fee");
+        service.create("pi_fee", 1149L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 149L, true, "k_fee", "row-4");
 
         ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
         verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
@@ -117,7 +118,7 @@ class StripeRefundServiceTest {
     void reverseTransferRefundWithNoFeeDoesNotAskStripeToRefundOne() throws Exception {
         stubRefund("re_no_fee");
 
-        service.create("pi_no_fee", 1000L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 0L, true, "k_no_fee");
+        service.create("pi_no_fee", 1000L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 0L, true, "k_no_fee", "row-5");
 
         ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
         verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
@@ -132,7 +133,7 @@ class StripeRefundServiceTest {
     void platformFundedRefundKeepsTheFee() throws Exception {
         stubRefund("re_test_4");
 
-        service.create("pi_y", 1000L, "eur", RefundReason.OTHER, 50L, false, "k3:platform");
+        service.create("pi_y", 1000L, "eur", RefundReason.OTHER, 50L, false, "k3:platform", "row-6");
 
         ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
         verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
