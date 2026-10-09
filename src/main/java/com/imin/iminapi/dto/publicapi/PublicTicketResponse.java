@@ -22,8 +22,7 @@ public record PublicTicketResponse(
         String qrUrl,
         boolean walletAvailable,
         TicketWallets wallet,
-        Event event,
-        Order order) {
+        Event event) {
 
     /**
      * Apple only, and permanent.
@@ -63,6 +62,6 @@ public record PublicTicketResponse(
                         String venuePostalCode, String venueCountry,
                         String posterUrl) {}
 
-    /** Sibling info so the ticket page can link "back to order" without a second call. */
-    public record Order(String token, String email) {}
+    // No order block: a ticket token reaches people other than the buyer, and the
+    // order token would open every ticket, refund and resend on the order.
 }

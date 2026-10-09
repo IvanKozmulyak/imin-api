@@ -116,8 +116,6 @@ public class PublicOrderController {
         Ticket ticket = tickets.findByToken(token).orElseThrow(() -> ApiException.notFound("Ticket"));
         Event event = events.findById(ticket.getEventId())
                 .orElseThrow(() -> ApiException.notFound("Ticket"));
-        Order order = orders.findById(ticket.getOrderId())
-                .orElseThrow(() -> ApiException.notFound("Ticket"));
 
         String qrPayload = qrSigner.sign(ticket.getToken());
         String base = baseUrl();
@@ -143,8 +141,7 @@ public class PublicOrderController {
                         event.getStartsAt(), event.getEndsAt(), event.getTimezone(),
                         event.getVenueName(), event.getVenueStreet(), event.getVenueCity(),
                         event.getVenuePostalCode(), event.getVenueCountry(),
-                        event.getPosterUrl()),
-                new PublicTicketResponse.Order(order.getToken(), order.getEmail()));
+                        event.getPosterUrl()));
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")

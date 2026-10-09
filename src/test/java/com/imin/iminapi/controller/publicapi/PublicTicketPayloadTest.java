@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
@@ -80,6 +81,23 @@ class PublicTicketPayloadTest {
                 .andExpect(jsonPath("$.state").value("refunded"));
     }
 
+    /** A ticket token reaches people other than the buyer; it must not open the whole order. */
+    @Test
+    void getTicket_neverExposesTheOrderToken() throws Exception {
+        Organization org = fx.org();
+        Event ev = fx.event(org, fx.owner(org), EventStatus.LIVE, startsAt);
+        Order order = fx.order(ev, fx.email("buyer"));
+        Ticket t = fx.ticket(order, "issued");
+
+        String body = mvc.perform(get("/api/v1/public/tickets/" + t.getToken()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(order.getToken()).isNotBlank();
+        assertThat(body).doesNotContain(order.getToken());
+        assertThat(objectMapper.readTree(body).has("order")).isFalse();
+    }
+
     /**
      * THE LEAK GUARDRAIL — same discipline as PublicEventControllerTest. If this
      * fails you added a field to PublicTicketResponse (or a nested record). Verify
@@ -98,7 +116,7 @@ class PublicTicketPayloadTest {
         assertThat(fieldNames(root))
                 .as("Top-level keys leaked or missing on PublicTicketResponse.")
                 .isEqualTo(Set.of("token", "state", "tierName", "qrPayload", "qrUrl",
-                        "walletAvailable", "wallet", "event", "order"));
+                        "walletAvailable", "wallet", "event"));
 
         assertThat(fieldNames(root.get("wallet")))
                 .as("wallet keys leaked or missing on TicketWallets. Keyed by wallet "
@@ -123,10 +141,6 @@ class PublicTicketPayloadTest {
                 .isEqualTo(Set.of("eventId", "name", "slug", "startsAt", "endsAt", "timezone",
                         "venueName", "venueStreet", "venueCity", "venuePostalCode",
                         "venueCountry", "posterUrl"));
-
-        assertThat(fieldNames(root.get("order")))
-                .as("order keys leaked or missing on PublicTicketResponse.Order.")
-                .isEqualTo(Set.of("token", "email"));
     }
 
     private static Set<String> fieldNames(JsonNode node) {
