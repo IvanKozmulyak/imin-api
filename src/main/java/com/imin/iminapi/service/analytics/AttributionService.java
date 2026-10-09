@@ -52,58 +52,42 @@ public class AttributionService {
      */
     @Transactional(readOnly = true)
     public AttributionResponse attribution(AuthPrincipal p, String client) {
-        var rows = visitsBySource(p, client);
-
-        long totalVisits = 0;
-        long untaggedVisits = 0;
-        long taggedVisits = 0;
-        record Bucket(String source, long visits) {}
+        // Visitors are distinct anon ids: reloads and a checkout start from one browser count once.
+        record Bucket(String source, long visitors) {}
         List<Bucket> tagged = new ArrayList<>();
-        for (Object[] r : rows) {
+        for (Object[] r : visitorsBySource(p, client)) {
             String source = (String) r[0];
-            long visits = ((Number) r[1]).longValue();
-            totalVisits += visits;
-            if (source == null || source.isBlank()) {
-                untaggedVisits += visits;
-            } else {
-                taggedVisits += visits;
-                tagged.add(new Bucket(source, visits));
-            }
+            if (source == null || source.isBlank()) continue;
+            tagged.add(new Bucket(source, ((Number) r[1]).longValue()));
         }
 
-        // TRUE per-order last-touch revenue by channel (V62): orders now carry the landing
-        // utm_source, stamped at checkout and snapshotted at fulfilment, so each order's full
-        // total is counted ONCE against the channel the buyer actually arrived through. This
-        // replaces the old tagged-visit-SHARE approximation, which had to divide the org's
-        // whole revenue pool across channels because orders carried no utm key to join on.
-        //
-        // Consequences of the switch, both deliberate:
-        //  - Revenue from orders placed BEFORE V62 has no utm_source and is no longer counted
-        //    for any channel. It cannot be back-filled — the tag was never captured — so it
-        //    reports as unattributed rather than being spread across channels on a guess.
-        //  - A channel with visits but no paid orders now correctly reads 0 revenue instead of
-        //    receiving a share of unrelated revenue.
+        // Each live tagged order counts once under its landing source, less SUCCEEDED refunds and
+        // clamped at zero as in the payout net; untagged (pre-V62) orders stay unattributed.
         Map<String, Long> revenueBySource = new HashMap<>();
-        for (Object[] r : orders.sumRevenueByUtmSource(p.orgId())) {
-            revenueBySource.put((String) r[0], ((Number) r[1]).longValue());
+        for (Object[] r : orders.revenueRowsByUtmSource(p.orgId())) {
+            long net = Math.max(0L, ((Number) r[1]).longValue() - ((Number) r[2]).longValue());
+            revenueBySource.merge((String) r[0], net, Long::sum);
         }
 
         List<AttributionResponse.Channel> channels = new ArrayList<>();
-        tagged.sort(Comparator.comparingLong(Bucket::visits).reversed()
+        tagged.sort(Comparator.comparingLong(Bucket::visitors).reversed()
                 .thenComparing(Bucket::source));
         for (Bucket b : tagged) {
             long revenue = revenueBySource.getOrDefault(b.source(), 0L);
-            channels.add(new AttributionResponse.Channel(b.source(), Math.max(0, revenue), (int) b.visits()));
+            channels.add(new AttributionResponse.Channel(b.source(), revenue, (int) b.visitors()));
         }
 
-        int untaggedPct = totalVisits == 0 ? 0
-                : (int) Math.round(100.0 * untaggedVisits / totalVisits);
+        // Share of visitors with at least one untagged beacon; per-source rows would double count
+        // a visitor seen on two sources, so this reads its own distinct totals.
+        Object[] totals = visitorTotals(p, client);
+        long visitors = ((Number) totals[0]).longValue();
+        long untaggedVisitors = ((Number) totals[1]).longValue();
+        int untaggedPct = visitors == 0 ? 0
+                : (int) Math.round(100.0 * untaggedVisitors / visitors);
 
-        // Total attributed revenue = the sum actually assigned to channels above. A source
-        // with orders but no recorded visits still counts as attributed revenue, so sum the
-        // map rather than the (visit-derived) channel list.
+        // A source with orders but no recorded visitors still counts, so sum the map, not the channels.
         long attributedRevenueMinor = revenueBySource.values().stream()
-                .mapToLong(Long::longValue).filter(v -> v > 0).sum();
+                .mapToLong(Long::longValue).sum();
 
         return new AttributionResponse(attributedRevenueMinor, untaggedPct, channels);
     }
@@ -115,7 +99,7 @@ public class AttributionService {
         for (Object[] r : rows) {
             if (links.size() >= UNTAGGED_LINKS_LIMIT) break;
             String host = (String) r[0];
-            int visits = ((Number) r[1]).intValue();
+            int visits = ((Number) r[1]).intValue(); // distinct visitors
             ChannelSuggester.Suggestion s = ChannelSuggester.suggest(host);
             links.add(new UntaggedLinksResponse.Link(
                     host,
@@ -131,16 +115,34 @@ public class AttributionService {
      * never one with a nullable bind: a null {@code String} in a comparison is
      * the {@code lower(bytea)} trap that 500s on Postgres.
      */
-    private List<Object[]> visitsBySource(AuthPrincipal p, String client) {
-        if (client == null || client.isBlank()) return funnel.countVisitsBySourceForOrg(p.orgId());
+    private List<Object[]> visitorsBySource(AuthPrincipal p, String client) {
+        return switch (slice(client)) {
+            case "web" -> funnel.countWebVisitsBySourceForOrg(p.orgId());
+            case "ios", "android" -> funnel.countVisitsBySourceForOrgAndClient(p.orgId(), slice(client));
+            default -> funnel.countVisitsBySourceForOrg(p.orgId());
+        };
+    }
+
+    /** {@code [visitors, untaggedVisitors]} for the same slice as {@link #visitorsBySource}. */
+    private Object[] visitorTotals(AuthPrincipal p, String client) {
+        List<Object[]> rows = switch (slice(client)) {
+            case "web" -> funnel.countWebVisitorsAndUntaggedForOrg(p.orgId());
+            case "ios", "android" -> funnel.countVisitorsAndUntaggedForOrgAndClient(p.orgId(), slice(client));
+            default -> funnel.countVisitorsAndUntaggedForOrg(p.orgId());
+        };
+        return rows.get(0);
+    }
+
+    /**
+     * The client slice, or {@code "all"}. An unrecognised label is not an empty result set — an
+     * empty chart reads as "nobody came from there", a fabricated fact — so it means every client.
+     */
+    private static String slice(String client) {
+        if (client == null || client.isBlank()) return "all";
         String c = client.trim().toLowerCase();
         return switch (c) {
-            case "web" -> funnel.countWebVisitsBySourceForOrg(p.orgId());
-            case "ios", "android" -> funnel.countVisitsBySourceForOrgAndClient(p.orgId(), c);
-            // An unrecognised label is not an empty result set — an empty chart
-            // reads as "nobody came from there", which would be a fabricated
-            // fact. Fall back to every client.
-            default -> funnel.countVisitsBySourceForOrg(p.orgId());
+            case "web", "ios", "android" -> c;
+            default -> "all";
         };
     }
 }

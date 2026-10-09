@@ -7,15 +7,15 @@ import java.util.List;
  * channel ({@code utm_source}). ROAS is deliberately out of scope (needs
  * ad-spend, a later phase).
  *
- * <p>{@code attributedRevenueMinor} is the org's total paid revenue pool (minor
- * units) that the channels divide up. {@code untaggedPct} is the share of all
- * visits that carried no {@code utm_source} (0 when there are no visits).
+ * <p>{@code attributedRevenueMinor} is the sum of tagged live-mode orders' totals less their
+ * SUCCEEDED refunds, each order clamped at zero (minor units). {@code untaggedPct} is the share
+ * of distinct visitors with at least one beacon carrying no {@code utm_source} (0 when none).
  */
 public record AttributionResponse(
         long attributedRevenueMinor,
         int untaggedPct,
         List<Channel> channels) {
 
-    /** Per-{@code utm_source} revenue + visit count. */
+    /** Per-{@code utm_source} net revenue; {@code visits} is distinct visitors (anon ids) seen on that source. */
     public record Channel(String source, long revenueMinor, int visits) {}
 }

@@ -10,6 +10,10 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.refund.Refund;
+import com.imin.iminapi.refund.RefundReason;
+import com.imin.iminapi.refund.RefundRepository;
+import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -39,6 +43,7 @@ class AttributionServiceTest {
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
+    @Autowired RefundRepository refunds;
     @Autowired JdbcTemplate jdbc;
 
     private Organization org;
@@ -94,7 +99,11 @@ class AttributionServiceTest {
     }
 
     /** V62: orders now carry the landing utm_source, stamped at checkout. */
-    private void order(String email, long totalMinor, String utmSource) {
+    private Order order(String email, long totalMinor, String utmSource) {
+        return order(email, totalMinor, utmSource, false);
+    }
+
+    private Order order(String email, long totalMinor, String utmSource, boolean testMode) {
         Order o = new Order();
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(event.getId());
@@ -105,7 +114,112 @@ class AttributionServiceTest {
         o.setPaymentMethod("stripe");
         o.setStripePaymentIntentId("pi_" + UUID.randomUUID());
         o.setUtmSource(utmSource);
-        orders.save(o);
+        o.setTestMode(testMode);
+        return orders.save(o);
+    }
+
+    private void refund(Order o, long amountMinor, RefundStatus status) {
+        Refund r = new Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId(o.getStripePaymentIntentId());
+        r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("eur");
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(status);
+        r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        refunds.save(r);
+    }
+
+    private void beacon(String anon, String stage, String source, String referrerHost) {
+        FunnelEvent fe = new FunnelEvent();
+        fe.setEventId(event.getId());
+        fe.setStage(stage);
+        fe.setAnonId(anon);
+        fe.setUtmSource(source);
+        fe.setReferrerHost(referrerHost);
+        funnel.save(fe);
+    }
+
+    // ── visitors, not beacon rows ──────────────────────────────────────────
+
+    /** Reloads and a checkout start from one browser are one visitor, per source and in the untagged share. */
+    @Test
+    void repeated_beacons_from_one_visitor_count_once() {
+        beacon("v1", FunnelEvent.STAGE_PAGE_VIEW, "instagram", "instagram.com");
+        beacon("v1", FunnelEvent.STAGE_PAGE_VIEW, "instagram", "instagram.com");
+        beacon("v1", FunnelEvent.STAGE_CHECKOUT_START, "instagram", "instagram.com");
+        beacon("v1", FunnelEvent.STAGE_PAGE_VIEW, null, "blog.example.com");
+        beacon("v2", FunnelEvent.STAGE_PAGE_VIEW, "instagram", "instagram.com");
+
+        AttributionResponse r = service.attribution(principal);
+
+        assertThat(r.channels()).extracting(AttributionResponse.Channel::source).containsExactly("instagram");
+        assertThat(r.channels().get(0).visits()).isEqualTo(2);
+        // v1 had an untagged visit, v2 did not: 1 of 2 visitors.
+        assertThat(r.untaggedPct()).isEqualTo(50);
+    }
+
+    @Test
+    void repeated_beacons_from_one_visitor_count_once_per_slice() {
+        visit("v1", "instagram", "instagram.com", "ios");
+        visit("v1", "instagram", "instagram.com", "ios");
+        visit("v2", "instagram", "instagram.com", "web");
+        visit("v2", "instagram", "instagram.com", null);
+
+        assertThat(visitsFor("ios")).isEqualTo(1);
+        assertThat(visitsFor("web")).isEqualTo(1);
+        assertThat(visitsFor(null)).isEqualTo(2);
+    }
+
+    @Test
+    void untagged_hosts_count_each_visitor_once() {
+        beacon("u1", FunnelEvent.STAGE_PAGE_VIEW, null, "blog.example.com");
+        beacon("u1", FunnelEvent.STAGE_PAGE_VIEW, null, "blog.example.com");
+        beacon("u1", FunnelEvent.STAGE_CHECKOUT_START, null, "blog.example.com");
+        beacon("u2", FunnelEvent.STAGE_PAGE_VIEW, null, "t.co");
+        beacon("u3", FunnelEvent.STAGE_PAGE_VIEW, null, "t.co");
+
+        UntaggedLinksResponse r = service.untagged(principal);
+
+        // By rows blog.example.com (3) would rank first; by visitors t.co (2) does.
+        assertThat(r.links()).extracting(UntaggedLinksResponse.Link::referrerHost)
+                .containsExactly("t.co", "blog.example.com");
+        assertThat(r.links()).extracting(UntaggedLinksResponse.Link::visits).containsExactly(2, 1);
+    }
+
+    // ── revenue net of refunds, live mode only ─────────────────────────────
+
+    @Test
+    void channel_revenue_takes_off_succeeded_refunds_full_and_partial() {
+        visit("s1", "instagram", "instagram.com");
+        Order full = order("a@example.com", 4000, "instagram");
+        refund(full, 4000, RefundStatus.SUCCEEDED);
+        Order partial = order("b@example.com", 5000, "instagram");
+        refund(partial, 1000, RefundStatus.SUCCEEDED);
+        refund(partial, 500, RefundStatus.SUCCEEDED);
+        refund(partial, 2000, RefundStatus.PENDING);
+        refund(partial, 1000, RefundStatus.FAILED);
+
+        AttributionResponse r = service.attribution(principal);
+
+        assertThat(r.channels().get(0).revenueMinor()).isEqualTo(3500L);
+        assertThat(r.attributedRevenueMinor()).isEqualTo(3500L);
+    }
+
+    @Test
+    void test_mode_orders_and_their_refunds_are_not_revenue() {
+        visit("s1", "instagram", "instagram.com");
+        order("a@example.com", 2000, "instagram");
+        Order test = order("t@example.com", 9000, "instagram", true);
+        refund(test, 1000, RefundStatus.SUCCEEDED);
+        order("t2@example.com", 7000, "newsletter", true);
+
+        AttributionResponse r = service.attribution(principal);
+
+        assertThat(r.channels()).extracting(AttributionResponse.Channel::source).containsExactly("instagram");
+        assertThat(r.channels().get(0).revenueMinor()).isEqualTo(2000L);
+        assertThat(r.attributedRevenueMinor()).isEqualTo(2000L);
     }
 
     /**

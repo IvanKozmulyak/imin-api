@@ -229,18 +229,21 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                              @Param("campaign") String campaign);
 
     /**
-     * TRUE per-order last-touch revenue by channel (V62): (utmSource, revenueMinor) across
-     * all of an org's tagged orders. Backs the channel-level attribution read-model, which
-     * previously could only divide the org's whole revenue pool by tagged-visit SHARE.
-     * Untagged orders are excluded — they belong to no channel.
+     * Per-order last-touch revenue inputs by channel (V62): one row
+     * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor]} per tagged LIVE-mode
+     * order of the org. Test-mode orders and their refunds are out, as in the payout net; the
+     * caller clamps each order at zero. Untagged orders belong to no channel.
      */
     @Query("""
-            select o.utmSource, coalesce(sum(o.totalMinor), 0) from Order o
+            select o.utmSource, o.totalMinor, coalesce(sum(r.amountMinor), 0)
+              from Order o left join com.imin.iminapi.refund.Refund r
+                     on r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
              where o.orgId = :orgId
                and o.utmSource is not null
-             group by o.utmSource
+               and o.testMode = false
+             group by o.id, o.utmSource, o.totalMinor
             """)
-    List<Object[]> sumRevenueByUtmSource(@Param("orgId") UUID orgId);
+    List<Object[]> revenueRowsByUtmSource(@Param("orgId") UUID orgId);
 
     /**
      * All orders for an org scoped to a buyer's normalized email.

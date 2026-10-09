@@ -49,13 +49,14 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
                                                    @Param("since") java.time.Instant since);
 
     /**
-     * Visit count grouped by {@code utm_source} across all of an org's active
-     * events. Tuple shape: {@code [String utmSource (nullable), Long visits]}.
-     * A null source row is the "untagged" bucket. Joins the funnel log to
-     * {@code Event} so org-scoping is enforced by the event's owner.
+     * Distinct visitors ({@code anon_id}) grouped by {@code utm_source} across all of an
+     * org's active events. Tuple shape: {@code [String utmSource (nullable), Long visitors]}.
+     * A visitor seen on two sources counts once in each. A null source row is the
+     * "untagged" bucket. Joins the funnel log to {@code Event} so org-scoping is enforced
+     * by the event's owner.
      */
     @Query("""
-            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+            select fe.utmSource, count(distinct fe.anonId) from FunnelEvent fe, Event ev
              where fe.eventId = ev.id
                and ev.orgId = :orgId
                and ev.deletedAt is null
@@ -74,7 +75,7 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
      * ever binds null here.
      */
     @Query("""
-            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+            select fe.utmSource, count(distinct fe.anonId) from FunnelEvent fe, Event ev
              where fe.eventId = ev.id
                and ev.orgId = :orgId
                and ev.deletedAt is null
@@ -92,7 +93,7 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
      * "unknown client" bucket would invent a distinction that was never made.
      */
     @Query("""
-            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+            select fe.utmSource, count(distinct fe.anonId) from FunnelEvent fe, Event ev
              where fe.eventId = ev.id
                and ev.orgId = :orgId
                and ev.deletedAt is null
@@ -102,21 +103,60 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
     List<Object[]> countWebVisitsBySourceForOrg(@Param("orgId") UUID orgId);
 
     /**
-     * Untagged (no {@code utm_source}) visits grouped by referrer host across an
-     * org's active events. Tuple shape:
-     * {@code [String referrerHost (nullable), Long visits]}. Ordered by visit
-     * count desc so the caller can take the top N.
+     * Distinct visitors with an untagged (no {@code utm_source}) beacon, grouped by
+     * referrer host across an org's active events. Tuple shape:
+     * {@code [String referrerHost (nullable), Long visitors]}. Ordered by visitors
+     * desc so the caller can take the top N.
      */
     @Query("""
-            select fe.referrerHost, count(fe) from FunnelEvent fe, Event ev
+            select fe.referrerHost, count(distinct fe.anonId) from FunnelEvent fe, Event ev
              where fe.eventId = ev.id
                and ev.orgId = :orgId
                and ev.deletedAt is null
                and fe.utmSource is null
              group by fe.referrerHost
-             order by count(fe) desc
+             order by count(distinct fe.anonId) desc, fe.referrerHost
             """)
     List<Object[]> countUntaggedByReferrerHostForOrg(@Param("orgId") UUID orgId);
+
+    /**
+     * One row {@code [Long visitors, Long untaggedVisitors]} over an org's active events: distinct
+     * anon ids, and those with at least one beacon carrying no {@code utm_source}.
+     */
+    @Query("""
+            select count(distinct fe.anonId),
+                   count(distinct case when fe.utmSource is null then fe.anonId end)
+              from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+            """)
+    List<Object[]> countVisitorsAndUntaggedForOrg(@Param("orgId") UUID orgId);
+
+    /** {@link #countVisitorsAndUntaggedForOrg} for one non-web client. */
+    @Query("""
+            select count(distinct fe.anonId),
+                   count(distinct case when fe.utmSource is null then fe.anonId end)
+              from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and fe.client = :client
+            """)
+    List<Object[]> countVisitorsAndUntaggedForOrgAndClient(@Param("orgId") UUID orgId,
+                                                           @Param("client") String client);
+
+    /** {@link #countVisitorsAndUntaggedForOrg} for the web slice (NULL client counts as web). */
+    @Query("""
+            select count(distinct fe.anonId),
+                   count(distinct case when fe.utmSource is null then fe.anonId end)
+              from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and (fe.client is null or fe.client = 'web')
+            """)
+    List<Object[]> countWebVisitorsAndUntaggedForOrg(@Param("orgId") UUID orgId);
 
     /**
      * Distinct converting sessions attributed to a campaign: count of distinct
