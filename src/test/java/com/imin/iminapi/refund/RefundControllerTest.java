@@ -159,7 +159,9 @@ class RefundControllerTest {
 
     private Order paidOrder(Event e) {
         Order o = fx.order(e, fx.email("buyer"));
-        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ?, application_fee_minor = 75 WHERE id = ?",
+        // test_mode as checkout stamps it under the suite's sk_test key.
+        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ?, application_fee_minor = 75, test_mode = true "
+                        + "WHERE id = ?",
                 "pi_" + UUID.randomUUID().toString().replace("-", ""), o.getId());
         return o;
     }

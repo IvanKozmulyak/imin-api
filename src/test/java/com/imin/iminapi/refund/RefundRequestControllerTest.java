@@ -169,7 +169,8 @@ class RefundRequestControllerTest {
     private RefundRequest pendingRequest(Event e) {
         String buyer = fx.email("buyer");
         Order o = fx.order(e, buyer);
-        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ? WHERE id = ?",
+        // test_mode as checkout stamps it under the suite's sk_test key.
+        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ?, test_mode = true WHERE id = ?",
                 "pi_" + UUID.randomUUID().toString().replace("-", ""), o.getId());
         fx.ticket(o, Ticket.STATE_ISSUED);
         RefundRequest rr = new RefundRequest();

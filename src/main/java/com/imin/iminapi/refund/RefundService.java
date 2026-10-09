@@ -12,6 +12,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProperties;
 import com.imin.iminapi.stripe.StripeRefundService;
 import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.RateLimitException;
@@ -28,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -60,6 +62,7 @@ public class RefundService {
     private final TicketTierRepository tierRepository;
     private final DisputeRepository disputes;
     private final ApplicationEventPublisher publisher;
+    private final StripeProperties stripeProps;
 
     public RefundService(OrderRepository orders,
                          TicketRepository tickets,
@@ -68,7 +71,8 @@ public class RefundService {
                          StripeRefundService stripeRefundService,
                          TicketTierRepository tierRepository,
                          DisputeRepository disputes,
-                         ApplicationEventPublisher publisher) {
+                         ApplicationEventPublisher publisher,
+                         StripeProperties stripeProps) {
         this.orders = orders;
         this.tickets = tickets;
         this.refunds = refunds;
@@ -77,6 +81,7 @@ public class RefundService {
         this.tierRepository = tierRepository;
         this.disputes = disputes;
         this.publisher = publisher;
+        this.stripeProps = stripeProps;
     }
 
     @Transactional
@@ -112,7 +117,7 @@ public class RefundService {
         // A charged-back order is already being clawed back, so refunding it would either
         // pay the buyer twice or bounce off Stripe as charge_disputed. After the replay
         // short-circuit on purpose: a refund taken before the dispute keeps returning its row.
-        if (disputes.hasOpenOrLostByOrderId(orderId)) {
+        if (isBlockedByDispute(orderId)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_DISPUTED,
                 "Order is disputed and cannot be refunded");
         }
@@ -122,9 +127,14 @@ public class RefundService {
                 "ticketIds must be a non-empty unique list");
         }
 
-        if (order.getStripePaymentIntentId() == null || order.getStripePaymentIntentId().isBlank()) {
+        if (!hasStripePayment(order)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
                 "Order has no Stripe payment to refund");
+        }
+        if (!matchesStripeMode(order)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
+                "Order was paid in Stripe " + (order.isTestMode() ? "test" : "live")
+                + " mode and cannot be refunded with the running " + stripeProps.keyMode() + " key");
         }
 
         List<Ticket> selected = tickets.findByIdInAndOrderId(ticketIds, orderId);
@@ -133,7 +143,7 @@ public class RefundService {
                 "One or more ticketIds do not belong to this order");
         }
 
-        Set<UUID> alreadyRefunded = refundTickets.findRefundedTicketIds(ticketIds);
+        Set<UUID> alreadyRefunded = claimedTicketIds(ticketIds);
         if (!alreadyRefunded.isEmpty()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.TICKET_ALREADY_REFUNDED,
                 "One or more selected tickets have already been refunded",
@@ -141,7 +151,7 @@ public class RefundService {
                     alreadyRefunded.stream().map(UUID::toString).collect(Collectors.joining(","))));
         }
         for (Ticket t : selected) {
-            if (Ticket.STATE_REDEEMED.equals(t.getState())) {
+            if (isRedeemed(t)) {
                 throw new ApiException(HttpStatus.CONFLICT, ErrorCode.TICKET_REDEEMED,
                     "Redeemed tickets cannot be refunded",
                     Map.of("ticketId", t.getId().toString()));
@@ -230,6 +240,32 @@ public class RefundService {
             r.getId(), orderId, refundAmountMinor, order.getCurrency(),
             appFeeRefundMinor, r.getStatus());
         return r;
+    }
+
+    // The refusal rules of createRefund, shared with EventRefundPlanService so a planned
+    // refund is exactly one createRefund accepts.
+
+    /** An OPEN or LOST chargeback is already clawing the money back. */
+    boolean isBlockedByDispute(UUID orderId) {
+        return disputes.hasOpenOrLostByOrderId(orderId);
+    }
+
+    static boolean hasStripePayment(Order order) {
+        return order.getStripePaymentIntentId() != null && !order.getStripePaymentIntentId().isBlank();
+    }
+
+    /** The running key only sees payments made in its own mode; the other mode's 404s at Stripe. */
+    boolean matchesStripeMode(Order order) {
+        return order.isTestMode() != stripeProps.isLiveKey();
+    }
+
+    /** Ids among {@code ticketIds} already claimed by a refund row (UNIQUE refund_tickets.ticket_id). */
+    Set<UUID> claimedTicketIds(Collection<UUID> ticketIds) {
+        return ticketIds.isEmpty() ? Set.of() : refundTickets.findRefundedTicketIds(ticketIds);
+    }
+
+    static boolean isRedeemed(Ticket ticket) {
+        return Ticket.STATE_REDEEMED.equals(ticket.getState());
     }
 
     /**

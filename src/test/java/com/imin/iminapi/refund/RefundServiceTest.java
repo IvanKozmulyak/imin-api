@@ -58,7 +58,14 @@ class RefundServiceTest {
         orderId = UUID.randomUUID();
         principal = new AuthPrincipal(userId, orgId, UserRole.OWNER, UUID.randomUUID());
         service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds, tierRepo,
-            disputes, publisher);
+            disputes, publisher, liveKey());
+    }
+
+    /** Live key: these orders keep the default testMode=false, so their mode matches. */
+    private static com.imin.iminapi.stripe.StripeProperties liveKey() {
+        com.imin.iminapi.stripe.StripeProperties p = new com.imin.iminapi.stripe.StripeProperties();
+        p.setSecretKey("sk_live_unit");
+        return p;
     }
 
     private Order paidOrder() {
