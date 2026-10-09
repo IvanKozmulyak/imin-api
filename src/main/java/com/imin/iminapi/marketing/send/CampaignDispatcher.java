@@ -33,10 +33,7 @@ import java.util.UUID;
  * CampaignSendUnit (a separate bean so its @Transactional boundary engages). The dispatcher's
  * only transaction is the claim (lock, filter, flip to sending); the per-campaign transactions live in CampaignSendUnit.
  *
- * <p>Gating (spec §2.5 step 4, §7): an org's campaigns are skipped entirely while the org
- * is complaint-paused ({@code organizations.marketing_paused_at} set) or inside its local
- * email quiet-hours window (22:00–09:00 org-local). Per-member frequency capping and the
- * per-org daily cap are enforced downstream in the send path, not here.
+ * <p>Gating (spec §2.5 step 4, §7): paused or missing orgs are filtered in the claim SQL, quiet hours and the daily cap in Java.
  */
 @Component
 public class CampaignDispatcher {
@@ -44,6 +41,10 @@ public class CampaignDispatcher {
     private static final Logger log = LoggerFactory.getLogger(CampaignDispatcher.class);
     private static final long STALE_MINUTES = 5;
     private static final long DAILY_CAP_WINDOW_HOURS = 24;
+    /** Campaigns one run claims at most. */
+    static final int CLAIM_LIMIT = 10;
+    // ponytail: more than SCAN_LIMIT quiet-hours or capped campaigns ahead in the queue still delay the ones behind them.
+    static final int SCAN_LIMIT = 100;
     // ponytail: two minutes under lockAtMostFor; a single batch that outlasts the margin can still overlap the next run.
     static final Duration RUN_BUDGET = Duration.ofMinutes(8);
 
@@ -149,8 +150,8 @@ public class CampaignDispatcher {
 
     /**
      * The campaign ids eligible to send at {@code now}: due-scheduled, retryable-failed
-     * (attempts&lt;3), and stale-`sending` reclaim — MINUS orgs that are complaint-paused
-     * or inside email quiet hours (spec §2.5 step 4, §7). Separated from the scheduled
+     * (attempts&lt;3), and stale-`sending` reclaim — MINUS orgs that are gone, complaint-paused,
+     * inside email quiet hours or at their daily cap (spec §2.5 step 4, §7). Separated from the scheduled
      * tick so it is unit-testable. Read-only: outside a transaction its row locks end with the statement.
      */
     public List<UUID> claimDueCampaignIds(Instant now) {
@@ -158,33 +159,35 @@ public class CampaignDispatcher {
     }
 
     /**
-     * Broad SQL claim (scheduled-due / retryable-failed / stale-sending, SKIP LOCKED)
-     * filtered in Java to drop complaint-paused and quiet-hours orgs. Returns the loaded
-     * campaigns so the tick can process them without a second round-trip. Called inside the claim
-     * transaction, the SKIP LOCKED locks hold until that transaction commits.
+     * SQL claim (scheduled-due / retryable-failed / stale-sending of live, unpaused orgs, SKIP LOCKED) of up to
+     * SCAN_LIMIT rows, filtered in Java for quiet hours and the daily cap, then cut to CLAIM_LIMIT, so held
+     * campaigns ahead in the queue do not take every slot. Inside the claim transaction the locks hold until commit.
      */
     private List<Campaign> eligible(Instant now) {
         Instant staleBefore = now.minus(STALE_MINUTES, ChronoUnit.MINUTES);
-        // Audience-plan campaigns are held in SQL while their sends switch is off, so they never use up the LIMIT.
+        // Audience-plan holds, missing orgs and complaint pauses are filtered in SQL, so they never use up the scan.
         List<Campaign> due = campaigns.claimDue(now, staleBefore, audiencePlanAccess.sendsEnabled(),
-                audiencePlanAccess.legalIdentityAllCampaigns());
-        List<Campaign> eligible = new ArrayList<>(due.size());
-        Map<UUID, Organization> orgCache = new HashMap<>();
+                audiencePlanAccess.legalIdentityAllCampaigns(), SCAN_LIMIT);
+        List<Campaign> eligible = new ArrayList<>(CLAIM_LIMIT);
+        Map<UUID, Boolean> orgHeld = new HashMap<>();
         Instant capWindowStart = now.minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS);
         for (Campaign c : due) {
-            Organization o = orgCache.computeIfAbsent(c.getOrgId(),
-                    id -> orgs.findById(id).orElse(null));
-            if (o == null) continue;                                         // org gone → skip
-            if (o.getMarketingPausedAt() != null) continue;                  // complaint breaker
-            if (quietHours.isEmailQuiet(o.getTimezone(), now)) continue;     // quiet hours
-            // Per-org daily cap (spec §7): once the org's rolling-24h send count reaches the
-            // configured cap, hold its campaigns until the window rolls forward.
-            if (recipients.countRecentSendsForOrg(c.getOrgId(), capWindowStart) >= guardProps.getDailyCap()) {
-                log.info("[dispatcher] org {} at daily cap — holding campaign {}", c.getOrgId(), c.getId());
-                continue;
-            }
+            if (eligible.size() == CLAIM_LIMIT) break;
+            if (orgHeld.computeIfAbsent(c.getOrgId(), id -> isHeld(id, now, capWindowStart))) continue;
             eligible.add(c);
         }
         return eligible;
+    }
+
+    /** Quiet hours (22:00–09:00 org-local) or the per-org rolling-24h daily cap (spec §7). */
+    private boolean isHeld(UUID orgId, Instant now, Instant capWindowStart) {
+        Organization o = orgs.findById(orgId).orElse(null);
+        if (o == null) return true;                                          // deleted since the claim query
+        if (quietHours.isEmailQuiet(o.getTimezone(), now)) return true;
+        if (recipients.countRecentSendsForOrg(orgId, capWindowStart) >= guardProps.getDailyCap()) {
+            log.info("[dispatcher] org {} at daily cap — holding its campaigns", orgId);
+            return true;
+        }
+        return false;
     }
 }

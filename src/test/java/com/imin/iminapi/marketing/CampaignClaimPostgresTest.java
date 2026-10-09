@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CampaignClaimPostgresTest {
 
     private static final Instant NOW = Instant.parse("2026-07-14T12:00:00Z");
-    // The claim is global, LIMIT 10: rows this old sort ahead of other tests' dated campaigns. The defence
+    // The claim is global (LIMIT 100 here): rows this old sort ahead of other tests' dated campaigns. The defence
     // against leftovers is the CampaignRows cleanup rule, not this order: NULLS FIRST puts null-scheduled ones first.
     private static final Instant ANCIENT = NOW.minus(3650, ChronoUnit.DAYS);
 
@@ -85,7 +85,7 @@ class CampaignClaimPostgresTest {
 
     private List<UUID> claim(boolean sendsEnabled, boolean legalIdentityAllCampaigns) {
         return tx.execute(st -> campaigns.claimDue(NOW, NOW.minus(5, ChronoUnit.MINUTES), sendsEnabled,
-                        legalIdentityAllCampaigns)
+                        legalIdentityAllCampaigns, 100)
                 .stream().map(Campaign::getId).toList());
     }
 

@@ -88,6 +88,8 @@ public class CampaignSendUnit {
             c.setStatus("sending");
             c.setUpdatedAt(now);
         }
+        // ponytail: materialize runs whole, outside the run budget (one row and one cap query per member);
+        // an audience in the tens of thousands can outlast lockAtMostFor.
         materializer.materialize(c);
         // Drive batches until nothing claimable remains. Bounded loop; each call commits
         // its own batch and heartbeats.

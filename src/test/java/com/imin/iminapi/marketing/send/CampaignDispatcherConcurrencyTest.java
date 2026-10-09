@@ -125,7 +125,7 @@ class CampaignDispatcherConcurrencyTest {
         Instant now = Instant.now();
         UUID orgId = awakeOrg().getId();
         List<UUID> due = new ArrayList<>();
-        // One more than the claim's LIMIT, ordered by scheduled_at, so a single claimer cannot take them all.
+        // More than the LIMIT of 10 passed below, ordered by scheduled_at, so a single claimer cannot take them all.
         for (int i = 0; i < 12; i++) {
             due.add(campaign(orgId, now.minus(3650, ChronoUnit.DAYS).plusSeconds(i)).getId());
         }
@@ -137,7 +137,7 @@ class CampaignDispatcherConcurrencyTest {
             start.await();
             // The outer tx stands in for a transactional claim; production releases these locks at statement end.
             return tx.execute(st -> {
-                List<UUID> ids = campaigns.claimDue(now, now.minus(5, ChronoUnit.MINUTES), false, false)
+                List<UUID> ids = campaigns.claimDue(now, now.minus(5, ChronoUnit.MINUTES), false, false, 10)
                         .stream().map(Campaign::getId).toList();
                 try {
                     bothHolding.await(WAIT.toSeconds(), TimeUnit.SECONDS);
@@ -434,6 +434,115 @@ class CampaignDispatcherConcurrencyTest {
                 .isEqualTo("sending");
     }
 
+    @Test
+    void aClaimThatCannotBeReleased_doesNotKeepTheNextOneFromBeingReleased() {
+        UUID orgId = awakeOrg().getId();
+        Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
+        Campaign driven = campaign(orgId, ancient);
+        pendingRecipients(driven, 1);
+        Campaign stuck = campaign(orgId, ancient.plusSeconds(1));
+        Campaign released = campaign(orgId, ancient.plusSeconds(2));
+        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+                released.getId());
+        Map<String, Object> releasedBefore = stateOf(released);
+        requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 3, 10);
+        AtomicReference<PgFaults.Fault> fault = new AtomicReference<>();
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            // The first batch outlasts the run budget, and the release of the first unstarted claim will be rejected.
+            clock.advance(CampaignDispatcher.RUN_BUDGET.plusSeconds(1));
+            elsewhere(() -> fault.set(PgFaults.failWrites(jdbc, "campaigns", "id", stuck.getId())));
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        try {
+            dispatcher.runOnce();
+        } finally {
+            PgFaults.Fault f = fault.get();
+            if (f != null) f.close();
+        }
+
+        assertThat(fault.get()).as("the driven campaign reached the provider").isNotNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, stuck.getId()))
+                .as("its release was rejected").isEqualTo("sending");
+        assertThat(stateOf(released)).as("the next unstarted claim is still released").isEqualTo(releasedBefore);
+    }
+
+    @Test
+    void moreEligibleCampaignsThanOneClaim_claimsTheFirstTenAndLeavesTheRest() {
+        UUID orgId = awakeOrg().getId();
+        Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
+        List<Campaign> due = new ArrayList<>();
+        for (int i = 0; i <= CampaignDispatcher.CLAIM_LIMIT; i++) {
+            Campaign c = campaign(orgId, ancient.plusSeconds(i));
+            pendingRecipients(c, 1);
+            due.add(c);
+        }
+        Campaign last = due.get(CampaignDispatcher.CLAIM_LIMIT);
+        Map<String, Object> lastBefore = stateOf(last);
+        requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(),
+                CampaignDispatcher.CLAIM_LIMIT, CampaignDispatcher.CLAIM_LIMIT);
+
+        dispatcher.runOnce();
+
+        assertThat(due.subList(0, CampaignDispatcher.CLAIM_LIMIT))
+                .as("the first ten in queue order are claimed and sent")
+                .allSatisfy(c -> assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?",
+                        String.class, c.getId())).isEqualTo("sent"));
+        assertThat(stateOf(last)).as("the eleventh is left for the next run").isEqualTo(lastBefore);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'pending'",
+                Integer.class, last.getId())).isEqualTo(1);
+    }
+
+    enum Hold { PAUSED, ORG_GONE, QUIET_HOURS }
+
+    @ParameterizedTest
+    @EnumSource(Hold.class)
+    void heldCampaignsFirstInTheQueue_doNotStarveAnotherOrgsCampaign(Hold hold) {
+        Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
+        UUID heldOrg = heldOrg(hold);
+        List<Campaign> held = new ArrayList<>();
+        // All ordered before the eligible campaign. SQL-filtered holds outnumber the scan, so a Java-side filter goes red.
+        int heldRows = hold == Hold.QUIET_HOURS ? 12 : CampaignDispatcher.SCAN_LIMIT + 1;
+        for (int i = 0; i < heldRows; i++) held.add(campaign(heldOrg, ancient.plusSeconds(i)));
+        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+                held.get(0).getId());
+        List<Map<String, Object>> heldBefore = held.stream().map(this::stateOf).toList();
+        UUID orgId = awakeOrg().getId();
+        Campaign eligible = campaign(orgId, ancient.plusSeconds(heldRows + 60));
+        List<String> own = pendingRecipients(eligible, 2);
+        requireClaimRoom(orgId, heldOrg, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(),
+                1, 10);
+
+        dispatcher.runOnce();
+
+        assertEachSentOnce(eligible, own);
+        assertThat(held.stream().map(this::stateOf).toList()).as("held campaigns are never written").isEqualTo(heldBefore);
+    }
+
+    private UUID heldOrg(Hold hold) {
+        switch (hold) {
+            case ORG_GONE -> {
+                UUID gone = UUID.randomUUID();
+                orgIds.add(gone);
+                return gone;
+            }
+            case PAUSED -> {
+                Organization o = awakeOrg();
+                o.setMarketingPausedAt(Instant.now().minus(1, ChronoUnit.HOURS));
+                return orgs.save(o).getId();
+            }
+            default -> {
+                Organization o = fx.org();
+                // Local time near 02:00 right now: inside email quiet hours.
+                o.setTimezone(ZoneOffset.ofHours(Math.floorMod(2 - Instant.now().atZone(ZoneOffset.UTC).getHour() + 12, 24) - 12).getId());
+                o = orgs.save(o);
+                orgIds.add(o.getId());
+                return o.getId();
+            }
+        }
+    }
+
     enum OrganizerAction { CANCEL, RETRY }
 
     @ParameterizedTest
@@ -563,6 +672,12 @@ class CampaignDispatcherConcurrencyTest {
      */
     private List<Map<String, Object>> requireClaimRoom(UUID ownOrg, Instant now, boolean audiencePlanSendsEnabled,
                                                        boolean legalIdentityAllCampaigns, int ownRows, int capacity) {
+        return requireClaimRoom(ownOrg, ownOrg, now, audiencePlanSendsEnabled, legalIdentityAllCampaigns, ownRows, capacity);
+    }
+
+    private List<Map<String, Object>> requireClaimRoom(UUID ownOrg, UUID otherOwnOrg, Instant now,
+                                                       boolean audiencePlanSendsEnabled, boolean legalIdentityAllCampaigns,
+                                                       int ownRows, int capacity) {
         List<Map<String, Object>> foreign = jdbc.queryForList("""
                 SELECT id, org_id, status, scheduled_at, updated_at, attempts, name, origin FROM campaigns
                 WHERE channel = 'email'
@@ -574,9 +689,9 @@ class CampaignDispatcherConcurrencyTest {
                         SELECT 1 FROM organizations o WHERE o.id = campaigns.org_id
                           AND TRIM(COALESCE(o.legal_name, '')) <> ''
                           AND TRIM(COALESCE(o.legal_contact, '')) <> ''))
-                  AND org_id <> ?
+                  AND org_id NOT IN (?, ?)
                 """, Timestamp.from(now), Timestamp.from(now.minus(5, ChronoUnit.MINUTES)),
-                audiencePlanSendsEnabled, legalIdentityAllCampaigns, ownOrg);
+                audiencePlanSendsEnabled, legalIdentityAllCampaigns, ownOrg, otherOwnOrg);
         assertThat(foreign).as("claimable campaigns another test left behind (CampaignRows cleanup rule)")
                 .hasSizeLessThanOrEqualTo(capacity - ownRows);
         return foreign;

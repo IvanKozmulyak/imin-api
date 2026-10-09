@@ -189,7 +189,8 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
      * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
      * out while their sends switch is off, even if already scheduled, and while their org
      * lacks a legal name or legal contact (every origin while legalIdentityAllCampaigns is on),
-     * so a held campaign never loops or eats the LIMIT.
+     * so a held campaign never loops or eats the LIMIT. Campaigns of a missing or complaint-paused
+     * org are left out here too; quiet hours and the daily cap are filtered by the caller.
      */
     @Query(value = """
         SELECT * FROM campaigns
@@ -205,13 +206,16 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                 WHERE o.id = campaigns.org_id
                   AND TRIM(COALESCE(o.legal_name, '')) <> ''
                   AND TRIM(COALESCE(o.legal_contact, '')) <> ''))
+          AND EXISTS (SELECT 1 FROM organizations o
+                      WHERE o.id = campaigns.org_id AND o.marketing_paused_at IS NULL)
         ORDER BY scheduled_at NULLS FIRST
-        LIMIT 10
+        LIMIT :scanLimit
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     java.util.List<com.imin.iminapi.marketing.model.Campaign> claimDue(
             @org.springframework.data.repository.query.Param("now") java.time.Instant now,
             @org.springframework.data.repository.query.Param("staleBefore") java.time.Instant staleBefore,
             @org.springframework.data.repository.query.Param("audiencePlanSendsEnabled") boolean audiencePlanSendsEnabled,
-            @org.springframework.data.repository.query.Param("legalIdentityAllCampaigns") boolean legalIdentityAllCampaigns);
+            @org.springframework.data.repository.query.Param("legalIdentityAllCampaigns") boolean legalIdentityAllCampaigns,
+            @org.springframework.data.repository.query.Param("scanLimit") int scanLimit);
 }
