@@ -76,6 +76,8 @@ public class CampaignService {
     private final CampaignAiSuggestions aiSuggestions;
     private final SendPathGuard sendPathGuard;
     private final com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms;
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -214,8 +216,7 @@ public class CampaignService {
                     "Only draft campaigns can be edited");
         }
         // Locked until commit, so a send that flips draft→scheduled meanwhile waits rather than being overwritten.
-        Campaign c = campaigns.findByIdAndOrgIdForUpdate(id, p.orgId())
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Campaign not found"));
+        Campaign c = lockFresh(p.orgId(), id);
         if (!"draft".equals(c.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Only draft campaigns can be edited");
@@ -687,6 +688,12 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Only draft campaigns can be deleted");
         }
+        // Locked re-check: a send or slump arm that scheduled the draft meanwhile wins, and this answers 409.
+        c = lockFresh(principal.orgId(), campaignId);
+        if (!"draft".equals(c.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only draft campaigns can be deleted");
+        }
         campaignRecipientRepository.deleteByCampaignId(campaignId);
         campaigns.delete(c);
         audit.record(principal, AuditActions.CAMPAIGN_DELETED, "campaign", campaignId,
@@ -730,6 +737,14 @@ public class CampaignService {
         return campaigns.findByIdAndOrgId(id, orgId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND,
                         "Campaign not found"));
+    }
+
+    /** Row-locked load; refreshed because the locked query returns the stale copy this transaction already loaded. */
+    private Campaign lockFresh(UUID orgId, UUID id) {
+        Campaign c = campaigns.findByIdAndOrgIdForUpdate(id, orgId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Campaign not found"));
+        entityManager.refresh(c);
+        return c;
     }
 
     private String requireName(String raw) {

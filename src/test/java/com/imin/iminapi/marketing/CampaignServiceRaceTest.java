@@ -7,11 +7,15 @@ import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -28,10 +32,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -156,6 +163,161 @@ class CampaignServiceRaceTest {
         assertThat(((Number) row.get("attempts")).intValue()).isEqualTo(3);
     }
 
+    /** The two ways a draft gets scheduled: the organizer's send, and the slump arm's flip in TimingArmScheduler.fireSlump. */
+    enum Scheduler { SEND, SLUMP }
+
+    @ParameterizedTest
+    @EnumSource(Scheduler.class)
+    void aSchedulingWriterThatCommitsWhileAPatchWaits_makesThePatch409(Scheduler writer) throws Exception {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = draft(org.getId());
+        String patchTag = tag("patch");
+
+        Future<Boolean> scheduled;
+        Future<?> patch;
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
+            try {
+                // The writer holds the row lock with its flip to 'scheduled' not yet committed.
+                scheduled = executor().submit(() -> taggedGet(tag("writer"), () -> schedule(writer, owner, c)));
+                pause.awaitBlocked(WAIT);
+                patch = executor().submit(() -> tagged(patchTag, () ->
+                        service.patch(owner, c.getId(), new PatchCampaignRequest(null, null, null, "Patched subject", null, null, null))));
+                awaitBlocked(patchTag, false);
+            } finally {
+                pause.release();
+            }
+            assertThat(scheduled.get(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the writer scheduled the draft").isTrue();
+            Throwable refused = catchThrowable(() -> patch.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+            assertConflict(refused);
+        }
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT status, subject FROM campaigns WHERE id = ?", c.getId());
+        assertThat(row.get("status")).as("never 'draft' written back over the schedule").isEqualTo("scheduled");
+        assertThat(row.get("subject")).isEqualTo("Original subject");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Scheduler.class)
+    void aPatchHoldingTheRow_isKeptAndTheWriterSchedulesAfterIt(Scheduler writer) throws Exception {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = draft(org.getId());
+        String writerTag = tag("writer");
+
+        Future<?> patch;
+        Future<Boolean> scheduled;
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
+            try {
+                // The patch holds the row lock with its edit not yet committed.
+                patch = executor().submit(() -> tagged(tag("patch"), () ->
+                        service.patch(owner, c.getId(), new PatchCampaignRequest(null, null, null, "Patched subject", null, null, null))));
+                pause.awaitBlocked(WAIT);
+                scheduled = executor().submit(() -> taggedGet(writerTag, () -> schedule(writer, owner, c)));
+                awaitBlocked(writerTag, false);
+            } finally {
+                pause.release();
+            }
+            patch.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+            assertThat(scheduled.get(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the writer scheduled the edited draft").isTrue();
+        }
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT status, subject FROM campaigns WHERE id = ?", c.getId());
+        assertThat(row.get("status")).isEqualTo("scheduled");
+        assertThat(row.get("subject")).as("the edit that returned 200 is kept").isEqualTo("Patched subject");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Scheduler.class)
+    void aSchedulingWriterThatCommitsWhileADeleteWaits_makesTheDelete409(Scheduler writer) throws Exception {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = draft(org.getId());
+        String deleteTag = tag("delete");
+
+        Future<Boolean> scheduled;
+        Future<?> delete;
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
+            try {
+                scheduled = executor().submit(() -> taggedGet(tag("writer"), () -> schedule(writer, owner, c)));
+                pause.awaitBlocked(WAIT);
+                delete = executor().submit(() -> tagged(deleteTag, () -> service.delete(owner, c.getId())));
+                awaitBlocked(deleteTag, false);
+            } finally {
+                pause.release();
+            }
+            assertThat(scheduled.get(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the writer scheduled the draft").isTrue();
+            Throwable refused = catchThrowable(() -> delete.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+            assertConflict(refused);
+        }
+
+        assertThat(jdbc.queryForList("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .as("the scheduled campaign survives").containsExactly("scheduled");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Scheduler.class)
+    void aDeleteHoldingTheRow_leavesTheWriterNoDraftToSchedule(Scheduler writer) throws Exception {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = draft(org.getId());
+        String writerTag = tag("writer");
+        CountDownLatch deleted = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+
+        // The delete has returned but its transaction stays open until the writer is queued behind it.
+        Future<?> delete = executor().submit(() -> tagged(tag("delete"), () -> {
+            service.delete(owner, c.getId());
+            deleted.countDown();
+            try {
+                if (!commit.await(WAIT.toSeconds(), TimeUnit.SECONDS)) throw new AssertionError("never told to commit");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        }));
+        Future<Boolean> scheduled;
+        try {
+            assertThat(deleted.await(WAIT.toSeconds(), TimeUnit.SECONDS)).as("the delete ran").isTrue();
+            scheduled = executor().submit(() -> taggedGet(writerTag, () -> schedule(writer, owner, c)));
+            awaitBlocked(writerTag, true, scheduled);
+        } finally {
+            commit.countDown();
+        }
+        delete.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+        Throwable writerFailure = catchThrowable(() -> scheduled.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+        if (writer == Scheduler.SEND) {
+            assertConflict(writerFailure);
+        } else {
+            assertThat(writerFailure).isNull();
+            assertThat(scheduled.get()).as("the slump flip finds no draft").isFalse();
+        }
+
+        assertThat(jdbc.queryForList("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId())).isEmpty();
+    }
+
+    /** Runs the writer's own scheduling statement; the send is far enough out that the dispatcher never claims it. */
+    private boolean schedule(Scheduler writer, AuthPrincipal owner, Campaign c) {
+        Instant at = Instant.now().plus(1, ChronoUnit.DAYS);
+        if (writer == Scheduler.SEND) {
+            service.send(c.getId(), owner, UUID.randomUUID().toString(), at);
+            return true;
+        }
+        return campaigns.markScheduledIfDraft(c.getId(), c.getOrgId(), at) == 1;
+    }
+
+    private static void assertConflict(Throwable failure) {
+        assertThat(failure).as("answered 409").isInstanceOf(ExecutionException.class);
+        assertThat(failure.getCause()).isInstanceOfSatisfying(ApiException.class, e -> {
+            assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(e.code()).isEqualTo(ErrorCode.INVALID_STATE);
+        });
+    }
+
     private Campaign draft(UUID orgId) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
@@ -176,9 +338,16 @@ class CampaignServiceRaceTest {
 
     /** Runs {@code work} in a transaction whose backend carries {@code tag}, so the waits below see only it. */
     private void tagged(String tag, Runnable work) {
-        tx.executeWithoutResult(st -> {
-            jdbc.execute("SET LOCAL application_name = '" + tag + "'");
+        taggedGet(tag, () -> {
             work.run();
+            return null;
+        });
+    }
+
+    private <T> T taggedGet(String tag, Supplier<T> work) {
+        return tx.execute(st -> {
+            jdbc.execute("SET LOCAL application_name = '" + tag + "'");
+            return work.get();
         });
     }
 
