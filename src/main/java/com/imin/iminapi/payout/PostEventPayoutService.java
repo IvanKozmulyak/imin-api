@@ -80,6 +80,8 @@ import java.util.UUID;
  *       the funds, and a loss is settled by withholding the organizer's share of the order
  *       (the disputed amount less its booking fee) from the event's net in step 2. Also skip
  *       if the account is no longer payable.</li>
+ *   <li><b>step 1c — open-refund hold.</b> Skip while a live order of the event has a REQUESTED or
+ *       PENDING refund (a RETRYING replay excepted); the event re-candidates once it resolves.</li>
  *   <li><b>step 2 — per-event net (the ceiling), in what Stripe settled.</b> Per live order,
  *       {@code transfer − refunds − net app fee}, each presentment figure converted at the order's
  *       own Stripe ratio ({@code SettlementRate}), less the organizer's share of the event's
@@ -284,6 +286,23 @@ public class PostEventPayoutService {
                         + "rolling to next tick", eventId, org.getId(), unsized);
             }
             return;
+        }
+
+        // ── step 1c — an open refund holds the event: its money may still leave the balance ──
+        // A RETRYING run replays a payout that may already exist, at its recorded amount; never delay it.
+        if (payoutRuns.findFirstByEventIdAndStatusOrderByAttemptDesc(eventId, PayoutRunStatus.RETRYING).isEmpty()) {
+            long open = refunds.countLiveOpenByEventId(eventId);
+            if (open > 0L) {
+                long stale = refunds.countLiveOpenByEventIdCreatedBefore(eventId, stuckBefore());
+                if (stale > 0L) {
+                    log.error("[payout] skip event {} org {} — {} open refund(s), {} older than the payout buffer; "
+                            + "resolve them in Stripe", eventId, org.getId(), open, stale);
+                } else {
+                    log.warn("[payout] skip event {} org {} — {} open refund(s) not settled yet; rolling to next tick",
+                            eventId, org.getId(), open);
+                }
+                return;
+            }
         }
 
         // ── step 2 — per-event net (the ceiling), in settlement units. Fee EXCLUDED (§4.4). ──

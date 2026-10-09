@@ -45,6 +45,8 @@ import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.invocation.InvocationOnMock;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -260,6 +262,7 @@ class PostEventPayoutServiceTest {
     }
 
     @Autowired PostEventPayoutService service;
+    @Autowired PostEventPayoutSweeper sweeper;
     @Autowired StripeProperties props;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
@@ -1361,6 +1364,98 @@ class PostEventPayoutServiceTest {
         assertThat(levelsMentioning(logs, "lost dispute(s) on orders")).containsExactly(Level.WARN);
     }
 
+    /** Paying out while a refund is open drains the balance the refund needs; imin then fronts it. */
+    @ParameterizedTest(name = "{0}, older than the buffer: {1}")
+    @CsvSource({"REQUESTED, false, WARN", "REQUESTED, true, ERROR", "PENDING, false, WARN", "PENDING, true, ERROR"})
+    void an_open_refund_holds_the_payout(RefundStatus status, boolean pastBuffer, String level) {
+        Event e = newEndedEvent(org);
+        Order o = order(e, 10_000, 1_000);   // net 9_000 with no refund
+        Instant opened = pastBuffer
+                ? Instant.now().minus(bufferDays()).minus(1, ChronoUnit.HOURS)
+                : Instant.now().minus(bufferDays()).plus(1, ChronoUnit.HOURS);
+        refund(o, 4_000, 400, status, opened);
+        fake.availableMinor.set(50_000L);
+
+        List<ILoggingEvent> logs = capturePayoutLogs(() -> service.payOneEvent(e.getId()));
+
+        assertThat(fake.payoutCount.get()).as("no payout while a refund on the event is open").isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).as("no run row, no idempotency key spent").isEmpty();
+        assertThat(levelsMentioning(logs, "open refund")).containsExactly(Level.valueOf(level));
+    }
+
+    @Test
+    void a_refund_that_later_fails_releases_the_full_net() {
+        Event e = newEndedEvent(org);
+        Order o = order(e, 10_000, 1_000);
+        Refund r = refund(o, 4_000, 400, RefundStatus.REQUESTED, Instant.now());
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+        assertThat(fake.payoutCount.get()).as("held while the refund's outcome is unknown").isZero();
+
+        refunds.updateStatusIfCurrent(r.getId(), RefundStatus.REQUESTED, RefundStatus.FAILED);
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(1);
+        assertThat(fake.lastPayoutAmount.get()).as("a failed refund took nothing: the whole net is paid")
+                .isEqualTo(9_000L);
+    }
+
+    @Test
+    void an_open_refund_on_a_test_mode_order_does_not_hold_the_live_payout() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        Order testEra = order(e, 5_000, 500);
+        testEra.setTestMode(true);
+        orders.save(testEra);
+        refund(testEra, 5_000, 500, RefundStatus.REQUESTED, Instant.now());
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(1);
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+    }
+
+    @Test
+    void an_open_refund_does_not_delay_replaying_a_retrying_run() {
+        Event e = newEndedEvent(org);
+        Order o = order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+        service.payOneEvent(e.getId());   // outcome unknown: run parked RETRYING at 9_000
+        fake.failApiConnection = false;
+        refund(o, 4_000, 400, RefundStatus.PENDING, Instant.now());
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(fake.payoutCount.get()).as("the replay of the parked key still goes out").isEqualTo(1);
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.SUBMITTED);
+    }
+
+    /** Skipped events write no row and keep their place, so a fixed first page would starve everything behind it. */
+    @Test
+    void a_full_page_of_skipped_events_does_not_starve_a_payable_one_in_the_same_tick() {
+        for (int i = 0; i < 51; i++) {
+            Event held = newEndedEvent(org);
+            held.setEndsAt(Instant.now().minus(20, ChronoUnit.DAYS).plusSeconds(i));
+            events.save(held);   // no orders: net 0, skipped without a run row
+        }
+        Event payable = newEndedEvent(org);   // ends 10 days ago, behind all 51
+        order(payable, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        java.sql.Timestamp rewound = java.sql.Timestamp.from(Instant.parse("2020-01-01T00:00:00Z"));
+        jdbc.update("update shedlock set lock_until = ?, locked_at = ? where name = ?",
+                rewound, rewound, "PostEventPayoutSweeper.sweep");
+
+        sweeper.sweep();
+
+        assertThat(payoutRuns.findByEventId(payable.getId())).singleElement()
+                .extracting(PayoutRun::getAmountMinor).isEqualTo(9_000L);
+    }
+
     private java.time.Duration bufferDays() {
         return java.time.Duration.ofDays(props.getPayoutBufferDays());
     }
@@ -1485,6 +1580,24 @@ class PostEventPayoutServiceTest {
         r.setStatus(RefundStatus.SUCCEEDED);
         r.setPlatformFunded(platformFunded);
         r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        return refunds.save(r);
+    }
+
+    /** A refund in {@code status} opened at {@code createdAt}; REQUESTED carries no Stripe id yet. */
+    private Refund refund(Order o, long amountMinor, long appFeeRefundMinor, RefundStatus status, Instant createdAt) {
+        Refund r = new Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        if (status != RefundStatus.REQUESTED) {
+            r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        }
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("eur");
+        r.setApplicationFeeRefundMinor(appFeeRefundMinor);
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(status);
+        r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        r.setCreatedAt(createdAt);
         return refunds.save(r);
     }
 }

@@ -625,9 +625,20 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                                       com.imin.iminapi.payout.PayoutRunStatus.PAID))
            AND (NOT EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ot WHERE ot.eventId = e.id AND ot.testMode = true)
                 OR EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol WHERE ol.eventId = e.id AND ol.testMode = false))
-         ORDER BY e.endsAt ASC
+           AND (e.endsAt > :afterEndsAt OR (e.endsAt = :afterEndsAt AND e.id > :afterId))
+         ORDER BY e.endsAt ASC, e.id ASC
 """)
-    List<Event> findPayoutCandidates(@Param("cutoff") Instant cutoff, Pageable pageable);
+    List<Event> findPayoutCandidatesAfter(@Param("cutoff") Instant cutoff, @Param("afterEndsAt") Instant afterEndsAt,
+                                          @Param("afterId") UUID afterId, Pageable pageable);
+
+    /** Lowest keyset cursor: before every real {@code endsAt} and the smallest uuid. */
+    Instant FIRST_ENDS_AT = Instant.parse("0001-01-01T00:00:00Z");
+    UUID FIRST_ID = new UUID(0L, 0L);
+
+    /** First page of {@link #findPayoutCandidatesAfter}; the sweeper pages on with the last row as cursor. */
+    default List<Event> findPayoutCandidates(Instant cutoff, Pageable pageable) {
+        return findPayoutCandidatesAfter(cutoff, FIRST_ENDS_AT, FIRST_ID, pageable);
+    }
 
     /**
      * Track B Phase 2 retention monitor (plan §7) — events that ENDED before

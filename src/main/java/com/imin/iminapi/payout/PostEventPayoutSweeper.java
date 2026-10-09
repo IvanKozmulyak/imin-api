@@ -50,6 +50,8 @@ public class PostEventPayoutSweeper {
     private static final Logger log = LoggerFactory.getLogger(PostEventPayoutSweeper.class);
 
     private static final int BATCH_SIZE = 50;
+    /** ponytail: at most 1000 candidates per tick; the rest wait a day, with a WARN. */
+    private static final int MAX_PAGES = 20;
 
     private final StripeProperties props;
     private final EventRepository events;
@@ -100,22 +102,37 @@ public class PostEventPayoutSweeper {
                 .minusDays(props.getPayoutBufferDays())
                 .toInstant();
 
-        List<Event> due = events.findPayoutCandidates(cutoff, PageRequest.of(0, BATCH_SIZE));
-        if (due.isEmpty()) return;
-
-        log.info("[payout-sweep] {} candidate event(s) past endsAt+{}d (cutoff={} {})",
-                due.size(), props.getPayoutBufferDays(), cutoff, zone);
-
+        // Skipped events write no run and keep their place, so page on by (endsAt, id) instead of re-reading page one.
         int paid = 0, failed = 0;
-        for (Event e : due) {
-            try {
-                payoutService.payOneEvent(e.getId());   // own REQUIRES_NEW tx
-                paid++;
-            } catch (Exception ex) {
-                // payOneEvent already swallows StripeException; an escape here would be an
-                // unexpected runtime error — isolate it so one bad event can't kill the batch.
-                log.error("[payout-sweep] payout failed for event {} — {}", e.getId(), ex.getMessage(), ex);
-                failed++;
+        Instant afterEndsAt = EventRepository.FIRST_ENDS_AT;
+        UUID afterId = EventRepository.FIRST_ID;
+        for (int page = 0; page < MAX_PAGES; page++) {
+            List<Event> due = events.findPayoutCandidatesAfter(cutoff, afterEndsAt, afterId,
+                    PageRequest.of(0, BATCH_SIZE));
+            if (due.isEmpty()) break;
+            if (page == 0) {
+                log.info("[payout-sweep] candidate event(s) past endsAt+{}d (cutoff={} {})",
+                        props.getPayoutBufferDays(), cutoff, zone);
+            }
+            for (Event e : due) {
+                try {
+                    payoutService.payOneEvent(e.getId());   // own REQUIRES_NEW tx
+                    paid++;
+                } catch (Exception ex) {
+                    // payOneEvent already swallows StripeException; an escape here would be an
+                    // unexpected runtime error — isolate it so one bad event can't kill the batch.
+                    log.error("[payout-sweep] payout failed for event {} — {}", e.getId(), ex.getMessage(), ex);
+                    failed++;
+                }
+            }
+            Event last = due.get(due.size() - 1);
+            afterEndsAt = last.getEndsAt();
+            afterId = last.getId();
+            if (due.size() < BATCH_SIZE) break;
+            if (page == MAX_PAGES - 1
+                    && !events.findPayoutCandidatesAfter(cutoff, afterEndsAt, afterId, PageRequest.of(0, 1)).isEmpty()) {
+                log.warn("[payout-sweep] stopped after {} candidates; the rest wait for the next tick",
+                        MAX_PAGES * BATCH_SIZE);
             }
         }
         log.info("[payout-sweep] tick done processed={} errored={}", paid, failed);

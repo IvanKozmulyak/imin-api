@@ -155,6 +155,28 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     """)
     long sumActiveApplicationFeeRefundMinorByOrderId(java.util.UUID orderId);
 
+    /** REQUESTED or PENDING refunds on the event's live orders: money a payout must not take yet. */
+    @Query("""
+        select count(r) from Refund r
+          join com.imin.iminapi.model.Order o on o.id = r.orderId
+        where o.eventId = :eventId and o.testMode = false
+          and r.status in (com.imin.iminapi.refund.RefundStatus.REQUESTED,
+                           com.imin.iminapi.refund.RefundStatus.PENDING)
+    """)
+    long countLiveOpenByEventId(@Param("eventId") UUID eventId);
+
+    /** {@link #countLiveOpenByEventId} limited to refunds opened before {@code before}. */
+    @Query("""
+        select count(r) from Refund r
+          join com.imin.iminapi.model.Order o on o.id = r.orderId
+        where o.eventId = :eventId and o.testMode = false
+          and r.status in (com.imin.iminapi.refund.RefundStatus.REQUESTED,
+                           com.imin.iminapi.refund.RefundStatus.PENDING)
+          and r.createdAt < :before
+    """)
+    long countLiveOpenByEventIdCreatedBefore(@Param("eventId") UUID eventId,
+                                             @Param("before") java.time.Instant before);
+
     /**
      * The org's outstanding platform-funded refunds: SUCCEEDED refunds imin paid out of its own
      * balance and has not yet pulled back off the connected account. Org-level, not event-level —
