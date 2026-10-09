@@ -4,11 +4,14 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
+import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.support.AuditRows;
 import com.imin.iminapi.support.CampaignRows;
@@ -79,6 +82,7 @@ class ResendWebhookOutOfOrderTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired AuditRows auditRows;
+    @Autowired SuppressionService suppressionService;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -290,6 +294,75 @@ class ResendWebhookOutOfOrderTest {
                 .containsExactly("spam");
         auditRows.assertRecorded(s.orgId(), AuditActions.SUPPRESSION_ADDED, "membership", s.membershipId());
         assertThat(membershipRepo.findByIdAndOrgId(s.membershipId(), s.orgId()).orElseThrow().isObjectedProfiling()).isTrue();
+    }
+
+    /**
+     * The third soft bounce commits its suppression while a complaint waits on the same slot: the buyer's own
+     * spam report is the reason organizers see, and only the bounce's insert is audited.
+     */
+    @Test
+    void aComplaintQueuedBehindASoftBounceSuppressionRecordsSpam() throws Exception {
+        Seeded s = seed(fx.email("reason-race"));
+        priorSoftBounce(s);
+        priorSoftBounce(s);
+        Webhook bounce = webhook(s, Event.transientBounce());
+        Webhook complaint = webhook(s, Event.of("email.complained", COMPLAINED));
+
+        MvcResult bounced;
+        MvcResult complained;
+        // The bounce's SUPPRESSION_ADDED audit write runs after its suppression INSERT, in its own transaction.
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "audit_logs", "target_id", s.membershipId())) {
+            CompletableFuture<MvcResult> first = CompletableFuture.supplyAsync(() -> send(bounce));
+            CompletableFuture<MvcResult> second = null;
+            try {
+                pause.awaitBlocked(Duration.ofSeconds(10));
+                second = CompletableFuture.supplyAsync(() -> send(complaint));
+                PgLocks.awaitLockWait(jdbc, "insert into suppression_entries",
+                        "the complaint waits on the bounce's suppression row");
+            } finally {
+                pause.release();
+                bounced = first.get(30, TimeUnit.SECONDS);
+                complained = second == null ? null : second.get(30, TimeUnit.SECONDS);
+            }
+        }
+
+        assertThat(bounced.getResponse().getStatus()).as("bounce " + sqlStates(bounced)).isEqualTo(200);
+        assertThat(complained.getResponse().getStatus()).as("complaint " + sqlStates(complained)).isEqualTo(200);
+        assertThat(marketingReasons(s)).containsExactly("spam");
+        assertThat(auditRows.assertRecorded(s.orgId(), AuditActions.SUPPRESSION_ADDED, "membership", s.membershipId())
+                .getSummary()).contains("reason=soft-bounce");
+        assertThat(membershipRepo.findByIdAndOrgId(s.membershipId(), s.orgId()).orElseThrow().isObjectedProfiling()).isTrue();
+    }
+
+    static Stream<Arguments> aSystemWriterMeetsAStoredReason() {
+        return Stream.of(
+                arguments("spam", Event.transientBounce(), "spam"),
+                arguments("soft-bounce", Event.of("email.complained", COMPLAINED), "spam"),
+                arguments("unsubscribe", Event.transientBounce(), "unsubscribe"),
+                arguments("unsubscribe", Event.of("email.complained", COMPLAINED), "unsubscribe"),
+                arguments("manual", Event.transientBounce(), "manual"),
+                arguments("manual", Event.of("email.complained", COMPLAINED), "manual"));
+    }
+
+    /** Spam replaces only a system soft-bounce; a person's or organizer's reason is never rewritten. */
+    @ParameterizedTest(name = "{0} then {1} -> {2}")
+    @MethodSource("aSystemWriterMeetsAStoredReason")
+    void theStoredSuppressionReasonAfterASecondWriter(String stored, Event event, String expected) throws Exception {
+        Seeded s = seed(fx.email("reason-rank"));
+        priorSoftBounce(s);
+        priorSoftBounce(s);
+        suppressionService.addMarketing(s.orgId(), s.membershipId(), stored,
+                new AuthPrincipal(null, s.orgId(), UserRole.MEMBER, null));
+
+        deliver(s, event);
+
+        assertThat(marketingReasons(s)).containsExactly(expected);
+        auditRows.assertRecorded(s.orgId(), AuditActions.SUPPRESSION_ADDED, "membership", s.membershipId());
+    }
+
+    private List<String> marketingReasons(Seeded s) {
+        return jdbc.queryForList("select reason from suppression_entries where scope = 'marketing'"
+                + " and org_id = ? and membership_id = ?", String.class, s.orgId(), s.membershipId());
     }
 
     /** A soft-bounced send of an earlier campaign: one strike against the membership. */

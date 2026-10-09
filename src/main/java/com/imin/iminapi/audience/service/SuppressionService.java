@@ -90,12 +90,15 @@ public class SuppressionService {
 
     /**
      * {@link #addMarketing} for system writers (provider webhooks): a row another writer committed or holds is a
-     * no-op instead of a 409, so concurrent events for one membership both succeed. Audits only its own insert.
+     * no-op instead of a 409, so concurrent events for one membership both succeed. The buyer's own 'spam' report
+     * replaces a system 'soft-bounce' reason; any other stored reason stays. Audits only its own insert: no audit
+     * action exists for a reason change, so an upgrade writes none.
      */
     @Transactional
     public boolean addMarketingIfAbsent(UUID orgId, UUID membershipId, String reason, AuthPrincipal principal) {
         requireMembership(orgId, membershipId);
-        boolean inserted = suppressionRepo.insertMarketingIfAbsent(UUID.randomUUID(), orgId, membershipId, reason) == 1;
+        List<Boolean> written = suppressionRepo.upsertMarketing(UUID.randomUUID(), orgId, membershipId, reason);
+        boolean inserted = !written.isEmpty() && Boolean.TRUE.equals(written.get(0));
         if (inserted) {
             auditLogger.record(principal, AuditActions.SUPPRESSION_ADDED, "membership", membershipId,
                     "Marketing suppression added: reason=" + reason);

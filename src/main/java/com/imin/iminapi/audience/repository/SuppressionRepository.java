@@ -38,14 +38,20 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
     Optional<SuppressionEntry> findMarketingByOrgAndMembership(@Param("orgId") UUID orgId,
                                                                 @Param("membershipId") UUID membershipId);
 
-    /** Inserts unless V114's (scope, org_id, membership_id) key exists, waiting out an in-flight writer; 1 if inserted. */
-    @Modifying
+    /**
+     * Inserts on V114's (scope, org_id, membership_id) key, waiting out an in-flight writer. On conflict only a
+     * 'spam' write replaces a stored 'soft-bounce'; every other stored reason is left as it is. Returns
+     * {@code [true]} when inserted, {@code [false]} when the reason was upgraded, empty when untouched.
+     */
     @Transactional
     @Query(value = "INSERT INTO suppression_entries (id, scope, org_id, membership_id, reason, system_owned)"
             + " VALUES (:id, 'marketing', :orgId, :membershipId, :reason, false)"
-            + " ON CONFLICT (scope, org_id, membership_id) DO NOTHING", nativeQuery = true)
-    int insertMarketingIfAbsent(@Param("id") UUID id, @Param("orgId") UUID orgId,
-                                @Param("membershipId") UUID membershipId, @Param("reason") String reason);
+            + " ON CONFLICT (scope, org_id, membership_id) DO UPDATE SET reason = EXCLUDED.reason"
+            + " WHERE EXCLUDED.reason = 'spam' AND suppression_entries.reason = 'soft-bounce'"
+            // xmax is 0 only on a freshly inserted tuple; the DO UPDATE path stamps it with this transaction.
+            + " RETURNING (xmax = 0)", nativeQuery = true)
+    List<Boolean> upsertMarketing(@Param("id") UUID id, @Param("orgId") UUID orgId,
+                                  @Param("membershipId") UUID membershipId, @Param("reason") String reason);
 
     @Query("select s from SuppressionEntry s where s.scope = 'marketing' and s.orgId = :orgId")
     List<SuppressionEntry> findMarketingByOrg(@Param("orgId") UUID orgId);
