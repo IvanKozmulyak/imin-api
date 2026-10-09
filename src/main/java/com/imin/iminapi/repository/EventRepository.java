@@ -27,6 +27,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     @Query("SELECT e FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
     Optional<Event> findActive(@Param("id") UUID id);
 
+    /** The non-deleted events among {@code ids}: {@link #findActive} for many ids in one query. */
+    @Query("SELECT e FROM Event e WHERE e.id IN :ids AND e.deletedAt IS NULL")
+    List<Event> findActiveByIds(@Param("ids") Collection<UUID> ids);
+
     /** The org's non-deleted events among {@code ids} (same rule as {@link #findActive} plus the org check). */
     @Query("SELECT e FROM Event e WHERE e.orgId = :orgId AND e.id IN :ids AND e.deletedAt IS NULL")
     List<Event> findActiveByOrgAndIds(@Param("orgId") UUID orgId, @Param("ids") Collection<UUID> ids);

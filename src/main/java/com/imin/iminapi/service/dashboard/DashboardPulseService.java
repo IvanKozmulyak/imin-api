@@ -17,10 +17,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -45,9 +46,11 @@ public class DashboardPulseService {
         Instant now = Instant.now();
         long onSaleCount;
         List<Order> recent;
+        Event scopeEvent = null;
         if (eventIdOrNull != null) {
             Event e = events.findActive(eventIdOrNull).orElseThrow(() -> ApiException.notFound("Event"));
             if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
+            scopeEvent = e;
             onSaleCount = events.countOnSaleById(eventIdOrNull, now);
             recent = orders.findByEventIdOrderByCreatedAtDesc(eventIdOrNull,
                     PageRequest.of(0, ORDER_SCAN_LIMIT, Sort.by(Sort.Direction.DESC, "createdAt")));
@@ -56,25 +59,42 @@ public class DashboardPulseService {
             recent = orders.findByOrgIdOrderByCreatedAtDesc(p.orgId(), PageRequest.of(0, ORDER_SCAN_LIMIT));
         }
         int count = (int) Math.min(Integer.MAX_VALUE, onSaleCount);
-        return new DashboardPulseResponse(count > 0, count, lastSale(recent));
+        return new DashboardPulseResponse(count > 0, count, lastSale(recent, scopeEvent));
     }
 
-    private LastSale lastSale(List<Order> recent) {
+    /** {@code scopeEvent} is the already-loaded active event in event scope, null in org scope. */
+    private LastSale lastSale(List<Order> recent, Event scopeEvent) {
         if (recent.isEmpty()) return null;
         Map<UUID, List<Ticket>> byOrder = tickets.findByOrderIdInOrderByOrderIdAscCreatedAtAsc(
                         recent.stream().map(Order::getId).toList())
                 .stream().collect(Collectors.groupingBy(Ticket::getOrderId));
+        Map<UUID, List<Ticket>> liveByOrder = new HashMap<>();
         for (Order o : recent) {
-            List<Ticket> live = byOrder.getOrDefault(o.getId(), List.of()).stream()
+            liveByOrder.put(o.getId(), byOrder.getOrDefault(o.getId(), List.of()).stream()
                     .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
-                    .toList();
+                    .toList());
+        }
+        Map<UUID, Event> active = activeEvents(recent, liveByOrder, scopeEvent);
+        for (Order o : recent) {
+            List<Ticket> live = liveByOrder.get(o.getId());
             if (live.isEmpty()) continue;
-            Optional<Event> event = events.findActive(o.getEventId());
-            if (event.isEmpty()) continue;
+            Event event = active.get(o.getEventId());
+            if (event == null) continue;
             List<String> tierNames = new ArrayList<>(
                     live.stream().map(Ticket::getTierName).collect(Collectors.toCollection(LinkedHashSet::new)));
-            return new LastSale(o.getCreatedAt(), o.getEventId(), event.get().getName(), tierNames, live.size());
+            return new LastSale(o.getCreatedAt(), o.getEventId(), event.getName(), tierNames, live.size());
         }
         return null;
+    }
+
+    /** Active events of the orders holding a live ticket, in one query (none in event scope). */
+    private Map<UUID, Event> activeEvents(List<Order> recent, Map<UUID, List<Ticket>> liveByOrder, Event scopeEvent) {
+        if (scopeEvent != null) return Map.of(scopeEvent.getId(), scopeEvent);
+        Set<UUID> ids = recent.stream()
+                .filter(o -> !liveByOrder.get(o.getId()).isEmpty())
+                .map(Order::getEventId)
+                .collect(Collectors.toSet());
+        if (ids.isEmpty()) return Map.of();
+        return events.findActiveByIds(ids).stream().collect(Collectors.toMap(Event::getId, e -> e));
     }
 }

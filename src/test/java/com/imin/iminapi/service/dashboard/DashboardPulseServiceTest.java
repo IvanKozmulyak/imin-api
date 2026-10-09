@@ -91,7 +91,7 @@ class DashboardPulseServiceTest {
         when(events.countOnSaleByOrg(eq(orgId), any())).thenReturn(2L);
         orgOrders(o);
         ticketsAre(ticket(o, "GA", Ticket.STATE_ISSUED));
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.findActiveByIds(any())).thenReturn(List.of(e));
 
         DashboardPulseResponse r = sut.pulse(p, null);
 
@@ -111,7 +111,7 @@ class DashboardPulseServiceTest {
         Order older = order(e.getId(), Instant.parse("2026-09-17T20:00:00Z"));
         orgOrders(newest, older);
         ticketsAre(ticket(newest, "VIP", Ticket.STATE_REFUNDED), ticket(older, "GA", Ticket.STATE_ISSUED));
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.findActiveByIds(any())).thenReturn(List.of(e));
 
         DashboardPulseResponse r = sut.pulse(p, null);
 
@@ -127,8 +127,7 @@ class DashboardPulseServiceTest {
         Order older = order(kept.getId(), Instant.parse("2026-09-17T20:00:00Z"));
         orgOrders(newest, older);
         ticketsAre(ticket(newest, "GA", Ticket.STATE_ISSUED), ticket(older, "GA", Ticket.STATE_ISSUED));
-        when(events.findActive(gone.getId())).thenReturn(Optional.empty());
-        when(events.findActive(kept.getId())).thenReturn(Optional.of(kept));
+        when(events.findActiveByIds(any())).thenReturn(List.of(kept));
 
         DashboardPulseResponse r = sut.pulse(p, null);
 
@@ -146,7 +145,7 @@ class DashboardPulseServiceTest {
                 ticket(o, "Early Bird", Ticket.STATE_REDEEMED),
                 ticket(o, "Late", Ticket.STATE_ISSUED),
                 ticket(o, "VIP", Ticket.STATE_REFUNDED));
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.findActiveByIds(any())).thenReturn(List.of(e));
 
         DashboardPulseResponse r = sut.pulse(p, null);
 
