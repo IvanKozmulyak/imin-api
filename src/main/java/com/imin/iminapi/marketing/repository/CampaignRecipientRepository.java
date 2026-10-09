@@ -385,6 +385,22 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
             """)
     int requeueFailed(@Param("campaignId") UUID campaignId);
 
+    /**
+     * A canceled campaign's queue: every row still {@code pending} becomes {@code skipped} with {@code :reason}.
+     * Waits on the rows of a batch at the provider and re-checks them once it commits, so rows that went out stay sent.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients SET status = 'skipped', skip_reason = :reason, next_attempt_at = NULL, "
+           + "last_event_at = :now WHERE campaign_id = :campaignId AND status = 'pending'", nativeQuery = true)
+    int skipPendingOfCanceled(@Param("campaignId") UUID campaignId, @Param("reason") String reason,
+                              @Param("now") java.time.Instant now);
+
+    /** The campaigns among {@code ids} with at least one row in one of {@code statuses}; one query per page. */
+    @Query("select distinct r.campaignId from CampaignRecipient r where r.campaignId in :ids and r.status in :statuses")
+    List<UUID> findCampaignIdsWithStatusIn(@Param("ids") java.util.Collection<UUID> ids,
+                                           @Param("statuses") java.util.Collection<String> statuses);
+
     /** Rows still claimable for this campaign — pending and inside the attempt budget. */
     @Query("""
             select count(r) from CampaignRecipient r

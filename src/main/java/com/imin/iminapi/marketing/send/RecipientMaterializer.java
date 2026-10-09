@@ -71,6 +71,8 @@ public class RecipientMaterializer {
             log.info("[materialize] campaign {} already has recipients — skipping", c.getId());
             return;
         }
+        // A cancel that committed before this lock ran no skip over these rows: write them as already stopped.
+        boolean canceled = "canceled".equals(campaigns.findStatusById(c.getId()).orElse(null));
         // Resolve the segment to its loaded memberships via the REAL SegmentService surface:
         // requireSegmentForOrg(orgId, segmentId) -> Segment (leak-safe 404 on cross-org),
         // then resolveMembers(orgId, segment) -> List<Membership>. NO resolveMembershipIds exists.
@@ -113,6 +115,11 @@ public class RecipientMaterializer {
                 r.setSkipReason("frequency_capped");
                 summary.merge("frequency_capped", 1, Integer::sum);
                 sendableSkipped++;
+            } else if (canceled) {
+                // Still counted in recipientCount: the audience the campaign was stopped against.
+                r.setStatus("skipped");
+                r.setSkipReason(CampaignRecipient.SKIP_CAMPAIGN_CANCELED);
+                pending++;
             } else {
                 r.setStatus("pending");
                 pending++;

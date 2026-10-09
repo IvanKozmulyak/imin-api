@@ -123,7 +123,10 @@ public class CampaignController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(service.send(id, principal, idempotencyKey, scheduledAt));
     }
 
-    /** Guarded scheduled→canceled (spec §2.4). 409 INVALID_STATE from any other status. */
+    /**
+     * Guarded scheduled|sending→canceled; 409 INVALID_STATE from any other status. A sending campaign stops
+     * before its next batch: a batch already at the provider still goes out, and this returns once it settles.
+     */
     @PostMapping("/{id}/cancel")
     public ResponseEntity<Void> cancel(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {

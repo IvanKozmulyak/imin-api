@@ -77,12 +77,12 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                      @Param("priorUpdatedAt") java.time.Instant priorUpdatedAt,
                      @Param("claimedAt") java.time.Instant claimedAt);
 
-    /** Guarded scheduled→canceled; 0 rows means the campaign left 'scheduled' (claimed, sent, canceled). */
+    /** Guarded scheduled|sending→canceled; 0 rows means the campaign is no longer on its way out (sent, failed, canceled). */
     @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
     @org.springframework.transaction.annotation.Transactional
-    @Query("UPDATE Campaign c SET c.status='canceled', c.updatedAt=:now "
-           + "WHERE c.id=:id AND c.orgId=:orgId AND c.status='scheduled'")
-    int cancelIfScheduled(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
+    @Query(value = "UPDATE campaigns SET status = 'canceled', updated_at = :now "
+           + "WHERE id = :id AND org_id = :orgId AND status IN ('scheduled', 'sending')", nativeQuery = true)
+    int cancelIfActive(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
 
     /** Guarded failed→scheduled while attempts remain; 0 rows means the dispatcher (or another retry) got there first. */
     @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)

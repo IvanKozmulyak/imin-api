@@ -328,13 +328,70 @@ class CampaignServiceTest {
         assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("canceled");
     }
 
-    @Test
-    void cancel_rejects_a_non_scheduled_campaign() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"draft", "sent", "failed", "canceled"})
+    void cancel_rejects_a_campaign_that_is_not_on_its_way_out(String status) {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Sent already", null, null, null, null, null, null));
-        service.forceStatusForTest(d.id(), "sent");
+                new CreateCampaignRequest("email", "Not on its way out", null, null, null, null, null, null));
+        service.forceStatusForTest(d.id(), status);
         assertThatThrownBy(() -> service.cancel(principal(ORG), d.id()))
-                .isInstanceOf(ApiException.class);
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+                });
+        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo(status);
+    }
+
+    @Test
+    void a_cancel_whose_skip_failed_can_be_repeated_and_finishes_it_once() throws Exception {
+        UUID id = sendingWithPending("Skip fails", 2);
+        try (com.imin.iminapi.support.PgFaults.Fault fault =
+                     com.imin.iminapi.support.PgFaults.failWrites(jdbc, "campaign_recipients", "campaign_id", id)) {
+            assertThatThrownBy(() -> service.cancel(principal(ORG), id)).isNotInstanceOf(ApiException.class);
+        }
+        assertThat(service.get(principal(ORG), id).status()).as("the status committed first").isEqualTo("canceled");
+
+        service.cancel(principal(ORG), id);
+
+        assertThat(recipientStates(id)).containsExactly("skipped/campaign_canceled", "skipped/campaign_canceled");
+        assertThat(audit.assertRecorded(ORG, "CAMPAIGN_CANCELED", "campaign", id).getSummary())
+                .isEqualTo("Campaign canceled: 0 sent, 2 not sent");
+        assertThatThrownBy(() -> service.cancel(principal(ORG), id))
+                .as("canceled with nothing left queued").isInstanceOfSatisfying(ApiException.class,
+                        e -> assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+    }
+
+    @Test
+    void a_repeated_cancel_that_finds_rows_left_queued_skips_them_without_a_second_audit_row() {
+        UUID id = sendingWithPending("Left queued", 1);
+        service.cancel(principal(ORG), id);
+        // Queued before this code shipped (a cancel never skipped rows), on a campaign already audited as canceled.
+        insertPending(id, 1);
+
+        service.cancel(principal(ORG), id);
+
+        assertThat(recipientStates(id)).containsOnly("skipped/campaign_canceled").hasSize(2);
+        audit.assertRecorded(ORG, "CAMPAIGN_CANCELED", "campaign", id);
+    }
+
+    private UUID sendingWithPending(String name, int n) {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", name, null, null, null, null, null, null));
+        service.forceStatusForTest(d.id(), "sending");
+        insertPending(d.id(), n);
+        return d.id();
+    }
+
+    private void insertPending(UUID campaignId, int n) {
+        for (int i = 0; i < n; i++) {
+            jdbc.update("INSERT INTO campaign_recipients (id, campaign_id, email, status, last_event_at) "
+                    + "VALUES (?, ?, ?, 'pending', now())", UUID.randomUUID(), campaignId, fx.email("cancel" + i));
+        }
+    }
+
+    private List<String> recipientStates(UUID campaignId) {
+        return jdbc.queryForList("SELECT status || '/' || COALESCE(skip_reason, 'null') FROM campaign_recipients "
+                + "WHERE campaign_id = ?", String.class, campaignId);
     }
 
     @Test

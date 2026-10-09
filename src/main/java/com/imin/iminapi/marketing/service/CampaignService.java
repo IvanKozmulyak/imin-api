@@ -53,6 +53,10 @@ public class CampaignService {
 
     static final Set<String> CHANNELS = Set.of("email", "sms");
     private static final int MAX_NAME = 120;
+    /** Recipient statuses of a row that left the queue: what {@code stats.sent} and the cancel audit count. */
+    private static final String CANCELED = "canceled";
+    private static final List<String> LEFT_THE_QUEUE = List.of(
+            "sent", "delivered", "opened", "clicked", "bounced", "complained", "unsubscribed");
 
     private final CampaignRepository campaigns;
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository;
@@ -76,6 +80,7 @@ public class CampaignService {
     private final CampaignAiSuggestions aiSuggestions;
     private final SendPathGuard sendPathGuard;
     private final com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms;
+    private final com.imin.iminapi.repository.AuditLogRepository auditLogs;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -93,7 +98,9 @@ public class CampaignService {
                            AudiencePlanAccess audiencePlanAccess,
                            CampaignAiSuggestions aiSuggestions,
                            SendPathGuard sendPathGuard,
-                           com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms) {
+                           com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms,
+                           com.imin.iminapi.repository.AuditLogRepository auditLogs) {
+        this.auditLogs = auditLogs;
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -156,7 +163,11 @@ public class CampaignService {
                 blankToNull(channel), blankToNull(status), PageRequest.of(page, size));
         // Attributed revenue for the whole page in ONE query (V62) — never per row.
         // Only sent campaigns can have any; drafts are left null (see CampaignSummary.revMinor).
-        List<UUID> sentIds = rows.stream().filter(CampaignService::hasSent).map(Campaign::getId).toList();
+        List<UUID> canceledIds = rows.stream().filter(c -> CANCELED.equals(c.getStatus())).map(Campaign::getId).toList();
+        Set<UUID> canceledAfterSending = canceledIds.isEmpty() ? Set.of()
+                : Set.copyOf(campaignRecipientRepository.findCampaignIdsWithStatusIn(canceledIds, LEFT_THE_QUEUE));
+        java.util.function.Predicate<Campaign> sent = c -> hasSent(c) || canceledAfterSending.contains(c.getId());
+        List<UUID> sentIds = rows.stream().filter(sent).map(Campaign::getId).toList();
         var revByCampaign = attribution.attributedRevenueMinorByCampaign(p.orgId(), sentIds);
         // Segment names and linked events for the page in one query each, org-scoped like detail.
         var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
@@ -165,7 +176,7 @@ public class CampaignService {
                 .map(c -> {
                     Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
                     return CampaignSummary.from(c,
-                            hasSent(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
+                            sent.test(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
                             c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
                             e == null ? null : e.getName(),
                             e == null ? null : e.getTimezone());
@@ -190,7 +201,9 @@ public class CampaignService {
      * assert the campaign earned nothing, which is a different (and false) claim.
      */
     private Long attributedRevenue(UUID orgId, Campaign c) {
-        return hasSent(c) ? attribution.attributedRevenueMinor(orgId, c.getId()) : null;
+        boolean sent = hasSent(c) || (CANCELED.equals(c.getStatus())
+                && campaignRecipientRepository.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_QUEUE) > 0);
+        return sent ? attribution.attributedRevenueMinor(orgId, c.getId()) : null;
     }
 
     /**
@@ -200,7 +213,8 @@ public class CampaignService {
      * <p>Deliberately includes {@code sending}: EmailChannelSender delivers in batches while
      * the status is still 'sending', and {@code sentAt} is only stamped when the whole send
      * COMPLETES (CampaignSendUnit). Keying purely off {@code sentAt} would show an em-dash on
-     * a half-sent campaign that is already driving real orders.
+     * a half-sent campaign that is already driving real orders. A campaign canceled mid-send is
+     * checked against its recipient rows by the callers (one query per page in the list).
      */
     private static boolean hasSent(Campaign c) {
         return c.getSentAt() != null
@@ -628,22 +642,48 @@ public class CampaignService {
     }
 
     /**
-     * Guarded {@code scheduled→canceled} (spec §2.4). Any other status is a 409 INVALID_STATE —
-     * a sending/sent/failed/draft campaign cannot be canceled through this endpoint.
+     * Guarded {@code scheduled|sending→canceled}. Any other status is a 409 INVALID_STATE.
+     * A sending campaign stops before its next batch; one already at the provider still goes out.
+     *
+     * <p>Not one transaction, on purpose: the status commits first, then the queue is skipped. The skip waits on the
+     * rows of an in-flight batch, and that batch's heartbeat would otherwise wait on this row lock (a deadlock).
      */
-    @Transactional
     public void cancel(AuthPrincipal principal, UUID campaignId) {
         Campaign c = require(principal.orgId(), campaignId);
-        if (!"scheduled".equals(c.getStatus())) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Only scheduled campaigns can be canceled");
+        if (CANCELED.equals(c.getStatus())) {
+            finishCanceled(principal, c, true);
+            return;
         }
-        // Compare-and-set: a claim that took the row meanwhile wins, and the organizer gets the same 409.
-        if (campaigns.cancelIfScheduled(c.getId(), principal.orgId(), Instant.now()) == 0) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Only scheduled campaigns can be canceled");
+        if (!"scheduled".equals(c.getStatus()) && !"sending".equals(c.getStatus())) {
+            throw notCancelable();
         }
-        audit.record(principal, "CAMPAIGN_CANCELED", "campaign", c.getId(), "Campaign canceled");
+        // Compare-and-set: a drive that finished or failed it meanwhile wins, and the organizer gets the same 409.
+        if (campaigns.cancelIfActive(c.getId(), principal.orgId(), Instant.now()) == 0) {
+            throw notCancelable();
+        }
+        finishCanceled(principal, c, false);
+    }
+
+    /**
+     * Skips what the canceled campaign still has queued and audits the cancel once. A repeat cancel resumes one whose
+     * skip failed after the status committed; with nothing queued it is the usual 409.
+     */
+    private void finishCanceled(AuthPrincipal principal, Campaign c, boolean repeat) {
+        int notSent = campaignRecipientRepository.skipPendingOfCanceled(
+                c.getId(), com.imin.iminapi.marketing.model.CampaignRecipient.SKIP_CAMPAIGN_CANCELED, Instant.now());
+        if (repeat && notSent == 0) throw notCancelable();
+        if (repeat && auditLogs.existsByOrgIdAndActionAndTargetTypeAndTargetId(
+                principal.orgId(), "CAMPAIGN_CANCELED", "campaign", c.getId())) {
+            return;
+        }
+        long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_QUEUE);
+        audit.record(principal, "CAMPAIGN_CANCELED", "campaign", c.getId(),
+                "Campaign canceled: " + sent + " sent, " + notSent + " not sent");
+    }
+
+    private static ApiException notCancelable() {
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                "Only scheduled or sending campaigns can be canceled");
     }
 
     /**
@@ -717,9 +757,7 @@ public class CampaignService {
      */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID campaignId) {
-        long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId,
-                java.util.List.of("sent", "delivered", "opened", "clicked",
-                        "bounced", "complained", "unsubscribed"));
+        long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId, LEFT_THE_QUEUE);
         long delivered = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "delivered");
         long opened = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
         long clicked = campaignRecipientRepository.countByCampaignIdAndClickedAtNotNull(campaignId);

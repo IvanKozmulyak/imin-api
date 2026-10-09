@@ -88,6 +88,7 @@ class CampaignDispatcherConcurrencyTest {
     @Autowired MutableClock clock;
     @Autowired RecipientMaterializer materializer;
     @Autowired ApplicationEvents published;
+    @Autowired com.imin.iminapi.support.AuditRows auditRows;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final ConcurrentLinkedQueue<String> sentTo = new ConcurrentLinkedQueue<>();
@@ -543,18 +544,12 @@ class CampaignDispatcherConcurrencyTest {
         }
     }
 
-    enum OrganizerAction { CANCEL, RETRY }
-
-    @ParameterizedTest
-    @EnumSource(OrganizerAction.class)
-    void anOrganizerActionRacingTheClaim_answers409AndTheCampaignSends(OrganizerAction action) throws Exception {
+    @Test
+    void aRetryRacingTheClaim_answers409AndTheCampaignSends() throws Exception {
         Organization org = awakeOrg();
         AuthPrincipal owner = fx.principal(fx.owner(org));
         Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
-        // Cancel acts on a scheduled campaign, retry on a failed one; the claim takes both.
-        if (action == OrganizerAction.RETRY) {
-            jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1 WHERE id = ?", c.getId());
-        }
+        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1 WHERE id = ?", c.getId());
         List<String> own = pendingRecipients(c, 2);
         requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
@@ -569,8 +564,7 @@ class CampaignDispatcherConcurrencyTest {
                 Future<?> organizer = executor().submit(() -> tx.executeWithoutResult(st -> {
                     // Tags this backend so the wait below sees the organizer's own UPDATE blocked, nothing else.
                     jdbc.execute("SET LOCAL application_name = '" + tag + "'");
-                    if (action == OrganizerAction.CANCEL) campaignService.cancel(owner, c.getId());
-                    else campaignService.retry(owner, c.getId());
+                    campaignService.retry(owner, c.getId());
                 }));
                 awaitWaiting("application_name = '" + tag + "'", 1, "FALSE");
                 pause.release();
@@ -589,6 +583,96 @@ class CampaignDispatcherConcurrencyTest {
     }
 
     @Test
+    void aCancelRacingTheClaim_stopsTheCampaignBeforeItsFirstBatch() throws Exception {
+        Organization org = awakeOrg();
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        List<String> own = pendingRecipients(c, 2);
+        requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+
+        Throwable refused;
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
+            try {
+                Future<?> run = executor().submit(() -> dispatcher.runOnce());
+                pause.awaitBlocked(WAIT);
+                // The cancel's compare-and-set waits on the claim's row lock, queued ahead of the drive's materialize lock.
+                Future<?> cancel = executor().submit(() -> campaignService.cancel(owner, c.getId()));
+                awaitWaitingOrDone(cancel, "query ILIKE 'update campaigns%canceled%'");
+                pause.release();
+                run.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+                refused = catchThrowable(() -> cancel.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+            } finally {
+                pause.release();
+                shutdownExecutors();
+            }
+        }
+
+        assertThat(refused).as("a cancel that lands on a campaign the claim just took still stops it").isNull();
+        assertThat(ownSends(own)).as("nothing left before the cancel").isEmpty();
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .isEqualTo("canceled");
+        assertThat(recipientStates(c)).containsOnly("skipped/campaign_canceled").hasSize(2);
+        assertThat(campaignService.get(owner, c.getId()).revMinor()).as("no link of it in any inbox").isNull();
+        assertThat(listed(owner, c).revMinor()).isNull();
+    }
+
+    @Test
+    void stoppingACampaignMidDrive_sendsNoFurtherBatchAndSkipsTheRest() throws Exception {
+        Organization org = awakeOrg();
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE + 50);
+        requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+        AtomicReference<Future<?>> stop = new AtomicReference<>();
+        // The organizer stops the campaign while the first batch is at the provider.
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            batch.forEach(e -> sentTo.add(e.to()));
+            if (stop.get() == null) {
+                stop.set(executor().submit(() -> campaignService.cancel(owner, c.getId())));
+                // Committed the status, now waiting on this batch's locked rows. Polled on its own connection: inside
+                // this batch's transaction pg_stat_activity is one frozen snapshot.
+                Future<?> stopping = stop.get();
+                executor().submit(() -> {
+                    awaitWaitingOrDone(stopping, "query ILIKE 'update campaign_recipients set status = ''skipped''%'");
+                    return null;
+                }).get(WAIT.toSeconds() * 2, TimeUnit.SECONDS);
+            }
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        dispatcher.runOnce();
+        Throwable refused = catchThrowable(() -> stop.get().get(WAIT.toSeconds(), TimeUnit.SECONDS));
+
+        assertThat(refused).as("a sending campaign can be stopped").isNull();
+        assertThat(ownSends(own)).as("only the batch already out").hasSize(EmailChannelSender.BATCH_SIZE);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .isEqualTo("canceled");
+        Map<String, Long> states = new java.util.TreeMap<>();
+        recipientStates(c).forEach(s -> states.merge(s, 1L, Long::sum));
+        assertThat(states).isEqualTo(Map.of("sent/null", 100L, "skipped/campaign_canceled", 50L));
+        assertThat(campaignService.detailWithStats(owner, c.getId()).stats().sent()).isEqualTo(100);
+        com.imin.iminapi.marketing.dto.RecipientCounts counts =
+                campaignService.listRecipients(c.getId(), owner, null, null, 0, 10).counts();
+        assertThat(counts.total()).isEqualTo(150);
+        assertThat(counts.skipped()).isEqualTo(50);
+        assertThat(auditRows.assertRecorded(org.getId(), "CAMPAIGN_CANCELED", "campaign", c.getId()).getSummary())
+                .isEqualTo("Campaign canceled: 100 sent, 50 not sent");
+        // Its links are in 100 inboxes, so attributed revenue is a real answer, not "never sent".
+        assertThat(campaignService.get(owner, c.getId()).revMinor()).isEqualTo(0L);
+        assertThat(listed(owner, c).revMinor()).isEqualTo(0L);
+
+        // A stopped campaign is never reclaimed, however stale its heartbeat.
+        makeHeartbeatStale(c);
+        dispatcher.runOnce();
+        assertThat(ownSends(own)).hasSize(EmailChannelSender.BATCH_SIZE);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .isEqualTo("canceled");
+    }
+
+    @Test
     void aCampaignCanceledMidDrive_sendsNoFurtherBatchAndStaysCanceled() {
         Campaign c = campaign(awakeOrg().getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
         List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE + 50);
@@ -598,7 +682,7 @@ class CampaignDispatcherConcurrencyTest {
                 + "VALUES (?, ?, ?, 'pending', 3, now())", exhausted, c.getId(), fx.email("exhausted"));
         requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
-        // Any writer that stops the campaign while a batch is out; the CAS cancel itself refuses a 'sending' one.
+        // Any writer that stops the campaign while a batch is out (a raw write: no cancel skips the rows).
         when(provider.sendBatch(anyList())).thenAnswer(inv -> {
             List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
             batch.forEach(e -> sentTo.add(e.to()));
@@ -664,6 +748,25 @@ class CampaignDispatcherConcurrencyTest {
         Map<String, Object> row = jdbc.queryForMap("SELECT status, recipient_count FROM campaigns WHERE id = ?", c.getId());
         assertThat(row.get("status")).isEqualTo("canceled");
         assertThat(((Number) row.get("recipient_count")).intValue()).as("the snapshot counts are still recorded").isEqualTo(2);
+    }
+
+    @Test
+    void materializingACanceledCampaign_queuesNoRecipient() {
+        Organization org = awakeOrg();
+        List<Membership> members = List.of(member(org.getId()), member(org.getId()));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        c.setSegmentId(segmentOf(org.getId(), members));
+        c.setStatus("sending");
+        campaigns.save(c);
+        // Canceled between the claim and materialize's row lock: no cancel ran after the rows exist.
+        Campaign driveCopy = campaigns.findById(c.getId()).orElseThrow();
+        jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId());
+
+        materializer.materialize(driveCopy);
+
+        assertThat(recipientStates(c)).containsOnly("skipped/campaign_canceled").hasSize(2);
+        assertThat(jdbc.queryForObject("SELECT recipient_count FROM campaigns WHERE id = ?", Integer.class, c.getId()))
+                .as("the audience the campaign was stopped against").isEqualTo(2);
     }
 
     /**
@@ -785,6 +888,30 @@ class CampaignDispatcherConcurrencyTest {
 
     private Map<String, Object> stateOf(Campaign c) {
         return jdbc.queryForMap("SELECT status, attempts, updated_at, last_error FROM campaigns WHERE id = ?", c.getId());
+    }
+
+    /** The campaign's row in the organizer's campaign list. */
+    private com.imin.iminapi.marketing.dto.CampaignSummary listed(AuthPrincipal owner, Campaign c) {
+        return campaignService.list(owner, null, null, 0, 50).stream()
+                .filter(s -> s.id().equals(c.getId())).findFirst().orElseThrow();
+    }
+
+    /** Each recipient row of the campaign as {@code status/skip_reason}. */
+    private List<String> recipientStates(Campaign c) {
+        return jdbc.queryForList("SELECT status || '/' || COALESCE(skip_reason, 'null') FROM campaign_recipients "
+                + "WHERE campaign_id = ?", String.class, c.getId());
+    }
+
+    /** Waits until a backend matching {@code where} is blocked on a lock, or {@code action} has already returned. */
+    private void awaitWaitingOrDone(Future<?> action, String where) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        String sql = "SELECT count(*) FILTER (WHERE wait_event_type = 'Lock' AND " + where + ") >= 1"
+                + " FROM pg_stat_activity WHERE datname = current_database()";
+        while (System.nanoTime() < deadline) {
+            if (action.isDone() || Boolean.TRUE.equals(jdbc.queryForObject(sql, Boolean.class))) return;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("no backend blocked where " + where + " within " + WAIT);
     }
 
     /**

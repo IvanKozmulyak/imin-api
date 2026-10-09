@@ -239,7 +239,7 @@ class CampaignControllerTest {
 
     /** Another org's campaign is the no-leak 404 on every state-changing route, and stays as it was. */
     @ParameterizedTest(name = "{0} on another org's {1} campaign")
-    @CsvSource({"/cancel, scheduled", "/retry, failed", "/send, draft"})
+    @CsvSource({"/cancel, scheduled", "/cancel, sending", "/retry, failed", "/send, draft"})
     void anotherOrgsCampaign_isNotFound_andUntouched(String suffix, String status) throws Exception {
         UUID id = draft(otherOwner, null, null).id();
         if (!"draft".equals(status)) service.forceStatusForTest(id, status);

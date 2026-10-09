@@ -15,6 +15,8 @@ import java.util.UUID;
 public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
     Page<AuditLog> findByOrgIdOrderByOccurredAtDesc(UUID orgId, Pageable pageable);
 
+    boolean existsByOrgIdAndActionAndTargetTypeAndTargetId(UUID orgId, String action, String targetType, UUID targetId);
+
     /**
      * Art.17: drop the actor's address from this org's audit trail, keeping the
      * row.

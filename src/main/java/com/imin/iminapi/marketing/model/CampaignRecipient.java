@@ -15,6 +15,10 @@ import java.util.UUID;
 @Entity
 @Table(name = "campaign_recipients")
 public class CampaignRecipient {
+
+    /** skip_reason of a row the campaign was canceled before it could send. */
+    public static final String SKIP_CAMPAIGN_CANCELED = "campaign_canceled";
+
     @Id
     private UUID id;
 
