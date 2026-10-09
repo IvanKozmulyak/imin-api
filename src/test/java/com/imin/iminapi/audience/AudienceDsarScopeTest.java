@@ -19,6 +19,9 @@ import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -28,6 +31,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * DSAR scope beyond the audience projection.
@@ -54,6 +60,7 @@ class AudienceDsarScopeTest {
     @Autowired AuditLogRepository auditLogRepo;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MockMvc mvc;
 
     // Consumers are keyed by address across orgs, so each test owns its subject's address.
     private String subjectEmail;
@@ -139,6 +146,27 @@ class AudienceDsarScopeTest {
 
         String hash = records.tickets().get(0).tokenSha256();
         assertThat(hash).hasSize(64).doesNotContain("TKT_SCOPE");
+    }
+
+    /** The Meta send's event id is the order token, which opens the buyer's tickets; the export hashes it. */
+    @Test
+    void export_hashes_the_order_token_on_the_meta_send() throws Exception {
+        UUID membershipId = seedSubjectWithEverything();
+        String orderToken = jdbc.queryForObject("select token from orders where org_id = ?", String.class, orgId);
+
+        String body = mvc.perform(post("/api/v1/audience/members/{id}/export", membershipId)
+                        .with(authentication(new UsernamePasswordAuthenticationToken(
+                                owner, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER"))))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain(orderToken)
+                .contains("\"orderTokenSha256\":\"" + sha256Hex(orderToken) + "\"");
+    }
+
+    private static String sha256Hex(String v) throws java.security.NoSuchAlgorithmException {
+        return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(v.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
     /** Another org's rows for the same address are that org's data. */

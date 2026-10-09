@@ -42,11 +42,12 @@ public class AttendeeExportService {
         for (Object[] row : tickets.attendeeRows(eventId)) {
             Ticket t = (Ticket) row[0];
             String email = (String) row[1];
-            String orderToken = (String) row[2];
+            UUID orderId = (UUID) row[2];
             Instant purchasedAt = (Instant) row[3];
 
             boolean redeemed = Ticket.STATE_REDEEMED.equals(t.getState());
-            sb.append(csv(orderToken)).append(',')
+            // Same short code as the Orders tab; the order token would open the buyer's tickets.
+            sb.append(csv(orderId.toString().substring(0, 8))).append(',')
               .append(csv(email)).append(',')
               .append(csv(t.getTierName())).append(',')
               .append(redeemed ? "Checked-in" : "Issued").append(',')

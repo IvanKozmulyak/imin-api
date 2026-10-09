@@ -87,12 +87,12 @@ public record DsarRecords(
             String client,
             Instant at) {}
 
-    /** A server-side Meta Conversions API send: what left, when, for which order. */
+    /** A server-side Meta Conversions API send: what left, when, for which order; the order token only as a hash. */
     public record MetaCapiRecord(
             UUID orderId,
             String eventName,
             String emailSha256,
-            String orderToken,
+            String orderTokenSha256,
             String status,
             Instant sentAt,
             Instant createdAt) {}

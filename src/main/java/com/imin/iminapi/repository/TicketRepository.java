@@ -101,11 +101,12 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     /**
      * Every SOLD ticket for an event joined to its order, for the attendee CSV
-     * export. Tuple shape: {@code [Ticket ticket, String buyerEmail, String orderToken, Instant purchasedAt]}.
+     * export. Tuple shape: {@code [Ticket ticket, String buyerEmail, UUID orderId, Instant purchasedAt]}.
+     * Never the order token: it is the buyer's bearer credential and the file leaves the platform.
      * Ordered oldest order first.
      */
     @Query("""
-            select t, o.email, o.token, o.createdAt
+            select t, o.email, o.id, o.createdAt
               from Ticket t
               join com.imin.iminapi.model.Order o on o.id = t.orderId
              where t.eventId = :eventId

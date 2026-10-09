@@ -121,7 +121,7 @@ public class DsarScopeService {
                 : metaCapiEvents.findByOrgAndOrderIds(orgId, orderIds).stream()
                         .map(e -> new DsarRecords.MetaCapiRecord(
                                 e.getOrderId(), e.getEventName(), e.getEmailSha256(),
-                                e.getOrderToken(), e.getStatus(), e.getSentAt(), e.getCreatedAt()))
+                                sha256(e.getOrderToken()), e.getStatus(), e.getSentAt(), e.getCreatedAt()))
                         .toList();
 
         List<DsarRecords.NotifySubscriptionRecord> notifyRecords =
