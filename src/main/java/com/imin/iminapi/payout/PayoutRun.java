@@ -86,6 +86,10 @@ public class PayoutRun {
     @Column(name = "stripe_payout_id", length = 64)
     private String stripePayoutId;
 
+    /** Description sent to Stripe, frozen at planning so a replay of the same idempotency key matches. */
+    @Column(name = "stripe_description", length = 255)
+    private String stripeDescription;
+
     @Column(name = "failure_reason", columnDefinition = "text")
     private String failureReason;
 

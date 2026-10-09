@@ -202,6 +202,15 @@ public class PostEventPayoutService {
      * the batch. No-op (returns silently) on any guard.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    /** Bank-statement text: "imin payout · <event name>", name cut so the whole string stays under 250 chars. */
+    static String payoutDescription(Event event) {
+        String prefix = "imin payout · ";
+        String name = event.getName() == null ? "" : event.getName().strip();
+        if (name.isEmpty()) return "imin payout";
+        int room = 250 - prefix.length();
+        return prefix + (name.length() > room ? name.substring(0, room - 1) + "…" : name);
+    }
+
     public void payOneEvent(UUID eventId) {
         // Master kill-switch — defensive even though the sweeper already gates.
         if (!props.isPayoutScheduleManual()) return;
@@ -419,6 +428,7 @@ public class PostEventPayoutService {
             r.setStatus(PayoutRunStatus.PLANNED);
             r.setAttempt(attempt);
             r.setIdempotencyKey(idem);
+            r.setStripeDescription(payoutDescription(event));
             // Which Stripe mode is about to be asked for this payout (V130).
             r.setTestMode(!props.isLiveKey());
             // UNIQUE(idempotency_key) makes concurrent replicas converge on one row;
@@ -449,7 +459,8 @@ public class PostEventPayoutService {
                     PayoutCreateParams.builder()
                             .setAmount(createMinor)
                             .setCurrency(cur)
-                            .setDescription("imin event payout " + eventId)
+                            .setDescription(run.getStripeDescription() != null ? run.getStripeDescription()
+                                    : "imin event payout " + eventId)   // run planned before V180: replay its exact params
                             .putMetadata("event_id", eventId.toString())
                             .putMetadata("org_id", org.getId().toString())
                             .build(),

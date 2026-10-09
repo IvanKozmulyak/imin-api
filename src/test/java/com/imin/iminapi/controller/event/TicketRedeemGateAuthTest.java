@@ -129,7 +129,10 @@ class TicketRedeemGateAuthTest {
         // Which door: the gate session id and the actor label, both reconstructable.
         assertThat(row.getSummary()).contains(sessionId.toString());
         assertThat(row.getSummary()).contains("gate:" + org.getId());
-        assertThat(row.getSummary()).contains(event.getId().toString());
+        // The only human reference to the order is its number; never the ticket id/token or event id.
+        assertThat(row.getSummary()).contains(com.imin.iminapi.util.OrderNumber.display(ticket.getOrderId()));
+        assertThat(row.getSummary()).doesNotContain(ticket.getId().toString())
+                .doesNotContain(ticket.getToken()).doesNotContain(event.getId().toString());
         // Never the buyer's address — the row says which door, not who walked through it.
         assertThat(row.getSummary()).doesNotContain(buyerEmail);
     }

@@ -305,7 +305,7 @@ public class CampaignService {
         copy.setUpdatedAt(now);
         Campaign saved = campaigns.save(copy);
         audit.record(p, AuditActions.CAMPAIGN_DUPLICATED, "campaign", saved.getId(),
-                "Duplicated from " + src.getId());
+                "Duplicated from \"" + src.getName() + "\"");
         return CampaignDto.from(saved);
     }
 

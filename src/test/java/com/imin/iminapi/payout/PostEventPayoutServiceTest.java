@@ -92,6 +92,7 @@ class PostEventPayoutServiceTest {
         final AtomicInteger payoutCount = new AtomicInteger(0);
         final AtomicReference<Long> lastPayoutAmount = new AtomicReference<>(null);
         final AtomicReference<String> lastPayoutId = new AtomicReference<>(null);
+        final AtomicReference<String> lastPayoutDescription = new AtomicReference<>(null);
         final AtomicReference<String> lastIdempotencyKey = new AtomicReference<>(null);
         /** When set, payouts().create throws balance_insufficient (race simulation). */
         volatile boolean failBalanceInsufficient = false;
@@ -126,6 +127,7 @@ class PostEventPayoutServiceTest {
             payoutCount.set(0);
             lastPayoutAmount.set(null);
             lastPayoutId.set(null);
+            lastPayoutDescription.set(null);
             lastIdempotencyKey.set(null);
             failBalanceInsufficient = false;
             failApiConnection = false;
@@ -177,6 +179,7 @@ class PostEventPayoutServiceTest {
                 if (req.getOptions() != null) {
                     lastIdempotencyKey.set(req.getOptions().getIdempotencyKey());
                 }
+                lastPayoutDescription.set(req.getParams() == null ? null : (String) req.getParams().get("description"));
                 if (failApiConnection) {
                     // The read timed out. Stripe MAY have created the payout — we never saw
                     // the response. ApiConnectionException extends StripeException, so the
@@ -195,6 +198,7 @@ class PostEventPayoutServiceTest {
                 String poId = payoutPrefix + payoutCount.incrementAndGet();
                 lastPayoutAmount.set(amount);
                 lastPayoutId.set(poId);
+                lastPayoutDescription.set(params == null ? null : (String) params.get("description"));
                 String json = """
                     { "object": "payout", "id": "%s", "amount": %d, "currency": "eur", "status": "pending" }
                     """.formatted(poId, amount);
@@ -341,6 +345,42 @@ class PostEventPayoutServiceTest {
     }
 
     // ── (c) clamp to available ─────────────────────────────────────────────────────
+    @Test
+    void payout_description_names_the_event_and_carries_no_id() {
+        Event e = newEndedEvent(org);
+        e.setName("N".repeat(250));
+        events.save(e);
+        order(e, 10_000, 1_500);
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.lastPayoutDescription.get())
+                .startsWith("imin payout · NNN").hasSizeLessThanOrEqualTo(250).endsWith("…")
+                .doesNotContain(e.getId().toString());
+    }
+
+    @Test
+    void a_replayed_payout_keeps_its_description_when_the_event_is_renamed() {
+        Event e = newEndedEvent(org);
+        e.setName("Old Name");
+        events.save(e);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+        service.payOneEvent(e.getId());
+        assertThat(fake.lastPayoutDescription.get()).isEqualTo("imin payout · Old Name");
+
+        e.setName("Renamed");
+        events.save(e);
+        fake.failApiConnection = false;
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.lastPayoutDescription.get())
+                .as("same idempotency key must carry identical params or Stripe rejects the replay")
+                .isEqualTo("imin payout · Old Name");
+    }
+
     @Test
     void payout_clamps_to_available_balance() {
         Event e = newEndedEvent(org);

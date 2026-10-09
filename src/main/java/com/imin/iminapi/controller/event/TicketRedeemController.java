@@ -124,8 +124,8 @@ public class TicketRedeemController {
      */
     private void recordAdmission(AuthPrincipal me, UUID eventId, TicketRedeemService.Result r) {
         String actor = me.actorLabel();
-        String summary = "Ticket redeemed at the gate — event " + eventId
-                + ", ticket " + r.ticket().getId()
+        String summary = "Ticket redeemed at the gate — order "
+                + com.imin.iminapi.util.OrderNumber.display(r.ticket().getOrderId())
                 + ", session " + me.sessionId()
                 + ", actor " + actor;
         log.info("[gate-redeem] event={} ticket={} session={} actor={}",

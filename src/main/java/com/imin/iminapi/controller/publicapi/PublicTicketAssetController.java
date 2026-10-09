@@ -125,7 +125,7 @@ public class PublicTicketAssetController {
                 // segment unless told otherwise — without this every download
                 // lands as "apple-wallet.pkpass" with no relation to the ticket.
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"imin-ticket-" + safeFilenamePart(t.getToken()) + ".pkpass\"")
+                        "attachment; filename=\"imin-ticket.pkpass\"")
                 .body(pkpass);
     }
 
@@ -170,17 +170,5 @@ public class PublicTicketAssetController {
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .header(HttpHeaders.LOCATION, googleWallet.saveUrl(t.getToken()))
                 .build();
-    }
-
-    /**
-     * Tokens are URL-safe base64 without padding today ({@code A-Za-z0-9-_}),
-     * so nothing here needs escaping — but a header built by concatenation is
-     * one token-format change away from header injection or a path separator in
-     * a filename, and this endpoint would not obviously break when that
-     * happened. Not defensive coding for its own sake: the token is the
-     * credential, and the format is decided in a different class.
-     */
-    private static String safeFilenamePart(String token) {
-        return token == null ? "ticket" : token.replaceAll("[^A-Za-z0-9._-]", "");
     }
 }

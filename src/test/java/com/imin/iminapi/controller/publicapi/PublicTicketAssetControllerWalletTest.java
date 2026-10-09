@@ -75,7 +75,7 @@ class PublicTicketAssetControllerWalletTest {
                 // Without this, Android Chrome and every desktop browser save the
                 // file as "apple-wallet.pkpass" with no relation to the ticket.
                 .andExpect(header().string("Content-Disposition",
-                        "attachment; filename=\"imin-ticket-" + TOKEN + ".pkpass\""))
+                        "attachment; filename=\"imin-ticket.pkpass\""))
                 .andReturn().getResponse().getContentAsByteArray();
 
         assertThat(body).as("a real signed archive, not an empty 200").isNotEmpty();

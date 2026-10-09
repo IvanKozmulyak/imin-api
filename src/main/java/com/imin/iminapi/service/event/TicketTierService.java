@@ -218,8 +218,8 @@ public class TicketTierService {
                 // update — referencing an unrelated tier id is a client bug → 400, not 404
                 TicketTier tier = tiers.findByIdAndEventId(patch.id(), event.getId())
                         .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                                "Tier id " + patch.id() + " does not belong to event " + event.getId(),
-                                Map.of("tiers", "tier " + patch.id() + " not under event")));
+                                "This tier does not belong to this event",
+                                Map.of("tiers", "tier not under event")));
                 Map<String, String> errors = validator.validateEmbeddedPatch(patch, tier, event);
                 if (!errors.isEmpty()) throw badRequest(errors);
                 applyEmbeddedAsPatch(tier, patch);

@@ -377,7 +377,7 @@ public class DsarService {
 
         // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
-                "DSAR erase executed — org=" + orgId);
+                "DSAR erase executed");
     }
 
     /**
