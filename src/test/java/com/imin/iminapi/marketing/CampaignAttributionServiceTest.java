@@ -8,6 +8,10 @@ import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
+import com.imin.iminapi.refund.Refund;
+import com.imin.iminapi.refund.RefundReason;
+import com.imin.iminapi.refund.RefundRepository;
+import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -33,6 +37,7 @@ class CampaignAttributionServiceTest {
     @Autowired CampaignAttributionService attribution;
     @Autowired FunnelEventRepository funnel;
     @Autowired OrderRepository orders;
+    @Autowired RefundRepository refunds;
     @Autowired EventRepository events;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
@@ -127,11 +132,15 @@ class CampaignAttributionServiceTest {
     // ---- V62: TRUE per-order attributed revenue (orders.utm_campaign) ----
 
     /** Persist a paid order for this org carrying (or not carrying) a utm_campaign tag. */
-    private void order(UUID eventId, long totalMinor, String utmCampaign) {
-        order(eventId, totalMinor, utmCampaign, org.getId());
+    private Order order(UUID eventId, long totalMinor, String utmCampaign) {
+        return order(eventId, totalMinor, utmCampaign, org.getId(), false);
     }
 
-    private void order(UUID eventId, long totalMinor, String utmCampaign, UUID ownerOrgId) {
+    private Order order(UUID eventId, long totalMinor, String utmCampaign, UUID ownerOrgId) {
+        return order(eventId, totalMinor, utmCampaign, ownerOrgId, false);
+    }
+
+    private Order order(UUID eventId, long totalMinor, String utmCampaign, UUID ownerOrgId, boolean testMode) {
         Order o = new Order();
         o.setToken("ord_" + UUID.randomUUID());
         o.setEventId(eventId);
@@ -141,7 +150,22 @@ class CampaignAttributionServiceTest {
         o.setCurrency("EUR");
         o.setPaymentMethod("stripe");
         o.setUtmCampaign(utmCampaign);
-        orders.save(o);
+        o.setStripePaymentIntentId("pi_" + UUID.randomUUID());
+        o.setTestMode(testMode);
+        return orders.save(o);
+    }
+
+    private void refund(Order o, long amountMinor, RefundStatus status) {
+        Refund r = new Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId(o.getStripePaymentIntentId());
+        r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("EUR");
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(status);
+        r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        refunds.save(r);
     }
 
     @Test
@@ -235,5 +259,57 @@ class CampaignAttributionServiceTest {
         var byCampaign = attribution.attributedRevenueMinorByCampaign(org.getId(), List.of(campaignId));
         assertThat(byCampaign).containsOnlyKeys(campaignId);
         assertThat(byCampaign.get(campaignId)).isEqualTo(2500);
+    }
+
+    // ---- net of refunds, live mode only (same rule as channel attribution) ----
+
+    @Test
+    void revenueTakesOffSucceededRefundsOnly_fullAndPartial() {
+        UUID eventId = newEvent();
+        UUID campaignId = UUID.randomUUID();
+        String tag = campaignId.toString();
+        Order full = order(eventId, 4000, tag);
+        refund(full, 4000, RefundStatus.SUCCEEDED);
+        Order partial = order(eventId, 5000, tag);
+        refund(partial, 1000, RefundStatus.SUCCEEDED);
+        refund(partial, 500, RefundStatus.SUCCEEDED);
+        refund(partial, 2000, RefundStatus.PENDING);
+        refund(partial, 1000, RefundStatus.FAILED);
+
+        // 0 for the fully refunded order + 5000 - 1500 for the partial one.
+        assertThat(attribution.attributedRevenueMinor(org.getId(), campaignId)).isEqualTo(3500);
+        assertThat(attribution.attributedRevenueMinorByCampaign(org.getId(), List.of(campaignId)))
+                .containsEntry(campaignId, 3500L);
+    }
+
+    @Test
+    void testModeOrdersAndTheirRefundsAreNotCampaignRevenue() {
+        UUID eventId = newEvent();
+        UUID campaignId = UUID.randomUUID();
+        String tag = campaignId.toString();
+        order(eventId, 2000, tag);
+        Order test = order(eventId, 9000, tag, org.getId(), true);
+        refund(test, 1000, RefundStatus.SUCCEEDED);
+
+        assertThat(attribution.attributedRevenueMinor(org.getId(), campaignId)).isEqualTo(2000);
+        assertThat(attribution.attributedRevenueMinorByCampaign(org.getId(), List.of(campaignId)))
+                .containsEntry(campaignId, 2000L);
+    }
+
+    @Test
+    void refundsOnOneCampaignsOrderLeaveTheOtherCampaignAlone() {
+        UUID eventId = newEvent();
+        UUID refunded = UUID.randomUUID();
+        UUID untouched = UUID.randomUUID();
+        Order a = order(eventId, 3000, refunded.toString());
+        refund(a, 1200, RefundStatus.SUCCEEDED);
+        order(eventId, 2500, refunded.toString());
+        order(eventId, 4000, untouched.toString());
+
+        var byCampaign = attribution.attributedRevenueMinorByCampaign(org.getId(), List.of(refunded, untouched));
+
+        assertThat(byCampaign).containsOnlyKeys(refunded, untouched);
+        assertThat(byCampaign.get(refunded)).isEqualTo(4300);
+        assertThat(byCampaign.get(untouched)).isEqualTo(4000);
     }
 }

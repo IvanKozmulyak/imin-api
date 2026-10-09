@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.service.analytics.NetOrderRevenue;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,8 +25,8 @@ import java.util.UUID;
  *       starts checkout but never pays still counts. The FE tile labels it
  *       "purchases attributed".</li>
  *   <li>{@link #attributedRevenueMinor} sums real ORDER revenue by {@code orders.utm_campaign}
- *       (V62) — a true per-order last-touch sum, not an estimate. Only money that actually
- *       moved is counted.</li>
+ *       (V62) — a true per-order last-touch sum, not an estimate. Live orders only, each less its
+ *       SUCCEEDED refunds and clamped at zero, the same rule as channel attribution.</li>
  * </ul>
  * The two can legitimately disagree (sessions ≥ paid orders); they measure different things
  * and neither is derived from the other.
@@ -78,8 +79,9 @@ public class CampaignAttributionService {
     }
 
     /**
-     * Real attributed revenue (minor units) for ONE campaign: the sum of the org's orders
-     * whose {@code utm_campaign} is this campaign's id. Lifetime, not windowed.
+     * Real attributed revenue (minor units) for ONE campaign: the org's live orders whose
+     * {@code utm_campaign} is this campaign's id, each less its SUCCEEDED refunds (min 0).
+     * Lifetime, not windowed.
      *
      * <p>Returns 0 — honestly — when the campaign drove no paid orders, and for every
      * campaign that ran before V62: those orders carry no {@code utm_campaign} and can
@@ -88,7 +90,7 @@ public class CampaignAttributionService {
     @Transactional(readOnly = true)
     public long attributedRevenueMinor(UUID orgId, UUID campaignId) {
         if (orgId == null || campaignId == null) return 0;
-        return orders.sumTotalMinorByOrgIdAndUtmCampaign(orgId, campaignId.toString());
+        return attributedRevenueMinorByCampaign(orgId, List.of(campaignId)).getOrDefault(campaignId, 0L);
     }
 
     /**
@@ -107,11 +109,10 @@ public class CampaignAttributionService {
         if (out.isEmpty()) return out;
 
         List<String> keys = out.keySet().stream().map(UUID::toString).toList();
-        for (Object[] row : orders.sumRevenueByUtmCampaignIn(orgId, keys)) {
-            String key = (String) row[0];
-            long revenue = ((Number) row[1]).longValue();
+        var netByKey = NetOrderRevenue.sumByKey(orders.revenueRowsByUtmCampaignIn(orgId, keys));
+        for (var e : netByKey.entrySet()) {
             try {
-                out.put(UUID.fromString(key), revenue);
+                out.put(UUID.fromString(e.getKey()), e.getValue());
             } catch (IllegalArgumentException ignored) {
                 // utm_campaign is buyer-supplied and free-form — a hand-typed or third-party
                 // link can carry any string. Only values that parse back to a campaign id we

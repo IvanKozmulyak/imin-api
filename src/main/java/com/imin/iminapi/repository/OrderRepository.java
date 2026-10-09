@@ -188,51 +188,29 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                           @Param("until") Instant until);
 
     /**
-     * TRUE per-order last-touch revenue by campaign (V62): (utmCampaign, revenueMinor) for
-     * the given campaign keys within an org. Replaces the visit-share approximation for
-     * campaign revenue — each order's full total is counted once, against the campaign
-     * whose link the buyer last arrived through.
-     *
-     * <p>The key is the campaign UUID as a string: the sender rewrites campaign links with
-     * {@code utm_campaign=<campaign id>} ({@code UtmLinkRewriter} ← {@code EmailChannelSender}
-     * passes {@code campaign.getId().toString()}).
-     *
-     * <p>Grouped + batched so the campaign list and the hub tiles cost ONE round-trip
-     * rather than one per campaign. Campaigns with no attributed orders are simply absent
-     * from the result — callers default them to 0. Untagged (organic) revenue matches no
-     * key and is deliberately excluded rather than spread across campaigns.
-     *
-     * <p>Callers MUST skip this when {@code campaignKeys} is empty ({@code IN ()} is invalid SQL).
+     * Per-order last-touch revenue inputs by campaign (V62): one row
+     * {@code [String utmCampaign, Long totalMinor, Long succeededRefundMinor]} per tagged LIVE-mode
+     * order of the org whose tag is one of {@code campaignKeys} (campaign UUIDs as strings, written
+     * by {@code UtmLinkRewriter}). Same shape and filters as {@link #revenueRowsByUtmSource};
+     * fold with {@code NetOrderRevenue.sumByKey}. Callers skip an empty {@code campaignKeys}.
      */
     @Query("""
-            select o.utmCampaign, coalesce(sum(o.totalMinor), 0) from Order o
+            select o.utmCampaign, o.totalMinor, coalesce(sum(r.amountMinor), 0)
+              from Order o left join com.imin.iminapi.refund.Refund r
+                     on r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
              where o.orgId = :orgId
                and o.utmCampaign in :campaignKeys
-             group by o.utmCampaign
+               and o.testMode = false
+             group by o.id, o.utmCampaign, o.totalMinor
             """)
-    List<Object[]> sumRevenueByUtmCampaignIn(@Param("orgId") UUID orgId,
+    List<Object[]> revenueRowsByUtmCampaignIn(@Param("orgId") UUID orgId,
                                               @Param("campaignKeys") Collection<String> campaignKeys);
-
-    /**
-     * TRUE per-order last-touch revenue for ONE campaign (V62) — the {@code revMinor} on
-     * campaign list/detail. Not windowed: a campaign's lifetime attributed revenue.
-     * {@code utmCampaign} is the campaign UUID as a string (see
-     * {@link #sumRevenueByUtmCampaignSince}). Org-scoped so a guessed campaign id from
-     * another org can never sum a caller's revenue.
-     */
-    @Query("""
-            select coalesce(sum(o.totalMinor), 0) from Order o
-             where o.orgId = :orgId
-               and o.utmCampaign = :campaign
-            """)
-    long sumTotalMinorByOrgIdAndUtmCampaign(@Param("orgId") UUID orgId,
-                                             @Param("campaign") String campaign);
 
     /**
      * Per-order last-touch revenue inputs by channel (V62): one row
      * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor]} per tagged LIVE-mode
      * order of the org. Test-mode orders and their refunds are out, as in the payout net; the
-     * caller clamps each order at zero. Untagged orders belong to no channel.
+     * caller folds them with {@code NetOrderRevenue.sumByKey}. Untagged orders belong to no channel.
      */
     @Query("""
             select o.utmSource, o.totalMinor, coalesce(sum(r.amountMinor), 0)

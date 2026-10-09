@@ -10,7 +10,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -63,11 +62,7 @@ public class AttributionService {
 
         // Each live tagged order counts once under its landing source, less SUCCEEDED refunds and
         // clamped at zero as in the payout net; untagged (pre-V62) orders stay unattributed.
-        Map<String, Long> revenueBySource = new HashMap<>();
-        for (Object[] r : orders.revenueRowsByUtmSource(p.orgId())) {
-            long net = Math.max(0L, ((Number) r[1]).longValue() - ((Number) r[2]).longValue());
-            revenueBySource.merge((String) r[0], net, Long::sum);
-        }
+        Map<String, Long> revenueBySource = NetOrderRevenue.sumByKey(orders.revenueRowsByUtmSource(p.orgId()));
 
         List<AttributionResponse.Channel> channels = new ArrayList<>();
         tagged.sort(Comparator.comparingLong(Bucket::visitors).reversed()

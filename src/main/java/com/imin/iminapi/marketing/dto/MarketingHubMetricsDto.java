@@ -12,7 +12,8 @@ package com.imin.iminapi.marketing.dto;
  *   <li>{@code totalContacts} — count of the org's memberships.</li>
  *   <li>{@code attributedRevMinor} — attributed revenue in minor units: a TRUE per-order
  *       last-touch sum of the revenue driven by the org's campaigns from the last 30 days,
- *       joined on {@code orders.utm_campaign = <campaign id>} (V62). Not an estimate and
+ *       joined on {@code orders.utm_campaign = <campaign id>} (V62), live orders less their
+ *       SUCCEEDED refunds. Not an estimate and
  *       not divided by visit share. Legitimately 0 when those campaigns drove no paid
  *       orders — and necessarily 0 for campaigns that ran before V62, whose orders carry
  *       no utm_campaign and cannot be back-filled (the tag was never captured).</li>
