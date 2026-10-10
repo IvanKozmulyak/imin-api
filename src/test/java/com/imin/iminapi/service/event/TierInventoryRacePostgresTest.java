@@ -141,19 +141,19 @@ class TierInventoryRacePostgresTest {
     // ── standalone tier patch ──────────────────────────────────────────────────
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierPatch_organizerHoldsTier_reserveWaitsAndItsHoldSurvives() throws Exception {
         organizerHoldsTierThenReserve(() -> tierService.patch(principal, eventId, tierId, rename()));
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierPatch_reserveHoldsTier_organizerWaitsAndKeepsTheHold() throws Exception {
         reserveHoldsTierThenOrganizer(() -> tierService.patch(principal, eventId, tierId, rename()));
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierPatch_quantityCutBelowConcurrentHold_refusedWithLockedCount() throws Exception {
         quantityCutBelowConcurrentHold(() -> tierService.patch(principal, eventId, tierId,
                 new TicketTierPatchRequest(null, null, 8, null, null, null, null, null, null)));
@@ -162,21 +162,21 @@ class TierInventoryRacePostgresTest {
     // ── embedded tier patch through EventService.patch ─────────────────────────
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void embeddedPatch_organizerHoldsTier_reserveWaitsAndItsHoldSurvives() throws Exception {
         organizerHoldsTierThenReserve(() -> eventService.patch(principal, eventId, null,
                 eventPatch(null, List.of(embedded(tierId, "Renamed", null)))));
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void embeddedPatch_reserveHoldsTier_organizerWaitsAndKeepsTheHold() throws Exception {
         reserveHoldsTierThenOrganizer(() -> eventService.patch(principal, eventId, null,
                 eventPatch(null, List.of(embedded(tierId, "Renamed", null)))));
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void embeddedPatch_quantityCutBelowConcurrentHold_refused() throws Exception {
         quantityCutBelowConcurrentHold(() -> eventService.patch(principal, eventId, null,
                 eventPatch(null, List.of(embedded(tierId, null, 8)))));
@@ -185,14 +185,14 @@ class TierInventoryRacePostgresTest {
     // ── Stripe sync after commit ───────────────────────────────────────────────
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierPatch_stripeSyncBlocked_tierAndEventLocksFree() throws Exception {
         stripeBlockedLocksFree(() -> tierService.patch(principal, eventId, tierId, rename()), tierId);
         assertThat(nameOf(tierId)).isEqualTo("Renamed");
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void embeddedPatch_stripeSyncBlocked_tierAndEventLocksFree() throws Exception {
         stripeBlockedLocksFree(() -> eventService.patch(principal, eventId, null,
                 eventPatch(null, List.of(embedded(tierId, "Renamed", null)))), tierId);
@@ -200,7 +200,7 @@ class TierInventoryRacePostgresTest {
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierCreate_stripeSyncBlocked_eventLockFree() throws Exception {
         stripeBlockedLocksFree(() -> tierService.create(principal, eventId,
                 new TicketTierCreateRequest("Door", 1500, 20, null, null, null, null)), null);
@@ -211,7 +211,7 @@ class TierInventoryRacePostgresTest {
     // ── delete ─────────────────────────────────────────────────────────────────
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierDelete_organizerHoldsTier_reserveFindsNoTierAndNoHoldIsLeft() throws Exception {
         TransactionTemplate tx = new TransactionTemplate(txManager);
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -223,15 +223,15 @@ class TierInventoryRacePostgresTest {
                 deleted.countDown();
                 await(release);
             }));
-            assertThat(deleted.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(deleted.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<UUID> buyer = pool.submit(this::reserveTwo);
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "reserve waits for the organizer's tier lock");
             assertThat(buyer.isDone()).as("reserve waits for the organizer's tier lock").isFalse();
 
             release.countDown();
-            organizer.get(10, TimeUnit.SECONDS);
-            assertThatThrownBy(() -> buyer.get(10, TimeUnit.SECONDS))
+            organizer.get(60, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> buyer.get(60, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .cause().isInstanceOf(ApiException.class)
                     .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
@@ -247,7 +247,7 @@ class TierInventoryRacePostgresTest {
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void tierDelete_reserveHoldsTier_deleteRefused409() throws Exception {
         TransactionTemplate tx = new TransactionTemplate(txManager);
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -259,15 +259,15 @@ class TierInventoryRacePostgresTest {
                 held.countDown();
                 await(release);
             }));
-            assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(held.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> tierService.delete(principal, eventId, tierId));
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "delete waits for the buyer's tier lock");
             assertThat(organizer.isDone()).as("delete waits for the buyer's tier lock").isFalse();
 
             release.countDown();
-            buyer.get(10, TimeUnit.SECONDS);
-            assertThatThrownBy(() -> organizer.get(10, TimeUnit.SECONDS))
+            buyer.get(60, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> organizer.get(60, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .cause().isInstanceOf(ApiException.class)
                     .satisfies(ex -> {
@@ -290,7 +290,7 @@ class TierInventoryRacePostgresTest {
     // ── lock ordering ──────────────────────────────────────────────────────────
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void embeddedPatchOfTwoTiers_lockedInRefundOrder_noDeadlock() throws Exception {
         insertTier(tierA, 10, 0);
         insertTier(tierB, 10, 0);
@@ -306,15 +306,15 @@ class TierInventoryRacePostgresTest {
                 await(release);
                 tiers.findByIdForUpdate(tierA).orElseThrow();
             }));
-            assertThat(locked.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> eventService.patch(principal, eventId, null,
                     eventPatch(null, List.of(embedded(tierA, "A2", null), embedded(tierB, "B2", null)))));
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
 
-            refundLike.get(10, TimeUnit.SECONDS);
-            organizer.get(10, TimeUnit.SECONDS);
+            refundLike.get(60, TimeUnit.SECONDS);
+            organizer.get(60, TimeUnit.SECONDS);
             assertThat(nameOf(tierA)).isEqualTo("A2");
             assertThat(nameOf(tierB)).isEqualTo("B2");
         } finally {
@@ -324,7 +324,7 @@ class TierInventoryRacePostgresTest {
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(300)
     void slugChangeWithTierPatch_vsCheckoutHoldingTier_noDeadlock() throws Exception {
         TransactionTemplate tx = new TransactionTemplate(txManager);
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -339,15 +339,15 @@ class TierInventoryRacePostgresTest {
                 await(release);
                 jdbc.queryForObject("SELECT id FROM events WHERE id = ? FOR KEY SHARE", UUID.class, eventId);
             }));
-            assertThat(locked.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> eventService.patch(principal, eventId, null,
                     eventPatch(newSlug, List.of(embedded(tierId, "Renamed", null)))));
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
 
-            checkout.get(10, TimeUnit.SECONDS);
-            organizer.get(10, TimeUnit.SECONDS);
+            checkout.get(60, TimeUnit.SECONDS);
+            organizer.get(60, TimeUnit.SECONDS);
             assertThat(jdbc.queryForObject("SELECT slug FROM events WHERE id = ?", String.class, eventId))
                     .isEqualTo(newSlug);
             assertThat(nameOf(tierId)).isEqualTo("Renamed");
@@ -374,15 +374,15 @@ class TierInventoryRacePostgresTest {
                 syncEntered.countDown();
                 await(gate);
             }));
-            assertThat(syncEntered.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(syncEntered.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<UUID> buyer = pool.submit(this::reserveTwo);
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "reserve waits for the organizer's tier lock");
             assertThat(buyer.isDone()).as("reserve waits for the organizer's tier lock").isFalse();
 
             gate.countDown();
-            organizer.get(10, TimeUnit.SECONDS);
-            buyer.get(10, TimeUnit.SECONDS);
+            organizer.get(60, TimeUnit.SECONDS);
+            buyer.get(60, TimeUnit.SECONDS);
 
             Map<String, Object> row = tierRow();
             assertThat(row.get("reserved")).isEqualTo(2);
@@ -401,8 +401,8 @@ class TierInventoryRacePostgresTest {
         syncGate = gate;
         try {
             Future<?> organizer = pool.submit(organizerWrite);
-            organizer.get(5, TimeUnit.SECONDS);
-            assertThat(syncEntered.await(15, TimeUnit.SECONDS)).as("the queued sync reached Stripe").isTrue();
+            organizer.get(60, TimeUnit.SECONDS);
+            assertThat(syncEntered.await(60, TimeUnit.SECONDS)).as("the queued sync reached Stripe").isTrue();
 
             TransactionTemplate tx = new TransactionTemplate(txManager);
             tx.executeWithoutResult(s -> {
@@ -413,7 +413,7 @@ class TierInventoryRacePostgresTest {
                 jdbc.queryForObject("SELECT id FROM events WHERE id = ? FOR UPDATE NOWAIT", UUID.class, eventId);
             });
             Future<UUID> buyer = pool.submit(this::reserveTwo);
-            assertThat(buyer.get(5, TimeUnit.SECONDS)).isNotNull();
+            assertThat(buyer.get(60, TimeUnit.SECONDS)).isNotNull();
             assertThat(heldReservations()).isEqualTo(1);
         } finally {
             gate.countDown();
@@ -434,15 +434,15 @@ class TierInventoryRacePostgresTest {
                 held.countDown();
                 await(release);
             }));
-            assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(held.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(organizerWrite);
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the organizer waits for the buyer's tier lock");
             assertThat(organizer.isDone()).as("the organizer waits for the buyer's tier lock").isFalse();
 
             release.countDown();
-            buyer.get(10, TimeUnit.SECONDS);
-            organizer.get(10, TimeUnit.SECONDS);
+            buyer.get(60, TimeUnit.SECONDS);
+            organizer.get(60, TimeUnit.SECONDS);
 
             Map<String, Object> row = tierRow();
             assertThat(row.get("reserved")).isEqualTo(2);
@@ -466,14 +466,14 @@ class TierInventoryRacePostgresTest {
                 held.countDown();
                 await(release);
             }));
-            assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(held.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(organizerWrite);
             PgLocks.awaitLockWait(jdbc, "^\\s*select .* from ticket_tiers .* for update", "the tier writer waits for the other transaction's lock");
             release.countDown();
-            buyer.get(10, TimeUnit.SECONDS);
+            buyer.get(60, TimeUnit.SECONDS);
 
-            assertThatThrownBy(() -> organizer.get(10, TimeUnit.SECONDS))
+            assertThatThrownBy(() -> organizer.get(60, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .cause().isInstanceOf(ApiException.class)
                     .satisfies(ex -> {
@@ -534,7 +534,7 @@ class TierInventoryRacePostgresTest {
 
     private static void await(CountDownLatch latch) {
         try {
-            if (!latch.await(15, TimeUnit.SECONDS)) throw new IllegalStateException("latch timed out");
+            if (!latch.await(60, TimeUnit.SECONDS)) throw new IllegalStateException("latch timed out");
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(ex);

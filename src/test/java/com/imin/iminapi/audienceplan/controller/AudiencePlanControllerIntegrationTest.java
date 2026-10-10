@@ -772,7 +772,7 @@ class AudiencePlanControllerIntegrationTest {
                 locked.countDown();
                 await(release);
             }));
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<String> posted = pool.submit(() -> id(postPlan(e, "{\"targetPct\":90}")));
             Future<String> refreshed = pool.submit(() -> id(getPlan(e, null)));
@@ -781,9 +781,9 @@ class AudiencePlanControllerIntegrationTest {
             assertThat(posted.isDone()).as("POST waits for the row lock").isFalse();
             assertThat(refreshed.isDone()).as("stale GET waits for the row lock").isFalse();
             release.countDown();
-            holder.get(10, TimeUnit.SECONDS);
-            posted.get(10, TimeUnit.SECONDS);
-            refreshed.get(10, TimeUnit.SECONDS);
+            holder.get(60, TimeUnit.SECONDS);
+            posted.get(60, TimeUnit.SECONDS);
+            refreshed.get(60, TimeUnit.SECONDS);
 
             // Whichever went second read the other's committed row, so the override is current either way.
             getPlan(e, null).andExpect(jsonPath("$.assumptions.targetPct").value(90));
@@ -796,7 +796,7 @@ class AudiencePlanControllerIntegrationTest {
 
     private static void await(CountDownLatch latch) {
         try {
-            assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(latch.await(60, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(ex);

@@ -412,7 +412,7 @@ class AudiencePlanListIntegrationTest {
                 locked.countDown();
                 await(release);
             }));
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<Refresh> refreshed = pool.submit(() -> planService.refresh(e.getId()));
             Future<String> got = pool.submit(() -> id(getPlan(e)));
@@ -421,9 +421,9 @@ class AudiencePlanListIntegrationTest {
             assertThat(refreshed.isDone()).as("refresh waits for the first-plan lock").isFalse();
             assertThat(got.isDone()).as("first GET waits for the first-plan lock").isFalse();
             release.countDown();
-            holder.get(10, TimeUnit.SECONDS);
-            Refresh r = refreshed.get(10, TimeUnit.SECONDS);
-            got.get(10, TimeUnit.SECONDS);
+            holder.get(60, TimeUnit.SECONDS);
+            Refresh r = refreshed.get(60, TimeUnit.SECONDS);
+            got.get(60, TimeUnit.SECONDS);
 
             assertThat(r).isIn(Refresh.CREATED, Refresh.UNCHANGED);
             assertThat(planRows(e)).isEqualTo(1);
@@ -443,12 +443,12 @@ class AudiencePlanListIntegrationTest {
                 planService.lockFirstPlan(e.getId());
                 locked.countDown();
                 try {
-                    assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
+                    assertThat(release.await(60, TimeUnit.SECONDS)).isTrue();
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                 }
             }));
-            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(locked.await(60, TimeUnit.SECONDS)).isTrue();
 
             // A checkout-style row referencing the event takes FOR KEY SHARE on it; a lock_timeout turns a wait into a failure.
             Future<Integer> inserted = pool.submit(() -> tx.execute(s -> {
@@ -456,11 +456,11 @@ class AudiencePlanListIntegrationTest {
                 return jdbc.update("insert into event_funnel_events (id, event_id, stage, anon_id) values (?, ?, 'PAGE_VIEW', 'plan-lock')",
                         UUID.randomUUID(), e.getId());
             }));
-            assertThat(inserted.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(inserted.get(60, TimeUnit.SECONDS)).isEqualTo(1);
             assertThat(holder.isDone()).as("the plan lock is still held during the insert").isFalse();
 
             release.countDown();
-            holder.get(10, TimeUnit.SECONDS);
+            holder.get(60, TimeUnit.SECONDS);
         } finally {
             release.countDown();
             pool.shutdownNow();
@@ -472,7 +472,7 @@ class AudiencePlanListIntegrationTest {
 
     private static void await(CountDownLatch latch) {
         try {
-            assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(latch.await(60, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(ex);

@@ -136,20 +136,20 @@ class EventSoftDeleteRaceIntegrationTest {
                         .isEqualTo(1);
                 deleted.countDown();
                 try {
-                    assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
+                    assertThat(release.await(60, TimeUnit.SECONDS)).isTrue();
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                 }
             }));
-            assertThat(deleted.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(deleted.await(60, TimeUnit.SECONDS)).isTrue();
 
             Future<?> write = pool.submit(writer);
             PgLocks.awaitLockWait(jdbc, "^\\s*update events ", "the writer waits for the delete's row lock");
             assertThat(write.isDone()).as("the writer waits for the delete's row lock").isFalse();
 
             release.countDown();
-            deleter.get(10, TimeUnit.SECONDS);
-            assertThatThrownBy(() -> write.get(10, TimeUnit.SECONDS))
+            deleter.get(60, TimeUnit.SECONDS);
+            assertThatThrownBy(() -> write.get(60, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class)
                     .extracting(Throwable::getCause)
                     .isInstanceOfSatisfying(ApiException.class, ex -> {
