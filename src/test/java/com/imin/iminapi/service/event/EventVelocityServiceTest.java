@@ -156,6 +156,20 @@ class EventVelocityServiceTest {
         assertThat(points.get(6)).isEqualTo(700L);
     }
 
+    @Test
+    void test_mode_orders_and_refunds_are_left_out_of_the_buckets() {
+        LocalDate today = LocalDate.now(clock);
+        Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
+        newOrder(1000, todayNoon);
+        Order test = newOrder(2000, todayNoon);
+        test.setTestMode(true);
+        orders.save(test);
+        newSucceededRefund(test, 500, todayNoon);
+
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
+        assertThat(points.get(6)).isEqualTo(1000L);
+    }
+
     @ParameterizedTest(name = "requested {0} → {1} buckets")
     @CsvSource({
             "30, 30",

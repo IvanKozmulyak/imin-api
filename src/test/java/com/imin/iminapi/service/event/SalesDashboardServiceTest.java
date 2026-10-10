@@ -268,6 +268,58 @@ class SalesDashboardServiceTest {
     }
 
     @Test
+    void test_mode_orders_are_left_out_of_tiles_tiers_and_funnel() {
+        Order live = newOrder(3000);
+        newTicket(live, ga, Ticket.STATE_ISSUED);
+        newTicket(live, ga, Ticket.STATE_REDEEMED);
+        Order test = newOrder(5000);
+        test.setTestMode(true);
+        orders.save(test);
+        newTicket(test, vip, Ticket.STATE_ISSUED);
+        newTicket(test, ga, Ticket.STATE_REDEEMED);
+        Refund refund = new Refund();
+        refund.setOrderId(test.getId());
+        refund.setStripePaymentIntentId(test.getStripePaymentIntentId());
+        refund.setAmountMinor(1000);
+        refund.setCurrency("eur");
+        refund.setApplicationFeeRefundMinor(0);
+        refund.setReason(RefundReason.OTHER);
+        refund.setStatus(RefundStatus.SUCCEEDED);
+        refund.setInitiatedByUserId(owner.getId());
+        refund.setIdempotencyKey("k-" + UUID.randomUUID());
+        refunds.save(refund);
+        Dispute d = new Dispute();
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().substring(0, 12));
+        d.setOrgId(org.getId());
+        d.setEventId(event.getId());
+        d.setOrderId(test.getId());
+        d.setAmountMinor(1500);
+        d.setCurrency("eur");
+        d.setStatus(DisputeStatus.OPEN);
+        d.setTestMode(true);
+        d.setOpenedAt(Instant.now().minusSeconds(3600));
+        disputes.save(d);
+
+        SalesDashboardResponse r = service.dashboard(principal, event.getId());
+
+        assertThat(r.tiles().ticketsSold()).isEqualTo(2);
+        assertThat(r.tiles().grossRevenueMinor()).isEqualTo(3000L);
+        assertThat(r.tiles().netRevenueMinor()).isEqualTo(3000L);
+        assertThat(r.tiles().checkedIn()).isEqualTo(1);
+        assertThat(r.tiles().checkInRatePct()).isEqualTo(50.0);
+        assertThat(r.tiles().capacityPct()).isEqualTo(2 * 100.0 / 120);
+        var gaRow = r.tiers().stream().filter(t -> t.tierId().equals(ga.getId().toString())).findFirst().orElseThrow();
+        var vipRow = r.tiers().stream().filter(t -> t.tierId().equals(vip.getId().toString())).findFirst().orElseThrow();
+        assertThat(gaRow.sold()).isEqualTo(2);
+        assertThat(gaRow.redeemed()).isEqualTo(1);
+        assertThat(gaRow.grossRevenueMinor()).isEqualTo(3000L);
+        assertThat(vipRow.sold()).isZero();
+        assertThat(vipRow.grossRevenueMinor()).isZero();
+        assertThat(r.funnel().stages()).filteredOn(st -> st.stage().equals("PAYMENTS_COMPLETED"))
+                .extracting(SalesDashboardResponse.Funnel.Stage::count).containsExactly(1L);
+    }
+
+    @Test
     void funnel_counts_distinct_sessions_and_payments_and_dropoff() {
         // 3 distinct page-view sessions, 2 distinct checkout sessions
         funnelRow(FunnelEvent.STAGE_PAGE_VIEW, "a");

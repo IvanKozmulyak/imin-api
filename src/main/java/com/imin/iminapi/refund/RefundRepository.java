@@ -47,13 +47,14 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     List<Object[]> findByEventIdWithOrder(@Param("eventId") UUID eventId);
 
     /**
-     * Sum of SUCCEEDED refund amounts (minor units) for all orders of an event.
+     * Sum of SUCCEEDED refund amounts (minor units) for the LIVE-mode orders of an event.
      * Used by the event-overview Revenue card to net out refunds from gross.
      * REQUESTED / PENDING / FAILED / CANCELED rows are excluded.
      */
     @Query("""
             select coalesce(sum(r.amountMinor), 0) from Refund r
-             where r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.eventId = :eventId)
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.eventId = :eventId and o.testMode = false)
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
             """)
     long sumSucceededRefundMinorByEventId(@Param("eventId") UUID eventId);
@@ -63,6 +64,7 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
             select o.eventId, coalesce(sum(r.amountMinor), 0) from Refund r
               join com.imin.iminapi.model.Order o on o.id = r.orderId
              where o.eventId in :eventIds
+               and o.testMode = false
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
              group by o.eventId
             """)
@@ -70,25 +72,27 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
 
     /**
      * Sum of platform application-fee refunds (the platform-cut portion that
-     * went back to the buyer) across SUCCEEDED refunds for an event. Used to
+     * went back to the buyer) across SUCCEEDED refunds of an event's LIVE-mode orders. Used to
      * net the after-fees revenue when an order is partially or fully refunded.
      */
     @Query("""
             select coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
-             where r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.eventId = :eventId)
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.eventId = :eventId and o.testMode = false)
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
             """)
     long sumSucceededRefundApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
      * One row {@code [amountMinor, applicationFeeRefundMinor]} over the SUCCEEDED refunds of
-     * the org's orders created in {@code [since, until)}, all modes: refunds follow their
+     * the org's LIVE-mode orders created in {@code [since, until)}: refunds follow their
      * order's window, not the refund date.
      */
     @Query("""
             select coalesce(sum(r.amountMinor), 0), coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
              where r.orderId in (select o.id from com.imin.iminapi.model.Order o
                                   where o.orgId = :orgId
+                                    and o.testMode = false
                                     and o.createdAt >= :since
                                     and o.createdAt < :until)
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
@@ -98,14 +102,15 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
                                                          @Param("until") java.time.Instant until);
 
     /**
-     * Per-refund (updatedAt, amountMinor) pairs for SUCCEEDED refunds of an event,
+     * Per-refund (updatedAt, amountMinor) pairs for SUCCEEDED refunds of an event's LIVE-mode orders,
      * since {@code since}. Used by the velocity service to bucket refunds by day
      * (subtracted from the gross revenue bar for the same day). {@code updatedAt}
      * is the timestamp the refund flipped to SUCCEEDED.
      */
     @Query("""
             select r.updatedAt, r.amountMinor from Refund r
-             where r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.eventId = :eventId)
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.eventId = :eventId and o.testMode = false)
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
                and r.updatedAt >= :since
             """)

@@ -25,8 +25,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Builds one snapshot of an event's live sales dashboard. Tiles and the tier
- * breakdown are summed from the same per-tier ticket aggregates so they
+ * Builds one snapshot of an event's live sales dashboard, LIVE-mode orders only. Tiles and
+ * the tier breakdown are summed from the same per-tier ticket aggregates so they
  * reconcile by construction; net revenue reuses the same order/refund repo
  * methods as {@code EventOverviewService} so the money figure agrees.
  */
@@ -101,7 +101,7 @@ public class SalesDashboardService {
     private List<SalesDashboardResponse.TierBreakdown> buildTiers(UUID eventId) {
         Map<UUID, long[]> agg = new HashMap<>();   // tierId -> [sold, gross, redeemed]
         Map<UUID, String> aggName = new HashMap<>();
-        for (Object[] row : tickets.tierAggregates(eventId)) {
+        for (Object[] row : tickets.liveTierAggregates(eventId)) {
             UUID tierId = (UUID) row[0];
             aggName.put(tierId, (String) row[1]);
             agg.put(tierId, new long[]{((Number) row[2]).longValue(),
@@ -147,7 +147,7 @@ public class SalesDashboardService {
         }
         long pageViews = byStage.getOrDefault(FunnelEvent.STAGE_PAGE_VIEW, 0L);
         long checkoutStarts = byStage.getOrDefault(FunnelEvent.STAGE_CHECKOUT_START, 0L);
-        long payments = orders.countByEventId(eventId);
+        long payments = orders.countByEventIdAndTestModeFalse(eventId);
 
         List<SalesDashboardResponse.Funnel.Stage> stages = List.of(
                 new SalesDashboardResponse.Funnel.Stage("PAGE_VIEW", pageViews),

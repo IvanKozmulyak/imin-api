@@ -46,6 +46,15 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     @Query("SELECT COALESCE(SUM(t.sold), 0) FROM TicketTier t WHERE t.eventId = :eventId")
     int sumSoldByEventId(@Param("eventId") UUID eventId);
 
+    /**
+     * Seats still sellable on the event: per enabled tier {@code max(0, quantity − sold − reserved)}, summed.
+     * All modes, because a test-era ticket in {@code sold} still holds a physical seat.
+     */
+    @Query("SELECT COALESCE(SUM(CASE WHEN t.quantity - t.sold - t.reserved > 0 "
+            + "THEN t.quantity - t.sold - t.reserved ELSE 0 END), 0) "
+            + "FROM TicketTier t WHERE t.eventId = :eventId AND t.enabled = true")
+    int sumRemainingOnEnabledTiersByEventId(@Param("eventId") UUID eventId);
+
     /** Per event of the page: [eventId, SUM(sold), SUM(quantity)]; events with no tiers have no row. */
     @Query("SELECT t.eventId, COALESCE(SUM(t.sold), 0), COALESCE(SUM(t.quantity), 0) "
             + "FROM TicketTier t WHERE t.eventId IN :eventIds GROUP BY t.eventId")

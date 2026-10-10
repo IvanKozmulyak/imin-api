@@ -1,7 +1,6 @@
 package com.imin.iminapi.service.dashboard;
 
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse.*;
 import com.imin.iminapi.dto.event.EventDto;
@@ -9,13 +8,12 @@ import com.imin.iminapi.dto.event.EventSalesFigures;
 import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -36,28 +34,23 @@ public class DashboardService {
             DateTimeFormatter.ofPattern("d MMM HH:mm").withZone(ZoneOffset.UTC);
 
     private final EventRepository events;
-    private final TicketTierRepository tiers;
     private final UserRepository users;
-    private final OrderRepository orders;
     private final AuditLogRepository auditLogs;
-    private final RefundRepository refunds;
-    private final DisputeWithholding disputeWithholding;
+    private final EventSalesTotals salesTotals;
     private final DashboardRevenue revenue;
     private final MembershipRepository memberships;
+    private final TicketTierRepository tiers;
 
-    public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users,
-                            OrderRepository orders, AuditLogRepository auditLogs,
-                            RefundRepository refunds, DisputeWithholding disputeWithholding,
-                            DashboardRevenue revenue, MembershipRepository memberships) {
+    public DashboardService(EventRepository events, UserRepository users, AuditLogRepository auditLogs,
+                            EventSalesTotals salesTotals, DashboardRevenue revenue,
+                            MembershipRepository memberships, TicketTierRepository tiers) {
         this.events = events;
-        this.tiers = tiers;
         this.users = users;
-        this.orders = orders;
         this.auditLogs = auditLogs;
-        this.refunds = refunds;
-        this.disputeWithholding = disputeWithholding;
+        this.salesTotals = salesTotals;
         this.revenue = revenue;
         this.memberships = memberships;
+        this.tiers = tiers;
     }
 
     /**
@@ -84,23 +77,22 @@ public class DashboardService {
         Optional<Event> past = events.findRecentPast(p.orgId(), PageRequest.of(0, 1)).stream().findFirst();
 
         Now nowDto = next.map(e -> {
-            int totalQty = tiers.sumQuantityByEventId(e.getId());
-            int sold = soldNetOfDisputes(e.getId());
-            long revenue = revenueNetOfRefundsAndDisputes(e.getId());
-            int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * sold / totalQty);
+            EventSalesFigures f = salesTotals.forEvent(e.getId());
+            int totalQty = capacityOrZero(f);
+            int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * f.sold() / totalQty);
             int daysOut = (int) Duration.between(now, e.getStartsAt()).toDays();
-            return new Now(summaryWithLiveMetrics(e, sold, totalQty, revenue), pct, Math.max(0, daysOut), totalQty);
-        }).orElse(new Now(null, 0, 0, 0));
+            // Sold is live only, but test-era tickets still hold seats: remaining reads the tiers.
+            return new Now(EventDto.summary(e, f), pct, Math.max(0, daysOut), totalQty,
+                    tiers.sumRemainingOnEnabledTiersByEventId(e.getId()));
+        }).orElse(new Now(null, 0, 0, 0, 0));
 
         long activeCount = events.countLive(p.orgId());
         Cycle cycle = buildCycle(p, now, cyclePeriod, activeCount);
 
         LastEvent lastEvent = past.map(e -> {
-            int capacity = tiers.sumQuantityByEventId(e.getId());
-            int sold = soldNetOfDisputes(e.getId());
-            long eventRevenue = revenueNetOfRefundsAndDisputes(e.getId());
-            return new LastEvent(summaryWithLiveMetrics(e, sold, capacity, eventRevenue),
-                    new LastEventMetrics(sold, capacity, avgTicketMinor(e.getId()), /* nps */ null));
+            EventSalesFigures f = salesTotals.forEvent(e.getId());
+            return new LastEvent(EventDto.summary(e, f),
+                    new LastEventMetrics(f.sold(), capacityOrZero(f), avgTicketMinor(e.getId()), /* nps */ null));
         }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, null, null)));
 
         Business business = buildBusiness(p, now, businessPeriod);
@@ -110,24 +102,9 @@ public class DashboardService {
                 /* prediction */ null, business, activity);
     }
 
-    /**
-     * Per-event figures net of chargebacks, matching the event Overview and Sales tabs.
-     * TicketTier.sold is untouched by dispute ingest, so the revoked tickets come off here.
-     */
-    private int soldNetOfDisputes(UUID eventId) {
-        return Math.max(0, tiers.sumSoldByEventId(eventId)
-                - disputeWithholding.disputedTicketCount(eventId));
-    }
-
-    /**
-     * Gross less succeeded refunds less withheld chargebacks, clamped at 0 — the same
-     * expression the Overview and Sales tabs use. Dropping the refund term here made the
-     * org home read higher than Overview for any event that had ever refunded a ticket.
-     */
-    private long revenueNetOfRefundsAndDisputes(UUID eventId) {
-        return Math.max(0L, orders.sumTotalMinorByEventId(eventId)
-                - refunds.sumSucceededRefundMinorByEventId(eventId)
-                - disputeWithholding.withheldMinor(eventId));
+    /** A null capacity (no tier quantity) reads 0 on the cards that print a count. */
+    private static int capacityOrZero(EventSalesFigures f) {
+        return f.capacity() == null ? 0 : f.capacity();
     }
 
     /** The event's net over its tickets not refunded or revoked, half up; null with no such ticket. */
@@ -158,15 +135,6 @@ public class DashboardService {
         long total = revenue.forOrgWindow(p.orgId(), since, now).netRevenueMinor();
         return new Business(total, events.countPublished(p.orgId()), events.countPast(p.orgId()),
                 memberships.countByOrgId(p.orgId()));
-    }
-
-    /**
-     * The Now and LastEvent summaries carry the live figures computed above;
-     * a tier-quantity sum of 0 is unknown capacity, so it goes out as null.
-     */
-    private static EventDto summaryWithLiveMetrics(Event e, int sold, int capacity, long revenueMinor) {
-        return EventDto.summary(e,
-                new EventSalesFigures(sold, capacity > 0 ? capacity : null, revenueMinor));
     }
 
     /** Top-5 audit-log rows for the right-rail "Activity" tile. */

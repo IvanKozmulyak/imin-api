@@ -8,7 +8,7 @@ import java.util.List;
  * ad-spend, a later phase).
  *
  * <p>{@code attributedRevenueMinor} is the sum of tagged live-mode orders' totals less their
- * SUCCEEDED refunds, each order clamped at zero (minor units). {@code untaggedPct} is the share
+ * SUCCEEDED refunds and LOST chargebacks, each order clamped at zero (minor units). {@code untaggedPct} is the share
  * of distinct visitors with at least one beacon carrying no {@code utm_source} (0 when none).
  */
 public record AttributionResponse(

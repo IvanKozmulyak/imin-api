@@ -22,8 +22,8 @@ import java.util.UUID;
 /**
  * 7-day NET revenue histogram for the EventOverviewTab sales-velocity chart.
  * Buckets are calendar days in the event's timezone (today + 6 prior). Each
- * bucket = (gross orders created that day) − (SUCCEEDED refunds confirmed that
- * day), floored at 0 to avoid negative bars. The response also includes the
+ * bucket = (gross LIVE-mode orders created that day) − (their SUCCEEDED refunds confirmed
+ * that day), floored at 0 to avoid negative bars. The response also includes the
  * matching ISO-8601 date strings so the FE can label the x-axis.
  *
  * <p>Subtracting refunds aligns with the rule "refunded tickets are not
@@ -78,7 +78,7 @@ public class EventVelocityService {
 
         long[] buckets = new long[window];
 
-        for (Object[] row : orders.findCreatedAtAndTotalSince(eventId, since)) {
+        for (Object[] row : orders.findLiveCreatedAtAndTotalSince(eventId, since)) {
             Instant ts = (Instant) row[0];
             long amount = ((Number) row[1]).longValue();
             int dayIdx = bucketIndex(ts, zone, start);

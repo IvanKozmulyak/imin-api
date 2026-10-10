@@ -26,7 +26,7 @@ import java.util.UUID;
  *       "purchases attributed".</li>
  *   <li>{@link #attributedRevenueMinor} sums real ORDER revenue by {@code orders.utm_campaign}
  *       (V62) — a true per-order last-touch sum, not an estimate. Live orders only, each less its
- *       SUCCEEDED refunds and clamped at zero, the same rule as channel attribution.</li>
+ *       SUCCEEDED refunds and LOST chargebacks and clamped at zero, the same rule as channel attribution.</li>
  * </ul>
  * The two can legitimately disagree (sessions ≥ paid orders); they measure different things
  * and neither is derived from the other.
@@ -80,7 +80,7 @@ public class CampaignAttributionService {
 
     /**
      * Real attributed revenue (minor units) for ONE campaign: the org's live orders whose
-     * {@code utm_campaign} is this campaign's id, each less its SUCCEEDED refunds (min 0).
+     * {@code utm_campaign} is this campaign's id, each less its SUCCEEDED refunds and LOST chargebacks (min 0).
      * Lifetime, not windowed.
      *
      * <p>Returns 0 — honestly — when the campaign drove no paid orders, and for every

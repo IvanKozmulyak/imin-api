@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.event.EventOverviewResponse;
 import com.imin.iminapi.dto.event.EventOverviewResponse.Metrics;
 import com.imin.iminapi.dto.event.EventOverviewResponse.QuickAction;
 import com.imin.iminapi.dto.event.EventOverviewResponse.RecentPurchase;
+import com.imin.iminapi.dto.event.EventSalesFigures;
 import com.imin.iminapi.dto.event.PredictionDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
@@ -56,6 +57,7 @@ public class EventOverviewService {
     private final RefundRepository refunds;
     private final TicketRepository tickets;
     private final DisputeWithholding disputeWithholding;
+    private final EventSalesTotals salesTotals;
 
     public EventOverviewService(EventRepository events,
                                 PredictionRepository predictions,
@@ -63,7 +65,8 @@ public class EventOverviewService {
                                 OrderRepository orders,
                                 RefundRepository refunds,
                                 TicketRepository tickets,
-                                DisputeWithholding disputeWithholding) {
+                                DisputeWithholding disputeWithholding,
+                                EventSalesTotals salesTotals) {
         this.events = events;
         this.predictions = predictions;
         this.tiers = tiers;
@@ -71,6 +74,7 @@ public class EventOverviewService {
         this.refunds = refunds;
         this.tickets = tickets;
         this.disputeWithholding = disputeWithholding;
+        this.salesTotals = salesTotals;
     }
 
     @Transactional(readOnly = true)
@@ -82,16 +86,16 @@ public class EventOverviewService {
                 : (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
         int capacity = tiers.sumQuantityByEventId(id);
 
-        // Chargebacks come off all three headline numbers. Dispute ingest revokes the
-        // tickets but deliberately leaves TicketTier.sold alone, so the sold figure has to
-        // subtract the revoked count itself.
+        // Live orders only; chargebacks come off all three headline numbers. Sold and revenue are
+        // the events list's figures, so the list, this tab and the org home cannot disagree.
         int disputedCount = disputeWithholding.disputedOrderCount(id);
         long disputedMinor = disputeWithholding.withheldMinor(id);
-        int sold = Math.max(0, tiers.sumSoldByEventId(id) - disputeWithholding.disputedTicketCount(id));
+        EventSalesFigures figures = salesTotals.forEvent(id);
+        int sold = figures.sold();
+        long revenueMinor = figures.revenueMinor();
 
         long gross = orders.sumTotalMinorByEventId(id);
         long refunded = refunds.sumSucceededRefundMinorByEventId(id);
-        long revenueMinor = Math.max(0L, gross - refunded - disputedMinor);
 
         // After-fees revenue: organizer's payout less the platform's
         // application fee (also netted by any refunded fee portion). Excludes

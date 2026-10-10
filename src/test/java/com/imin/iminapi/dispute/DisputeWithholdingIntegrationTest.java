@@ -118,14 +118,16 @@ class DisputeWithholdingIntegrationTest {
     }
 
     @Test
-    void the_payout_figure_leaves_out_test_mode_disputes() {
+    void the_payout_and_organizer_figures_leave_out_test_mode_disputes() {
         Order live = order(event, 1_149, 149, false, now);
         Order test = order(event, 1_149, 149, true, now);
         dispute(test, 1_149, DisputeStatus.LOST, true);
         dispute(live, 1_149, DisputeStatus.LOST, false);
 
         assertThat(withholding.organizerShareLiveMinor(event.getId())).isEqualTo(1_000L);
-        assertThat(withholding.organizerShareMinor(event.getId())).isEqualTo(2_000L);
+        assertThat(withholding.organizerShareMinor(event.getId())).isEqualTo(1_000L);
+        assertThat(withholding.withheldMinor(event.getId())).isEqualTo(1_149L);
+        assertThat(withholding.disputedOrderCount(event.getId())).isEqualTo(1);
     }
 
     @Test

@@ -37,7 +37,7 @@ class EventSalesTotalsTest {
     DisputeRepository disputes = mock(DisputeRepository.class);
     TicketRepository tickets = mock(TicketRepository.class);
     EventSalesTotals sut = new EventSalesTotals(tiers, orders, refunds,
-            new DisputeWithholding(disputes, tickets, refunds));
+            new DisputeWithholding(disputes, tickets, refunds), tickets);
 
     private static List<Object[]> rows(Object[]... rows) {
         return List.of(rows);
@@ -76,6 +76,7 @@ class EventSalesTotalsTest {
         verify(orders, times(1)).sumTotalMinorByEventIds(ids);
         verify(refunds, times(1)).sumSucceededRefundMinorByEventIds(ids);
         verify(tickets, times(1)).countRevokedInDisputedOrdersByEventIds(ids, DisputeWithholding.STATUSES);
+        verify(tickets, times(1)).countHeldOnTestOrdersByEventIds(ids);
         verify(disputes, times(1)).withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES);
         verify(refunds, times(1)).sumSucceededAmountAndFeeByOrderIds(Set.of(orderB));
         verify(tiers, never()).sumSoldByEventId(any());

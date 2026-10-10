@@ -4,6 +4,7 @@ import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.event.EventSalesFigures;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import org.springframework.stereotype.Component;
 
@@ -14,8 +15,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Sold, capacity and revenue for the event list and detail, with the same formulas as the
- * Overview and the org home: one grouped query per figure for a whole page, never one per event.
+ * Sold, capacity and revenue for the event list and detail, the Overview and the org home, LIVE-mode
+ * orders only: one grouped query per figure for a whole page, never one per event.
  */
 @Component
 public class EventSalesTotals {
@@ -24,13 +25,15 @@ public class EventSalesTotals {
     private final OrderRepository orders;
     private final RefundRepository refunds;
     private final DisputeWithholding disputeWithholding;
+    private final TicketRepository tickets;
 
-    public EventSalesTotals(TicketTierRepository tiers, OrderRepository orders,
-                            RefundRepository refunds, DisputeWithholding disputeWithholding) {
+    public EventSalesTotals(TicketTierRepository tiers, OrderRepository orders, RefundRepository refunds,
+                            DisputeWithholding disputeWithholding, TicketRepository tickets) {
         this.tiers = tiers;
         this.orders = orders;
         this.refunds = refunds;
         this.disputeWithholding = disputeWithholding;
+        this.tickets = tickets;
     }
 
     /** Figures for every id; an id with no sales rows gets zeros and a null capacity. */
@@ -44,6 +47,8 @@ public class EventSalesTotals {
             tierSums.put((UUID) row[0], new long[] {
                     ((Number) row[1]).longValue(), ((Number) row[2]).longValue()});
         }
+        // tier.sold counts both modes, so the test-era tickets it still holds come off.
+        Map<UUID, Long> testHeld = sumsById(tickets.countHeldOnTestOrdersByEventIds(eventIds));
         Map<UUID, Long> gross = sumsById(orders.sumTotalMinorByEventIds(eventIds));
         Map<UUID, Long> refunded = sumsById(refunds.sumSucceededRefundMinorByEventIds(eventIds));
         Map<UUID, Integer> disputedTickets = disputeWithholding.disputedTicketCounts(eventIds);
@@ -51,7 +56,8 @@ public class EventSalesTotals {
 
         for (UUID id : eventIds) {
             long[] t = tierSums.getOrDefault(id, new long[] {0L, 0L});
-            int sold = (int) Math.max(0L, t[0] - disputedTickets.getOrDefault(id, 0));
+            int sold = (int) Math.max(0L, t[0] - testHeld.getOrDefault(id, 0L)
+                    - disputedTickets.getOrDefault(id, 0));
             Integer capacity = t[1] > 0 ? (int) t[1] : null;
             long revenue = Math.max(0L, gross.getOrDefault(id, 0L)
                     - refunded.getOrDefault(id, 0L)

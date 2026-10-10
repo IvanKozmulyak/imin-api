@@ -131,7 +131,7 @@ class EventServiceSalesFiguresTest {
         tickets.save(t);
     }
 
-    private void newDispute(Event e, Order o, DisputeStatus status, long amountMinor) {
+    private Dispute newDispute(Event e, Order o, DisputeStatus status, long amountMinor) {
         Dispute d = new Dispute();
         d.setStripeDisputeId("du_" + UUID.randomUUID().toString().substring(0, 12));
         d.setOrgId(org.getId());
@@ -141,7 +141,7 @@ class EventServiceSalesFiguresTest {
         d.setCurrency("eur");
         d.setStatus(status);
         d.setOpenedAt(Instant.now().minusSeconds(3600));
-        disputes.save(d);
+        return disputes.save(d);
     }
 
     private void newRefund(Order o, long amountMinor, RefundStatus status) {
@@ -246,6 +246,35 @@ class EventServiceSalesFiguresTest {
 
         assertThat(dto.sold()).isEqualTo(3);
         assertThat(dto.revenueMinor()).isEqualTo(3000L);
+    }
+
+    /**
+     * tier.sold counts both modes and drops refunded tickets; the test order's held tickets (issued, redeemed,
+     * revoked) come off it, its refunded one was never in it, and its refund and dispute come off nothing live.
+     */
+    @Test
+    void test_mode_orders_and_their_disputes_and_refunds_are_left_out() {
+        Event e = newEvent("Mixed Modes");
+        newTier(e, 100, 5, true);
+        Order live = newOrder(e, 2000);
+        newTicket(e, live, Ticket.STATE_ISSUED);
+        newTicket(e, live, Ticket.STATE_ISSUED);
+        Order test = newOrder(e, 2000);
+        test.setTestMode(true);
+        orders.save(test);
+        newTicket(e, test, Ticket.STATE_ISSUED);
+        newTicket(e, test, Ticket.STATE_REDEEMED);
+        newTicket(e, test, Ticket.STATE_REVOKED);
+        newTicket(e, test, Ticket.STATE_REFUNDED);
+        Dispute d = newDispute(e, test, DisputeStatus.OPEN, 1000);
+        d.setTestMode(true);
+        disputes.save(d);
+        newRefund(test, 500, RefundStatus.SUCCEEDED);
+
+        EventDto dto = listById().get(e.getId());
+
+        assertThat(dto.sold()).isEqualTo(2);
+        assertThat(dto.revenueMinor()).isEqualTo(2000L);
     }
 
     @Test

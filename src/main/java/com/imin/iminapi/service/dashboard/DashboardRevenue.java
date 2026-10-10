@@ -10,8 +10,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * The org home's organizer money: order totals less succeeded refunds, the unrefunded booking
- * fee and the organizer share of OPEN/LOST chargebacks, all modes. Sales keeps its gross figure.
+ * The org home's organizer money: LIVE-mode order totals less succeeded refunds, the unrefunded
+ * booking fee and the organizer share of live OPEN/LOST chargebacks. Sales keeps its gross figure.
  */
 @Component
 public class DashboardRevenue {
@@ -48,7 +48,7 @@ public class DashboardRevenue {
         return new Window(net, tickets.countSoldByOrgInWindow(orgId, since, until));
     }
 
-    /** {@link #net} over every order of one event. */
+    /** {@link #net} over every live order of one event. */
     public long netForEvent(UUID eventId) {
         return net(orders.sumTotalMinorByEventId(eventId),
                 refunds.sumSucceededRefundMinorByEventId(eventId),
@@ -57,7 +57,7 @@ public class DashboardRevenue {
                 disputeWithholding.organizerShareMinor(eventId));
     }
 
-    /** Tickets on the event that are not refunded or revoked. */
+    /** Tickets on the event's live orders that are not refunded or revoked. */
     public long ticketsForEvent(UUID eventId) {
         return tickets.countSoldByEventId(eventId);
     }

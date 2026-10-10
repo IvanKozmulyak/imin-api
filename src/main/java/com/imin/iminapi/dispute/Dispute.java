@@ -68,7 +68,7 @@ public class Dispute {
     /**
      * True when this chargeback was first ingested while the API ran on a Stripe TEST key
      * (V130). Test-era disputes clawed back no real money, so they withhold nothing from a
-     * live event's payout net.
+     * live event's payout net or the organizer's figures.
      */
     @Column(name = "test_mode", nullable = false)
     private boolean testMode = false;

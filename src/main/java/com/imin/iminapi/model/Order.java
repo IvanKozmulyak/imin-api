@@ -103,8 +103,9 @@ public class Order {
 
     /**
      * True when this order was taken while the API ran on a Stripe TEST key (V130).
-     * Test money never existed, so a test-mode order is excluded from the per-event payout
-     * net and from the payout-candidate queries — everything else reads orders unfiltered.
+     * Test money never existed, so a test-mode order is excluded from the payout net and
+     * candidates, attribution, and the organizer's money and sold figures. Ticket ownership, the
+     * door and seat inventory ({@code TicketTier.sold}) still count it.
      */
     @Column(name = "test_mode", nullable = false)
     private boolean testMode = false;

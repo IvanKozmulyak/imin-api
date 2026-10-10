@@ -1,20 +1,20 @@
 package com.imin.iminapi.service.dashboard;
 
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
+import com.imin.iminapi.dto.event.EventSalesFigures;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.dashboard.DashboardRevenue.Window;
+import com.imin.iminapi.service.event.EventSalesTotals;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -35,16 +35,18 @@ import static org.mockito.Mockito.*;
 class DashboardServiceTest {
 
     EventRepository events = mock(EventRepository.class);
-    TicketTierRepository tiers = mock(TicketTierRepository.class);
     UserRepository users = mock(UserRepository.class);
-    OrderRepository orders = mock(OrderRepository.class);
     AuditLogRepository auditLogs = mock(AuditLogRepository.class);
-    RefundRepository refunds = mock(RefundRepository.class);
-    DisputeWithholding disputeWithholding = mock(DisputeWithholding.class);
+    EventSalesTotals salesTotals = mock(EventSalesTotals.class);
     DashboardRevenue revenue = mock(DashboardRevenue.class);
     MembershipRepository memberships = mock(MembershipRepository.class);
-    DashboardService sut = new DashboardService(events, tiers, users, orders, auditLogs,
-            refunds, disputeWithholding, revenue, memberships);
+    TicketTierRepository tiers = mock(TicketTierRepository.class);
+    DashboardService sut = new DashboardService(events, users, auditLogs, salesTotals, revenue, memberships, tiers);
+
+    @BeforeEach
+    void noSalesByDefault() {
+        when(salesTotals.forEvent(any())).thenReturn(EventSalesFigures.EMPTY);
+    }
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -95,9 +97,7 @@ class DashboardServiceTest {
         next.setName("Next Night"); next.setSlug("next-night");
         next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
-        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
-        when(tiers.sumSoldByEventId(next.getId())).thenReturn(57);
-        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(0L);
+        when(salesTotals.forEvent(next.getId())).thenReturn(new EventSalesFigures(57, 100, 0L));
 
         Event past = new Event();
         past.setId(UUID.randomUUID()); past.setOrgId(orgId);
@@ -105,9 +105,7 @@ class DashboardServiceTest {
         past.setStatus(EventStatus.PAST);
         past.setEndsAt(Instant.now().minusSeconds(7L * 24 * 3600));
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
-        when(tiers.sumQuantityByEventId(past.getId())).thenReturn(200);
-        when(tiers.sumSoldByEventId(past.getId())).thenReturn(198);
-        when(orders.sumTotalMinorByEventId(past.getId())).thenReturn(475_200L);
+        when(salesTotals.forEvent(past.getId())).thenReturn(new EventSalesFigures(198, 200, 475_200L));
         when(revenue.netForEvent(past.getId())).thenReturn(475_200L);
         when(revenue.ticketsForEvent(past.getId())).thenReturn(198L);
 
@@ -156,48 +154,6 @@ class DashboardServiceTest {
         assertThat(r.now().nextEvent().capacity()).isNull();
         assertThat(r.lastEvent().event().capacity()).isNull();
         assertThat(r.lastEvent().metrics().capacity()).isZero();
-    }
-
-    /**
-     * The org home reads the same per-event net as the event Overview and Sales tabs: refunds and
-     * chargebacks both come off, or the card reads above the Overview for the same event.
-     */
-    @ParameterizedTest(name = "{0}")
-    @CsvSource({
-            // 4196 gross − 1149 charged back
-            "net of disputes,             4196,   0",
-            // 4596 gross − 400 refunded − 1149 charged back
-            "net of refunds and disputes, 4596, 400"
-    })
-    void now_card_revenue_is_net_of_refunds_and_disputes(String name, long gross, long refunded) {
-        UUID orgId = UUID.randomUUID();
-        AuthPrincipal p = owner(orgId);
-        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
-        when(users.findById(p.userId())).thenReturn(Optional.of(u));
-
-        Event next = new Event();
-        next.setId(UUID.randomUUID()); next.setOrgId(orgId);
-        next.setName("Next Night"); next.setSlug("next-night");
-        next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
-        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
-        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
-        when(tiers.sumSoldByEventId(next.getId())).thenReturn(4);
-        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(gross);
-        when(refunds.sumSucceededRefundMinorByEventId(next.getId())).thenReturn(refunded);
-        when(disputeWithholding.disputedTicketCount(next.getId())).thenReturn(1);
-        when(disputeWithholding.withheldMinor(next.getId())).thenReturn(1149L);
-
-        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
-        when(events.countLive(orgId)).thenReturn(1L);
-        when(events.countPublished(orgId)).thenReturn(1L);
-        when(events.countPast(orgId)).thenReturn(0L);
-        stubEmptyAuxiliary(orgId);
-
-        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-
-        assertThat(r.now().nextEvent().sold()).isEqualTo(3);
-        assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
-        assertThat(r.now().pct()).isEqualTo(3);
     }
 
     private AuthPrincipal emptyHome(UUID orgId) {

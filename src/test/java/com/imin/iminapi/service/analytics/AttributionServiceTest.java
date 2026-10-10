@@ -1,5 +1,8 @@
 package com.imin.iminapi.service.analytics;
 
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.dto.analytics.AttributionResponse;
 import com.imin.iminapi.dto.analytics.UntaggedLinksResponse;
 import com.imin.iminapi.model.Event;
@@ -25,6 +28,8 @@ import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -44,6 +49,7 @@ class AttributionServiceTest {
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
     @Autowired RefundRepository refunds;
+    @Autowired DisputeRepository disputes;
     @Autowired JdbcTemplate jdbc;
 
     private Organization org;
@@ -129,6 +135,18 @@ class AttributionServiceTest {
         r.setStatus(status);
         r.setIdempotencyKey("idem-" + UUID.randomUUID());
         refunds.save(r);
+    }
+
+    private void dispute(Order o, long amountMinor, DisputeStatus status) {
+        Dispute d = new Dispute();
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        d.setOrgId(o.getOrgId());
+        d.setEventId(o.getEventId());
+        d.setOrderId(o.getId());
+        d.setAmountMinor(amountMinor);
+        d.setCurrency("eur");
+        d.setStatus(status);
+        disputes.save(d);
     }
 
     private void beacon(String anon, String stage, String source, String referrerHost) {
@@ -220,6 +238,31 @@ class AttributionServiceTest {
         assertThat(r.channels()).extracting(AttributionResponse.Channel::source).containsExactly("instagram");
         assertThat(r.channels().get(0).revenueMinor()).isEqualTo(2000L);
         assertThat(r.attributedRevenueMinor()).isEqualTo(2000L);
+    }
+
+    /** Two refunds and two disputes on one order: each sum is the order's own, never a join product. */
+    @ParameterizedTest(name = "{0} → {1}")
+    @CsvSource({"LOST, 2000", "OPEN, 4000", "WON, 4000", "WITHDRAWN_REINSTATED, 4000"})
+    void channel_revenue_takes_off_lost_chargebacks_only(DisputeStatus status, long expected) {
+        visit("s1", "instagram", "instagram.com");
+        Order o = order("a@example.com", 5000, "instagram");
+        refund(o, 500, RefundStatus.SUCCEEDED);
+        refund(o, 500, RefundStatus.SUCCEEDED);
+        dispute(o, 1000, status);
+        dispute(o, 1000, status);
+
+        assertThat(service.attribution(principal).channels().get(0).revenueMinor()).isEqualTo(expected);
+    }
+
+    @Test
+    void a_lost_chargeback_beyond_the_unrefunded_rest_takes_that_order_to_zero_only() {
+        visit("s1", "instagram", "instagram.com");
+        Order lost = order("a@example.com", 3000, "instagram");
+        refund(lost, 1000, RefundStatus.SUCCEEDED);
+        dispute(lost, 2500, DisputeStatus.LOST);
+        order("b@example.com", 2000, "instagram");
+
+        assertThat(service.attribution(principal).channels().get(0).revenueMinor()).isEqualTo(2000L);
     }
 
     /**

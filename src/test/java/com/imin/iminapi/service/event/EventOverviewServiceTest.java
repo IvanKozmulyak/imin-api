@@ -369,6 +369,73 @@ class EventOverviewServiceTest {
         assertThat(homeRevenue).isEqualTo(overviewRevenue);
     }
 
+    /**
+     * A test-mode order holds tickets in tier.sold and carries a refund and a test chargeback;
+     * none of it is live money, so this tab and the org home's Now card read the live order alone.
+     */
+    @Test
+    void test_mode_orders_count_on_neither_this_tab_nor_the_org_home() {
+        TicketTier only = newTier("GA", 1149, 100, 5);
+        Order live = newOrder("live@example.com", 2298, Instant.now().minusSeconds(120));
+        live.setApplicationFeeMinor(298);
+        orders.save(live);
+        newTicket(live, only);
+        newTicket(live, only);
+        Order test = newOrder("test@example.com", 3447, Instant.now().minusSeconds(60));
+        test.setApplicationFeeMinor(447);
+        test.setTestMode(true);
+        orders.save(test);
+        newTicket(test, only);
+        newTicket(test, only);
+        Ticket revoked = newTicket(test, only);
+        revoked.setState(Ticket.STATE_REVOKED);
+        tickets.save(revoked);
+        Refund refund = newRefund(test, 1149, RefundStatus.SUCCEEDED);
+        refund.setApplicationFeeRefundMinor(149);
+        refunds.save(refund);
+        Dispute d = newDispute(test, DisputeStatus.OPEN, 1149);
+        d.setTestMode(true);
+        disputes.save(d);
+
+        EventOverviewResponse r = service.overview(principal, event.getId());
+
+        assertThat(r.metrics().sold()).isEqualTo(2);
+        assertThat(r.metrics().revenueMinor()).isEqualTo(2298L);
+        assertThat(r.metrics().revenueAfterFeesMinor()).isEqualTo(2000L);
+        assertThat(r.metrics().disputedCount()).isZero();
+        assertThat(r.metrics().disputedMinor()).isZero();
+
+        var now = dashboard.build(principal, DashboardPeriod.D30, DashboardPeriod.D90).now();
+        assertThat(now.nextEvent().sold()).isEqualTo(2);
+        assertThat(now.nextEvent().revenueMinor()).isEqualTo(2298L);
+        assertThat(now.pct()).isEqualTo(2);
+    }
+
+    /**
+     * Remaining is physical seats, so test-era tickets in tier.sold still hold theirs: enabled tiers only,
+     * less sold and held, and an oversold tier counts 0 rather than eating another tier's seats.
+     */
+    @Test
+    void now_card_tickets_remaining_counts_the_seats_left_on_enabled_tiers() {
+        TicketTier ga = newTier("GA", 1149, 100, 5);
+        ga.setReserved(3);
+        tiers.save(ga);
+        newTier("Oversold", 1149, 10, 12);
+        TicketTier off = newTier("Closed", 1149, 50, 0);
+        off.setEnabled(false);
+        tiers.save(off);
+        Order test = newOrder("test@example.com", 2298, Instant.now().minusSeconds(60));
+        test.setTestMode(true);
+        orders.save(test);
+        newTicket(test, ga);
+        newTicket(test, ga);
+
+        var now = dashboard.build(principal, DashboardPeriod.D30, DashboardPeriod.D90).now();
+
+        // GA 100 − 5 sold − 3 held = 92; Oversold max(0, 10 − 12) = 0; Closed is disabled.
+        assertThat(now.ticketsRemaining()).isEqualTo(92);
+    }
+
     /** Two €11.49 orders with 149 booking fee each; one is lost to a chargeback. */
     @Test
     void after_fees_counts_a_disputed_orders_fee_once() {

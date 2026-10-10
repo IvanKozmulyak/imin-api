@@ -387,7 +387,9 @@ Response: {
   "now": {
     "nextEvent": Event | null,
     "pct": 57,
-    "daysOut": 28
+    "daysOut": 28,
+    "ticketsTotal": 400,
+    "ticketsRemaining": 188
   },
   "cycle": {
     "period": "30d",
@@ -416,10 +418,11 @@ Response: {
 }
 ```
 Field notes:
-- `cycle.revenueMinor` / `business.totalRevenueMinor`: orders placed in the window, test mode included: totals less their succeeded refunds, the unrefunded booking fee and the organizer share of open or lost chargebacks (what the organizer still holds from each disputed order, booking fee excluded), clamped at 0 (the payout per-event net formula, applied to the window as a whole, so it can be lower than the sum of per-event payouts).
-- `cycle.ticketsSold`: tickets (not orders) on those orders that are not refunded or revoked.
+- `cycle.revenueMinor` / `business.totalRevenueMinor`: live orders placed in the window (test payments excluded): totals less their succeeded refunds, the unrefunded booking fee and the organizer share of open or lost chargebacks (what the organizer still holds from each disputed order, booking fee excluded), clamped at 0 (the payout per-event net formula, applied to the window as a whole, so it can be lower than the sum of per-event payouts).
+- `now.ticketsRemaining`: seats on the next event not yet sold or held, per enabled tier max(0, quantity − sold − held in checkout), summed; the sale window is not considered. Test-era tickets still hold seats, so this is not `ticketsTotal − nextEvent.sold` (sold is live only). 0 with no next event.
+- `cycle.ticketsSold`: tickets (not orders) on those live orders that are not refunded or revoked.
 - `cycle.deltas.*`: rounded % change against the equal prior window; null when the prior window is 0 or the period is `all`.
-- `lastEvent.metrics.avgTicketMinor`: the event's net (same formula) over its tickets not refunded or revoked, rounded half up; null when there are none. `attended` is tier sold net of chargebacks, not door scans.
+- `lastEvent.metrics.avgTicketMinor`: the event's net (same formula) over its tickets not refunded or revoked, rounded half up; null when there are none. `attended` is tier sold on live orders net of chargebacks, not door scans.
 - `business.audienceCount`: the Audience page's People total (org-wide, all time, not windowed).
 
 Performance note: this endpoint is called on every dashboard visit. Cache

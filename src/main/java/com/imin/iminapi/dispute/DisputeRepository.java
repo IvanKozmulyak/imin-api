@@ -84,6 +84,7 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
             select count(distinct d.orderId) from Dispute d
              where d.eventId = :eventId
                and d.orderId is not null
+               and d.testMode = false
                and d.status in :statuses
             """)
     long countDistinctOrderIdByEventIdAndStatusIn(@Param("eventId") UUID eventId,
@@ -95,14 +96,15 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                                            UUID excludedId);
 
     /**
-     * Withholding disputes summed per order, for every event in {@code eventIds}, all modes.
-     * Left join: a dispute with no order keeps a row with null total and fee.
+     * Withholding LIVE-mode disputes summed per order, for every event in {@code eventIds}: the
+     * organizer readouts. Left join: a dispute with no order keeps a row with null total and fee.
      */
     @Query("""
             select new com.imin.iminapi.dispute.DisputeOrderRow(
                        d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
               from Dispute d left join com.imin.iminapi.model.Order o on o.id = d.orderId
              where d.eventId in :eventIds
+               and d.testMode = false
                and d.status in :statuses
              group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
             """)
@@ -128,8 +130,8 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                                                        @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
-     * Withholding disputes summed per order, on the org's orders created in {@code [since, until)},
-     * all modes. A dispute with no order cannot be placed in a window and is not counted.
+     * Withholding LIVE-mode disputes summed per order, on the org's orders created in
+     * {@code [since, until)}. A dispute with no order cannot be placed in a window and is not counted.
      */
     @Query("""
             select new com.imin.iminapi.dispute.DisputeOrderRow(
@@ -139,6 +141,7 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                and o.orgId = :orgId
                and o.createdAt >= :since
                and o.createdAt < :until
+               and d.testMode = false
                and d.status in :statuses
              group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
             """)
@@ -342,8 +345,8 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     }
 
     /**
-     * Orders on this event whose money is being withheld — one per order however many
-     * chargebacks it collected, because the organizer-facing counter counts orders.
+     * Orders on this event whose money is being withheld by a LIVE-mode chargeback — one per order
+     * however many it collected, because the organizer-facing counter counts orders.
      */
     default long countOpenOrLostOrdersByEventId(UUID eventId) {
         return countDistinctOrderIdByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);

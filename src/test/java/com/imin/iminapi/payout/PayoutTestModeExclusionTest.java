@@ -122,9 +122,6 @@ class PayoutTestModeExclusionTest {
                 .as("only the live order, and a refund of a test-mode order is netted off nothing")
                 .containsExactly(new OrderSettlementRow(live.getId(), 10_000L, 1_000L, "eur", 10_000L, 1_000L,
                         0L, 0L));
-        // The unfiltered sums are untouched — the organizer's own revenue readouts still
-        // show the full history.
-        assertThat(orders.sumTotalMinorByEventId(e.getId())).isEqualTo(104_000L);
     }
 
     @Test

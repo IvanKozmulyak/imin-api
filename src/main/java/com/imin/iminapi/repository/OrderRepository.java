@@ -47,8 +47,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
            "order by o.createdAt desc")
     List<Order> findByOrgIdOrderByCreatedAtDesc(@Param("orgId") UUID orgId, Pageable pageable);
 
-    /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
+    /** Number of orders for an event, all modes (draft deletion and predictor outcomes). */
     long countByEventId(UUID eventId);
+
+    /** LIVE-mode orders (= completed payments) for an event: the Sales funnel's PAYMENTS_COMPLETED stage. */
+    long countByEventIdAndTestModeFalse(UUID eventId);
 
     /** Has this org ever taken an order? Gate on org deletion — see {@code OrgService.delete}. */
     boolean existsByOrgId(UUID orgId);
@@ -62,28 +65,28 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     @Query("select count(o) from Order o where o.orgId = :orgId and o.createdAt >= :since")
     long countByOrgIdSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
 
-    /** Gross revenue (sum of order totals) for an event, in minor units. Includes refunded amounts. */
-    @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")
+    /** Gross revenue (sum of LIVE-mode order totals) for an event, in minor units. Includes refunded amounts. */
+    @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId and o.testMode = false")
     long sumTotalMinorByEventId(@Param("eventId") UUID eventId);
 
     /** {@link #sumTotalMinorByEventId} for a page of events: [eventId, sum]. */
     @Query("select o.eventId, coalesce(sum(o.totalMinor), 0) from Order o "
-            + "where o.eventId in :eventIds group by o.eventId")
+            + "where o.eventId in :eventIds and o.testMode = false group by o.eventId")
     List<Object[]> sumTotalMinorByEventIds(@Param("eventIds") Collection<UUID> eventIds);
 
     /**
      * Sum of platform application fees ({@code application_fee_minor}) Stripe
-     * deducted across all orders for an event. Snapshot — does not account for
+     * deducted across the LIVE-mode orders of an event. Snapshot — does not account for
      * refunded fee portions; net those out via
      * {@code RefundRepository.sumSucceededRefundApplicationFeeMinorByEventId}.
      */
-    @Query("select coalesce(sum(o.applicationFeeMinor), 0) from Order o where o.eventId = :eventId")
+    @Query("select coalesce(sum(o.applicationFeeMinor), 0) from Order o where o.eventId = :eventId and o.testMode = false")
     long sumApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
      * The payout net's inputs for an event: one row per LIVE-mode paid order (V130) with what Stripe
      * settled for it and its SUCCEEDED refunds summed. Test-mode orders and their refunds are out of
-     * every term; the organizer's own revenue readouts still read the full history.
+     * every term, as they are from the organizer's revenue readouts.
      */
     @Query("""
             select new com.imin.iminapi.payout.OrderSettlementRow(o.id, o.totalMinor, o.applicationFeeMinor,
@@ -134,10 +137,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                   @Param("before") Instant before);
 
     /**
-     * Created-at + total-minor pairs for orders since {@code since}. Used by the
-     * sales-velocity service to bucket by day. Returned as {@code Object[]} to
-     * avoid a per-row entity hydration cost — the only columns the caller needs
-     * are the timestamp and the amount.
+     * Created-at + total-minor pairs for orders since {@code since}, all modes: the Momentum
+     * evaluator's 7-day velocity. Returned as {@code Object[]} to avoid a per-row entity
+     * hydration cost — the only columns the caller needs are the timestamp and the amount.
      */
     @Query("""
             select o.createdAt, o.totalMinor from Order o
@@ -147,6 +149,17 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
             """)
     List<Object[]> findCreatedAtAndTotalSince(@Param("eventId") UUID eventId,
                                               @Param("since") Instant since);
+
+    /** {@link #findCreatedAtAndTotalSince} over LIVE-mode orders only: the Overview sales-velocity chart. */
+    @Query("""
+            select o.createdAt, o.totalMinor from Order o
+             where o.eventId = :eventId
+               and o.testMode = false
+               and o.createdAt >= :since
+             order by o.createdAt asc
+            """)
+    List<Object[]> findLiveCreatedAtAndTotalSince(@Param("eventId") UUID eventId,
+                                                  @Param("since") Instant since);
 
     /**
      * Behind the unauthenticated {@code POST /api/v1/public/orders/recover}.
@@ -173,13 +186,14 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                        @Param("cutoff") Instant cutoff);
 
     /**
-     * One row {@code [totalMinor, applicationFeeMinor]} over the org's orders created in
-     * {@code [since, until)}, all modes. The org home's window revenue nets refunds and
+     * One row {@code [totalMinor, applicationFeeMinor]} over the org's LIVE-mode orders created in
+     * {@code [since, until)}. The org home's window revenue nets refunds and
      * chargebacks of the same cohort off this (see {@code DashboardRevenue}).
      */
     @Query("""
             select coalesce(sum(o.totalMinor), 0), coalesce(sum(o.applicationFeeMinor), 0) from Order o
              where o.orgId = :orgId
+               and o.testMode = false
                and o.createdAt >= :since
                and o.createdAt < :until
             """)
@@ -189,37 +203,45 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     /**
      * Per-order last-touch revenue inputs by campaign (V62): one row
-     * {@code [String utmCampaign, Long totalMinor, Long succeededRefundMinor]} per tagged LIVE-mode
-     * order of the org whose tag is one of {@code campaignKeys} (campaign UUIDs as strings, written
-     * by {@code UtmLinkRewriter}). Same shape and filters as {@link #revenueRowsByUtmSource};
+     * {@code [String utmCampaign, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor]}
+     * per tagged LIVE-mode order of the org whose tag is one of {@code campaignKeys} (campaign UUIDs as
+     * strings, written by {@code UtmLinkRewriter}). Same shape and filters as {@link #revenueRowsByUtmSource};
      * fold with {@code NetOrderRevenue.sumByKey}. Callers skip an empty {@code campaignKeys}.
      */
     @Query("""
-            select o.utmCampaign, o.totalMinor, coalesce(sum(r.amountMinor), 0)
-              from Order o left join com.imin.iminapi.refund.Refund r
-                     on r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            select o.utmCampaign, o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST)
+              from Order o
              where o.orgId = :orgId
                and o.utmCampaign in :campaignKeys
                and o.testMode = false
-             group by o.id, o.utmCampaign, o.totalMinor
             """)
     List<Object[]> revenueRowsByUtmCampaignIn(@Param("orgId") UUID orgId,
                                               @Param("campaignKeys") Collection<String> campaignKeys);
 
     /**
      * Per-order last-touch revenue inputs by channel (V62): one row
-     * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor]} per tagged LIVE-mode
-     * order of the org. Test-mode orders and their refunds are out, as in the payout net; the
+     * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor]} per
+     * tagged LIVE-mode order of the org. Test-mode orders are out and LOST chargebacks come off (the
+     * payout's {@code status = LOST} predicate, {@code DisputeRepository.sumLostAmountByOrderId}); the
      * caller folds them with {@code NetOrderRevenue.sumByKey}. Untagged orders belong to no channel.
+     * Subqueries, not joins: two joined sums would multiply each other's rows.
      */
     @Query("""
-            select o.utmSource, o.totalMinor, coalesce(sum(r.amountMinor), 0)
-              from Order o left join com.imin.iminapi.refund.Refund r
-                     on r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            select o.utmSource, o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST)
+              from Order o
              where o.orgId = :orgId
                and o.utmSource is not null
                and o.testMode = false
-             group by o.id, o.utmSource, o.totalMinor
             """)
     List<Object[]> revenueRowsByUtmSource(@Param("orgId") UUID orgId);
 

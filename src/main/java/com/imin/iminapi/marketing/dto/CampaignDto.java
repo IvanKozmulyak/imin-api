@@ -38,7 +38,7 @@ public record CampaignDto(
         Instant updatedAt,
         /**
          * Attributed revenue in minor units (§3): the TRUE per-order sum of this org's live
-         * orders whose {@code utm_campaign} is this campaign's id (V62), less SUCCEEDED refunds.
+         * orders whose {@code utm_campaign} is this campaign's id (V62), less SUCCEEDED refunds and LOST chargebacks.
          *
          * <p>{@code null} means "not applicable / nothing to report yet" — the campaign has
          * never sent, so no link carrying its tag is in anyone's inbox and no order could

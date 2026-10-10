@@ -19,17 +19,22 @@ public record DashboardResponse(
 
     public record Greeting(String name) {}
 
-    public record Now(EventDto nextEvent, int pct, int daysOut, int ticketsTotal) {}
+    public record Now(EventDto nextEvent, int pct, int daysOut, int ticketsTotal,
+                      @Schema(description = "Seats on the next event not yet sold or held: per enabled tier"
+                              + " max(0, quantity − sold − held in checkout), summed; the sale window is not considered. Counts test-era tickets as"
+                              + " taken, since they hold a seat, so it is not ticketsTotal − nextEvent.sold."
+                              + " 0 when there is no next event.")
+                      int ticketsRemaining) {}
 
     public record Cycle(String period,
-                        @Schema(description = "Orders placed in the window, test mode included: totals less their"
-                                + " succeeded refunds, the unrefunded booking fee and the organizer share of open"
+                        @Schema(description = "Live orders placed in the window (test payments excluded):"
+                                + " totals less their succeeded refunds, the unrefunded booking fee and the organizer share of open"
                                 + " or lost chargebacks (what the organizer still holds from each disputed order,"
                                 + " booking fee excluded)."
                                 + " Minor units, never negative.")
                         long revenueMinor,
-                        @Schema(description = "Tickets on orders placed in the window that are not refunded or"
-                                + " revoked, test mode included.")
+                        @Schema(description = "Tickets on live orders placed in the window that are not refunded"
+                                + " or revoked; test payments excluded.")
                         int ticketsSold,
                         int activeEvents, Deltas deltas) {}
 
@@ -46,7 +51,7 @@ public record DashboardResponse(
     public record LastEvent(EventDto event, LastEventMetrics metrics) {}
 
     public record LastEventMetrics(
-            @Schema(description = "Tickets sold net of chargebacks, all modes. Not door scans.")
+            @Schema(description = "Tickets sold on live orders, net of chargebacks. Not door scans.")
             int attended,
             int capacity,
             @Schema(types = {"integer", "null"}, format = "int32",

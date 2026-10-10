@@ -44,7 +44,7 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<Ticket> findByOrderIdInOrderByOrderIdAscCreatedAtAsc(Collection<UUID> orderIds);
 
     /**
-     * Per-tier sold aggregates for an event, over the SOLD set
+     * Per-tier sold aggregates for an event, all modes (predictor outcomes), over the SOLD set
      * ({@code state NOT IN ('refunded','revoked')}). Tuple shape:
      * {@code [UUID tierId, String tierName, Long sold, Long grossRevenueMinor, Long redeemed]}.
      * Grouped by {@code tierId} only, so each tier yields exactly ONE row even
@@ -66,25 +66,25 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             """)
     List<Object[]> tierAggregates(@Param("eventId") UUID eventId);
 
-    /**
-     * Tickets this event lost to a chargeback: {@code revoked} and belonging to an order
-     * with a dispute in one of {@code statuses}. Scoped through the disputes table rather
-     * than by state alone so a future revoke path cannot quietly move the sold figure.
-     */
+    /** {@link #tierAggregates} over the tickets of LIVE-mode orders only: the event Sales tab. */
     @Query("""
-            select count(t) from Ticket t
+            select t.tierId, max(t.tierName),
+                   count(t),
+                   coalesce(sum(t.priceMinor), 0),
+                   coalesce(sum(case when t.state = 'redeemed' then 1 else 0 end), 0)
+              from Ticket t join com.imin.iminapi.model.Order o on o.id = t.orderId
              where t.eventId = :eventId
-               and t.state = 'revoked'
-               and t.orderId in (select d.orderId from com.imin.iminapi.dispute.Dispute d
-                                  where d.eventId = :eventId
-                                    and d.orderId is not null
-                                    and d.status in :statuses)
+               and o.testMode = false
+               and t.state not in ('refunded', 'revoked')
+             group by t.tierId
             """)
-    long countRevokedInDisputedOrders(
-            @Param("eventId") UUID eventId,
-            @Param("statuses") Collection<com.imin.iminapi.dispute.DisputeStatus> statuses);
+    List<Object[]> liveTierAggregates(@Param("eventId") UUID eventId);
 
-    /** {@link #countRevokedInDisputedOrders} for a page of events: [eventId, count]. */
+    /**
+     * Tickets each event lost to a LIVE-mode chargeback, for a page of events: [eventId, count].
+     * {@code revoked} and belonging to an order with a live dispute in one of {@code statuses};
+     * scoped through the disputes table so a future revoke path cannot quietly move the sold figure.
+     */
     @Query("""
             select t.eventId, count(t) from Ticket t
              where t.eventId in :eventIds
@@ -92,6 +92,7 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
                and t.orderId in (select d.orderId from com.imin.iminapi.dispute.Dispute d
                                   where d.eventId = t.eventId
                                     and d.orderId is not null
+                                    and d.testMode = false
                                     and d.status in :statuses)
              group by t.eventId
             """)
@@ -146,16 +147,31 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<Instant> findSoldCreatedAtSince(@Param("eventId") UUID eventId,
                                           @Param("since") Instant since);
 
+    /**
+     * Tickets of TEST-mode orders still counted in {@code TicketTier.sold} (every state but
+     * {@code refunded}), for a page of events: [eventId, count]. Live sold takes these off the counter.
+     */
+    @Query("""
+            select t.eventId, count(t) from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
+             where t.eventId in :eventIds
+               and o.testMode = true
+               and t.state <> 'refunded'
+             group by t.eventId
+            """)
+    List<Object[]> countHeldOnTestOrdersByEventIds(@Param("eventIds") Collection<UUID> eventIds);
+
     List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
 
     /**
      * SOLD tickets ({@code state not in ('refunded','revoked')}) on the org's orders created in
-     * {@code [since, until)}, all modes. The org home's "tickets sold" for a window.
+     * {@code [since, until)}, LIVE-mode orders only. The org home's "tickets sold" for a window.
      */
     @Query("""
             select count(t) from Ticket t
               join com.imin.iminapi.model.Order o on o.id = t.orderId
              where o.orgId = :orgId
+               and o.testMode = false
                and o.createdAt >= :since
                and o.createdAt < :until
                and t.state not in ('refunded', 'revoked')
@@ -164,10 +180,12 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
                                 @Param("since") Instant since,
                                 @Param("until") Instant until);
 
-    /** SOLD tickets on an event, all modes; the org home's per-ticket denominator. */
+    /** SOLD tickets on an event's LIVE-mode orders; the org home's per-ticket denominator. */
     @Query("""
             select count(t) from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
              where t.eventId = :eventId
+               and o.testMode = false
                and t.state not in ('refunded', 'revoked')
             """)
     long countSoldByEventId(@Param("eventId") UUID eventId);

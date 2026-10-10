@@ -60,8 +60,8 @@ public class AttributionService {
             tagged.add(new Bucket(source, ((Number) r[1]).longValue()));
         }
 
-        // Each live tagged order counts once under its landing source, less SUCCEEDED refunds and
-        // clamped at zero as in the payout net; untagged (pre-V62) orders stay unattributed.
+        // Each live tagged order counts once under its landing source, less SUCCEEDED refunds and LOST
+        // chargebacks, clamped at zero (NetOrderRevenue); untagged (pre-V62) orders stay unattributed.
         Map<String, Long> revenueBySource = NetOrderRevenue.sumByKey(orders.revenueRowsByUtmSource(p.orgId()));
 
         List<AttributionResponse.Channel> channels = new ArrayList<>();

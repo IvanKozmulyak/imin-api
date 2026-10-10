@@ -1,5 +1,8 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.marketing.service.CampaignAttributionService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -21,6 +24,8 @@ import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -38,6 +43,7 @@ class CampaignAttributionServiceTest {
     @Autowired FunnelEventRepository funnel;
     @Autowired OrderRepository orders;
     @Autowired RefundRepository refunds;
+    @Autowired DisputeRepository disputes;
     @Autowired EventRepository events;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
@@ -311,5 +317,48 @@ class CampaignAttributionServiceTest {
         assertThat(byCampaign).containsOnlyKeys(refunded, untouched);
         assertThat(byCampaign.get(refunded)).isEqualTo(4300);
         assertThat(byCampaign.get(untouched)).isEqualTo(4000);
+    }
+
+    // ---- LOST chargebacks come off; OPEN, WON and reinstated do not ----
+
+    private void dispute(Order o, long amountMinor, DisputeStatus status) {
+        Dispute d = new Dispute();
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        d.setOrgId(o.getOrgId());
+        d.setEventId(o.getEventId());
+        d.setOrderId(o.getId());
+        d.setAmountMinor(amountMinor);
+        d.setCurrency("EUR");
+        d.setStatus(status);
+        disputes.save(d);
+    }
+
+    /** Two refunds and two disputes on one order: each sum is the order's own, never a join product. */
+    @ParameterizedTest(name = "{0} → {1}")
+    @CsvSource({"LOST, 2000", "OPEN, 4000", "WON, 4000", "WITHDRAWN_REINSTATED, 4000"})
+    void revenueTakesOffLostChargebacksOnly(DisputeStatus status, long expected) {
+        UUID eventId = newEvent();
+        UUID campaignId = UUID.randomUUID();
+        Order o = order(eventId, 5000, campaignId.toString());
+        refund(o, 500, RefundStatus.SUCCEEDED);
+        refund(o, 500, RefundStatus.SUCCEEDED);
+        dispute(o, 1000, status);
+        dispute(o, 1000, status);
+
+        assertThat(attribution.attributedRevenueMinor(org.getId(), campaignId)).isEqualTo(expected);
+        assertThat(attribution.attributedRevenueMinorByCampaign(org.getId(), List.of(campaignId)))
+                .containsEntry(campaignId, expected);
+    }
+
+    @Test
+    void aLostChargebackBeyondTheUnrefundedRestTakesThatOrderToZeroOnly() {
+        UUID eventId = newEvent();
+        UUID campaignId = UUID.randomUUID();
+        Order lost = order(eventId, 3000, campaignId.toString());
+        refund(lost, 1000, RefundStatus.SUCCEEDED);
+        dispute(lost, 2500, DisputeStatus.LOST);
+        order(eventId, 2000, campaignId.toString());
+
+        assertThat(attribution.attributedRevenueMinor(org.getId(), campaignId)).isEqualTo(2000);
     }
 }

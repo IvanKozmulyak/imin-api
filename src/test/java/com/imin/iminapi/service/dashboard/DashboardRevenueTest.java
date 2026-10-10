@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The org home's window and per-event money against real queries. Fixtures follow the plan's
  * worked example: A live 2 tickets, B refunded, C charged back (LOST), D test mode with a
- * partial refund and an OPEN test dispute, E outside the window.
+ * partial refund and an OPEN test dispute (counted nowhere), E outside the window.
  */
 @IminIntegrationTest
 class DashboardRevenueTest {
@@ -92,12 +92,26 @@ class DashboardRevenueTest {
     }
 
     @Test
-    void worked_example_window_includes_test_mode_and_nets_refunds_fee_and_chargebacks() {
+    void worked_example_window_leaves_test_mode_out_and_nets_refunds_fee_and_chargebacks() {
         workedExample(event);
 
-        // gross 12045 − refunds 2149 − fee (1045 − 149) − organizer shares (C 1000 + D 4000) = 4000,
-        // i.e. A's stake 4398 − 398. D: 5349 − 1000 refunded leaves 4349 of stake, less its 349 fee.
-        assertThat(revenue.forOrgWindow(org.getId(), since, now)).isEqualTo(new Window(4_000, 3));
+        // live A, B, C: gross 6696 − refunds 1149 − fee (696 − 149) − C's share 1000 = 4000,
+        // i.e. A's stake 4398 − 398. Test-mode D, its refund, dispute and ticket count nowhere.
+        assertThat(revenue.forOrgWindow(org.getId(), since, now)).isEqualTo(new Window(4_000, 2));
+    }
+
+    @Test
+    void test_mode_orders_refunds_disputes_and_tickets_count_nowhere() {
+        Instant in = now.minus(1, ChronoUnit.DAYS);
+        orderA(event, in);
+        Order t = order(event, 5_349, 349, true, in);
+        ticket(t, Ticket.STATE_ISSUED);
+        refund(t, 1_000, 0, RefundStatus.SUCCEEDED);
+        dispute(t, 1_000, DisputeStatus.LOST, true);
+
+        assertThat(revenue.forOrgWindow(org.getId(), since, now)).isEqualTo(new Window(4_000, 2));
+        assertThat(revenue.netForEvent(event.getId())).isEqualTo(4_000L);
+        assertThat(revenue.ticketsForEvent(event.getId())).isEqualTo(2L);
     }
 
     @Test
@@ -175,7 +189,7 @@ class DashboardRevenueTest {
         Event older = event(org);
         workedExample(event, older);
 
-        assertThat(revenue.ticketsForEvent(event.getId())).isEqualTo(3L);
+        assertThat(revenue.ticketsForEvent(event.getId())).isEqualTo(2L);
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────────

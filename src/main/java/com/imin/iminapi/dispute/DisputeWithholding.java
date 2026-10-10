@@ -27,7 +27,8 @@ import java.util.stream.Collectors;
  * not refunded, net figures only the organizer share; a dispute with no order counts in full.
  *
  * <p>WON and WITHDRAWN_REINSTATED give the money back by construction: they are simply not in
- * the set, so the amount stops being subtracted.
+ * the set, so the amount stops being subtracted. The organizer readouts and the payout net count
+ * LIVE-mode disputes only (V130): a test-era chargeback clawed back no real money.
  *
  * <p>Also sizes the LOST-dispute recovery ({@link #owedOnOrder}) and the hold the payout keeps
  * back for debts not reversed yet ({@link #unrecoveredLostShareLiveMinorByOrg}). Those payout-only methods,
@@ -56,20 +57,20 @@ public class DisputeWithholding {
         this.refunds = refunds;
     }
 
-    /** Disputed amount withheld from this event's gross, capped per order at what was not refunded. All modes. */
+    /** Disputed amount withheld from this event's gross, capped per order at what was not refunded. Live disputes. */
     public long withheldMinor(UUID eventId) {
         return totals(disputes.withholdingRowsByEventIds(List.of(eventId), STATUSES))
                 .getOrDefault(eventId, Totals.ZERO).grossWithheld();
     }
 
-    /** The organizer's share of this event's chargebacks, i.e. what comes off its net. All modes. */
+    /** The organizer's share of this event's live chargebacks, i.e. what comes off its net, in presentment currency. */
     public long organizerShareMinor(UUID eventId) {
         return totals(disputes.withholdingRowsByEventIds(List.of(eventId), STATUSES))
                 .getOrDefault(eventId, Totals.ZERO).organizerShare();
     }
 
     /**
-     * {@link #organizerShareMinor}, LIVE-mode disputes only (V130), in settlement minor units: the payout
+     * {@link #organizerShareMinor} in settlement minor units, LIVE-mode disputes only (V130): the payout
      * net's figure. A dispute with no order, or on an order not stamped yet, counts its amount in full.
      */
     public long organizerShareLiveMinor(UUID eventId) {
@@ -93,7 +94,7 @@ public class DisputeWithholding {
         return sum;
     }
 
-    /** The organizer's share over the org's orders created in {@code [since, until)}, all modes. */
+    /** The organizer's share of live chargebacks over the org's orders created in {@code [since, until)}. */
     public long organizerShareMinorByOrgWindow(UUID orgId, Instant since, Instant until) {
         return totals(disputes.withholdingRowsByOrgOrderWindow(orgId, since, until, STATUSES))
                 .values().stream().mapToLong(Totals::organizerShare).sum();
@@ -162,21 +163,16 @@ public class DisputeWithholding {
                         .collect(Collectors.toMap(RefundOrderSums::orderId, r -> r));
     }
 
-    /** Charged-back ORDERS on this event, one per order however many disputes it collected. */
+    /** Live charged-back ORDERS on this event, one per order however many disputes it collected. */
     public int disputedOrderCount(UUID eventId) {
         return (int) disputes.countOpenOrLostOrdersByEventId(eventId);
     }
 
     /**
-     * Tickets revoked by those chargebacks. {@code TicketTier.sold} is deliberately left
-     * untouched by dispute ingest, so a sold figure read from that column has to subtract
-     * this rather than expect the counter to have moved.
+     * Tickets revoked by live chargebacks, for a page of events; an event with none has no entry.
+     * {@code TicketTier.sold} is deliberately left untouched by dispute ingest, so a sold figure
+     * read from that column has to subtract this rather than expect the counter to have moved.
      */
-    public int disputedTicketCount(UUID eventId) {
-        return (int) tickets.countRevokedInDisputedOrders(eventId, STATUSES);
-    }
-
-    /** {@link #disputedTicketCount} for a page of events; an event with none has no entry. */
     public Map<UUID, Integer> disputedTicketCounts(Collection<UUID> eventIds) {
         Map<UUID, Integer> out = new HashMap<>();
         for (Object[] row : tickets.countRevokedInDisputedOrdersByEventIds(eventIds, STATUSES)) {
