@@ -109,6 +109,11 @@ public class RefundAttemptStore {
         return refunds.claimForReconcile(refundId, seenAttemptAt, cutoff, now) == 1;
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean claimPendingCheck(UUID refundId, Instant cutoff, Instant now) {
+        return refunds.claimPendingCheck(refundId, cutoff, now) == 1;
+    }
+
     static String failedKey(UUID refundId) {
         return "failed:" + refundId;
     }

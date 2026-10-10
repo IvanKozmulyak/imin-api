@@ -35,6 +35,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -211,6 +212,32 @@ class RefundRequestControllerTest {
         assertThat(refund.getOrderId()).isEqualTo(rr.getOrderId());
         assertThat(refund.getStripeRefundId()).isEqualTo(stripeRefund.getId());
         assertThat(refund.getAmountMinor()).isEqualTo(1500L);
+    }
+
+    /** The running key cannot refund an order paid in the other Stripe mode, so no preview offers one. */
+    @Test
+    void wrongModeOrder_getsNoProposedRefundInDetailOrList() throws Exception {
+        RefundRequest testMode = pendingRequest(event);
+        RefundRequest liveMode = pendingRequest(event);
+        jdbc.update("UPDATE orders SET test_mode = false WHERE id = ?", liveMode.getOrderId());
+
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests/{id}", org.getId(), testMode.getId()).with(auth(me)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.proposedRefund.amountMinor").value(1500));
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests/{id}", org.getId(), liveMode.getId()).with(auth(me)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.proposedRefund").value(nullValue()))
+                .andExpect(jsonPath("$.tickets", hasSize(1)));
+
+        String body = mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", org.getId()).with(auth(me)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        java.util.Map<String, com.fasterxml.jackson.databind.JsonNode> byId = new java.util.HashMap<>();
+        new com.fasterxml.jackson.databind.ObjectMapper().readTree(body).forEach(n -> byId.put(n.get("id").asText(), n));
+        assertThat(byId.get(testMode.getId().toString()).get("estimatedRefundMinor").asLong()).isEqualTo(1500L);
+        assertThat(byId.get(testMode.getId().toString()).get("currency").asText()).isNotBlank();
+        assertThat(byId.get(liveMode.getId().toString()).get("estimatedRefundMinor").asLong()).isZero();
+        assertThat(byId.get(liveMode.getId().toString()).get("currency").isNull()).isTrue();
     }
 
     /** A submitted request: a paid order with one live ticket and its open request. */

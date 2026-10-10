@@ -83,6 +83,10 @@ public class Refund {
     @Column(name = "stripe_attempts", nullable = false, updatable = false)
     private int stripeAttempts;
 
+    /** Last time the reconciler read this refund's state from Stripe (V182); written only by its claims. */
+    @Column(name = "stripe_checked_at", updatable = false)
+    private Instant stripeCheckedAt;
+
     /** When the fronted money was pulled back from the connected account; null while still owed. */
     @Column(name = "recovered_at")
     private Instant recoveredAt;

@@ -714,7 +714,7 @@ public class StripeWebhookService {
      *
      * <p>Idempotency is enforced two ways: the {@link WebhookEventDedupService}
      * at the top of {@link #handleV1Transactional} no-ops replays of the same
-     * {@code event.id}, and {@link RefundService#handleWebhookStatusChange}
+     * {@code event.id}, and {@link RefundService#applyStripeRefund}
      * uses a status-conditional UPDATE so only one transaction wins the
      * transition.
      */
@@ -731,22 +731,10 @@ public class StripeWebhookService {
                 obj.get().getClass().getName());
             return;
         }
-        RefundStatus newStatus = RefundStatus.fromStripe(stripeRefund.getStatus());
         log.info("[stripe-webhook] charge.refund.updated refundId={} status={} mapped={}",
-            stripeRefund.getId(), stripeRefund.getStatus(), newStatus);
-        // The payment intent, charge and amount travel with the status so a refund we never
-        // created (organizer refunded from the Stripe Dashboard) can be back-resolved to its Order;
-        // imin_refund_id maps one we created before its id was recorded.
-        refundService.handleWebhookStatusChange(
-            stripeRefund.getId(),
-            newStatus,
-            stripeRefund.getFailureReason(),
-            stripeRefund.getFailureReason(),   // Stripe Refund only exposes failure_reason
-            stripeRefund.getPaymentIntent(),
-            stripeRefund.getCharge(),
-            stripeRefund.getAmount(),
-            stripeRefund.getMetadata() == null
-                ? null : stripeRefund.getMetadata().get(StripeRefundService.IMIN_REFUND_ID));
+            stripeRefund.getId(), stripeRefund.getStatus(), RefundStatus.fromStripe(stripeRefund.getStatus()));
+        // The same entry point the reconciler uses for a refund whose webhook never came.
+        refundService.applyStripeRefund(stripeRefund);
     }
 
     // ── Track A settlements ingestion handlers ──────────────────────────────────

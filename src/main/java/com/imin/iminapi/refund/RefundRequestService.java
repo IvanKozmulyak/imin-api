@@ -82,7 +82,6 @@ public class RefundRequestService {
     private final TicketProperties ticketProps;
     private final ApplicationEventPublisher publisher;
     private final TicketRepository tickets;
-    private final RefundTicketRepository refundTickets;
     private final TicketTierRepository tiers;
     private final RefundService refundService;
     private final RefundRepository refunds;
@@ -100,7 +99,6 @@ public class RefundRequestService {
                                 TicketProperties ticketProps,
                                 ApplicationEventPublisher publisher,
                                 TicketRepository tickets,
-                                RefundTicketRepository refundTickets,
                                 TicketTierRepository tiers,
                                 RefundService refundService,
                                 RefundRepository refunds,
@@ -117,7 +115,6 @@ public class RefundRequestService {
         this.ticketProps = ticketProps;
         this.publisher = publisher;
         this.tickets = tickets;
-        this.refundTickets = refundTickets;
         this.tiers = tiers;
         this.refundService = refundService;
         this.refunds = refunds;
@@ -218,6 +215,7 @@ public class RefundRequestService {
         Event event = events.findById(order.getEventId()).orElse(null);
 
         RefundEligibility eligibility = eligibilityFor(order);
+        if (!eligibility.modeMatches()) throw wrongMode();
         List<Ticket> refundable = eligibility.refundable();
         if (refundable.isEmpty()) {
             throw new ApiException(
@@ -270,7 +268,7 @@ public class RefundRequestService {
      * {@link #eligibilityFor} excludes and for whatever reason, the count is exactly that.
      */
     private record RefundEligibility(List<Ticket> all, List<Ticket> refundable,
-                                     int nonRefundableCount) {}
+                                     int nonRefundableCount, boolean modeMatches) {}
 
     /**
      * Splits an order's tickets into refundable and not.
@@ -283,21 +281,26 @@ public class RefundRequestService {
      * organizer surface below; changing it changes what is refundable, which is out of
      * scope for a reporting field. {@code all} rides along because the organizer views
      * also render the non-refundable lines.
+     *
+     * <p>{@code modeMatches} is false for an order paid in the other Stripe mode: the running key cannot
+     * refund it ({@code RefundService.createRefund} answers 409), so no preview may offer a refund for it.
      */
     private RefundEligibility eligibilityFor(Order order) {
         List<Ticket> all = tickets.findByOrderId(order.getId());
-        List<UUID> ids = all.stream().map(Ticket::getId).toList();
-        Set<UUID> alreadyRefunded = ids.isEmpty()
-            ? Set.of() : refundTickets.findRefundedTicketIds(ids);
+        Set<UUID> alreadyRefunded = refundService.claimedTicketIds(all.stream().map(Ticket::getId).toList());
         List<Ticket> refundable = all.stream()
             .filter(t -> !alreadyRefunded.contains(t.getId()))
-            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
+            .filter(t -> !RefundService.isRedeemed(t))
             .toList();
-        return new RefundEligibility(all, refundable, all.size() - refundable.size());
+        return new RefundEligibility(all, refundable, all.size() - refundable.size(),
+            refundService.matchesStripeMode(order));
     }
 
-    private List<Ticket> refundableTicketsFor(Order order) {
-        return eligibilityFor(order).refundable();
+    /** Shown to a buyer whose order the running Stripe key cannot refund; not a claim about its tickets. */
+    static final String WRONG_MODE_MESSAGE = "This order cannot be refunded online. Contact the organizer.";
+
+    private static ApiException wrongMode() {
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE, WRONG_MODE_MESSAGE);
     }
 
     @Transactional
@@ -316,7 +319,9 @@ public class RefundRequestService {
                 ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
                 "Refund link is no longer valid"));
 
-        List<Ticket> refundable = refundableTicketsFor(order);
+        RefundEligibility eligibility = eligibilityFor(order);
+        if (!eligibility.modeMatches()) throw wrongMode();
+        List<Ticket> refundable = eligibility.refundable();
         if (refundable.isEmpty()) {
             // Burn the token so a retry doesn't hit lookup-then-409 again.
             token.setConsumedAt(Times.nowMicros());
@@ -447,7 +452,7 @@ public class RefundRequestService {
         }
 
         ProposedRefundResponse proposed = null;
-        if (rr.getStatus() == RefundRequestStatus.PENDING && !refundable.isEmpty()) {
+        if (rr.getStatus() == RefundRequestStatus.PENDING && eligibility.modeMatches() && !refundable.isEmpty()) {
             long amount = refundService.computeRefundAmountMinor(order, refundable);
             long appFee = refundService.computeAppFeeRefundMinor(order, amount);
             proposed = new ProposedRefundResponse(
@@ -543,10 +548,11 @@ public class RefundRequestService {
             // computations. We accept the per-row cost for now and add caching
             // if it bites.
             Order order = orders.findById(rr.getOrderId()).orElse(null);
-            List<Ticket> refundable = order == null ? List.of() : eligibilityFor(order).refundable();
+            RefundEligibility eligibility = order == null ? null : eligibilityFor(order);
+            List<Ticket> refundable = eligibility == null ? List.of() : eligibility.refundable();
             long estimated = 0;
             String currency = null;
-            if (order != null && !refundable.isEmpty()) {
+            if (eligibility != null && eligibility.modeMatches() && !refundable.isEmpty()) {
                 estimated = refundService.computeRefundAmountMinor(order, refundable);
                 currency = order.getCurrency();
             }

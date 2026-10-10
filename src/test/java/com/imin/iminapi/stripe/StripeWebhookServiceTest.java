@@ -69,6 +69,8 @@ class StripeWebhookServiceTest {
         dedup = mock(WebhookEventDedupService.class);
         paidCheckoutService = mock(PaidCheckoutService.class);
         refundService = mock(com.imin.iminapi.refund.RefundService.class);
+        // The real mapping from Stripe's Refund, landing on the mocked status transition the tests verify.
+        org.mockito.Mockito.doCallRealMethod().when(refundService).applyStripeRefund(any());
         settlementIngest = mock(SettlementIngestService.class);
         disputeIngest = mock(com.imin.iminapi.dispute.DisputeIngestService.class);
         amountVerifier = mock(CheckoutAmountVerifier.class);

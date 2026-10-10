@@ -309,7 +309,8 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
 
     /**
      * Attempts with no known Stripe outcome, last touched before {@code cutoff}, on orders paid in
-     * the running key's mode; oldest first. Rows written before V179 have no attempt time and never match.
+     * the running key's mode; oldest first. Rows written before V179 have no attempt time and never match
+     * ({@link #countUnattemptedRequested} reports those).
      */
     @Query("""
             select r from Refund r
@@ -324,4 +325,48 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     List<Refund> findUnresolvedAttempts(@Param("cutoff") java.time.Instant cutoff,
                                         @Param("testMode") boolean testMode,
                                         org.springframework.data.domain.Pageable page);
+
+    /**
+     * PENDING refunds not read from Stripe since {@code cutoff} (or, never read, created or last attempted
+     * before it), on orders in the running key's mode; least recently seen first.
+     */
+    @Query("""
+            select r from Refund r
+              join com.imin.iminapi.model.Order o on o.id = r.orderId
+             where r.status = com.imin.iminapi.refund.RefundStatus.PENDING
+               and r.stripeRefundId is not null
+               and coalesce(r.stripeCheckedAt, r.stripeAttemptAt, r.createdAt) < :cutoff
+               and o.testMode = :testMode
+             order by coalesce(r.stripeCheckedAt, r.stripeAttemptAt, r.createdAt)
+            """)
+    List<Refund> findStalePending(@Param("cutoff") java.time.Instant cutoff,
+                                  @Param("testMode") boolean testMode,
+                                  org.springframework.data.domain.Pageable page);
+
+    /**
+     * REQUESTED rows with neither a Stripe id nor an attempt time, any mode. None can arise since V179
+     * (every insert stamps the attempt); the reconciler reports any it finds and never acts on them.
+     */
+    @Query("""
+            select count(r) from Refund r
+             where r.status = com.imin.iminapi.refund.RefundStatus.REQUESTED
+               and r.stripeRefundId is null
+               and r.stripeAttemptAt is null
+            """)
+    long countUnattemptedRequested();
+
+    /** Claims a PENDING refund for one Stripe read: lands only while it is still PENDING and unseen since {@code cutoff}. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Refund r
+               set r.stripeCheckedAt = :now
+             where r.id = :id
+               and r.status = com.imin.iminapi.refund.RefundStatus.PENDING
+               and r.stripeRefundId is not null
+               and coalesce(r.stripeCheckedAt, r.stripeAttemptAt, r.createdAt) < :cutoff
+            """)
+    int claimPendingCheck(@Param("id") UUID id,
+                          @Param("cutoff") java.time.Instant cutoff,
+                          @Param("now") java.time.Instant now);
+
 }

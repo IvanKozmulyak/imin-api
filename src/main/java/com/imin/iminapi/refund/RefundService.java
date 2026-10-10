@@ -336,6 +336,7 @@ public class RefundService {
      * One reconciler pass over an unresolved attempt. Claims it (compare-and-set on
      * {@code stripe_attempt_at}), then: adopts the Stripe refund carrying its metadata; or, when
      * Stripe has none, refuses it on a disputed order or re-sends it with its stored inputs and key.
+     * Rows with no attempt time (pre-V179) are skipped; the reconciler only reports them.
      */
     public Resolution resolveAttempt(UUID refundId) {
         Refund row = refunds.findById(refundId).orElse(null);
@@ -437,7 +438,25 @@ public class RefundService {
     }
 
     /**
-     * Called by {@link com.imin.iminapi.stripe.StripeWebhookService} on the refund events. Performs
+     * Applies Stripe's record of a refund: the refund webhooks' entry point, and the reconciler's for a
+     * PENDING refund whose webhook never came. Idempotent: a repeat of the same state is a no-op.
+     */
+    @Transactional
+    public void applyStripeRefund(com.stripe.model.Refund stripeRefund) {
+        handleWebhookStatusChange(
+            stripeRefund.getId(),
+            RefundStatus.fromStripe(stripeRefund.getStatus()),
+            stripeRefund.getFailureReason(),
+            stripeRefund.getFailureReason(),   // Stripe Refund only exposes failure_reason
+            stripeRefund.getPaymentIntent(),
+            stripeRefund.getCharge(),
+            stripeRefund.getAmount(),
+            stripeRefund.getMetadata() == null
+                ? null : stripeRefund.getMetadata().get(StripeRefundService.IMIN_REFUND_ID));
+    }
+
+    /**
+     * Called through {@link #applyStripeRefund} on the refund events. Performs
      * the race-safe status transition and (on SUCCEEDED) the inventory release and email publish.
      * Late events past a terminal state are no-ops.
      *

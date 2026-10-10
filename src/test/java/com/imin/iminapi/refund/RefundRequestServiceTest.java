@@ -60,11 +60,15 @@ class RefundRequestServiceTest {
         emailProps.setBuyerSiteBaseUrl("https://app.test");
         emailProps.setFromAddress("noreply@test");
         ticketProps.setRecoveryMaxPerHour(5);
+        // RefundService owns the claimed and mode rules; the real claimed rule reads refund_tickets.
+        when(refundService.claimedTicketIds(any()))
+            .thenAnswer(inv -> refundTickets.findRefundedTicketIds(inv.getArgument(0)));
+        when(refundService.matchesStripeMode(any())).thenReturn(true);
         when(renderer.render(anyString(), any(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
-            tickets, refundTickets, tiers, refundService, refunds, references,
+            tickets, tiers, refundService, refunds, references,
             new com.imin.iminapi.security.IpHasher("test-ip-hash-secret"));
     }
 

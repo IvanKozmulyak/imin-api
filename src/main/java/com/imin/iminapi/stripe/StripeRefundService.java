@@ -96,6 +96,11 @@ public class StripeRefundService {
         return refund;
     }
 
+    /** Stripe's current record of one refund. */
+    public Refund retrieve(String stripeRefundId) throws StripeException {
+        return stripeClient.refunds().retrieve(stripeRefundId);
+    }
+
     /**
      * Every refund of a PaymentIntent, all pages. Throws past {@link #MAX_LIST_PAGES} pages, which the
      * reconciler treats as an unknown outcome rather than "Stripe has no such refund".

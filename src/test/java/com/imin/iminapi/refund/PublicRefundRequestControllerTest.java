@@ -64,7 +64,8 @@ class PublicRefundRequestControllerTest {
         Event event = fx.event(org, owner, EventStatus.LIVE, clock.instant().plus(Duration.ofDays(30)));
         buyer = fx.email("buyer");
         order = fx.order(event, buyer);
-        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ? WHERE id = ?",
+        // test_mode as checkout stamps it under the suite's sk_test key.
+        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ?, test_mode = true WHERE id = ?",
                 "pi_" + UUID.randomUUID().toString().replace("-", ""), order.getId());
         fx.ticket(order, Ticket.STATE_ISSUED);
     }
@@ -147,6 +148,25 @@ class PublicRefundRequestControllerTest {
         assertThat(fieldNames(root.get("tickets").get(0)))
                 .as("PublicRefundFormResponse.TicketLine keys leaked or missing")
                 .isEqualTo(Set.of("id", "tierName", "faceMinor"));
+    }
+
+    /** An order the running Stripe key cannot refund gets no form, no estimate and no request on file. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"form", "submit"})
+    void wrongModeOrder_is409OrderNotRefundable_notNoRefundableTickets(String route) throws Exception {
+        jdbc.update("UPDATE orders SET test_mode = false WHERE id = ?", order.getId());
+        String raw = token();
+
+        MockHttpServletRequestBuilder req = "form".equals(route)
+                ? get("/api/v1/public/refund-requests/by-token/{t}", raw)
+                : post("/api/v1/public/refund-requests/by-token/{t}", raw)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"cant_attend\",\"explanation\":\"Can't make it.\"}");
+        mvc.perform(req)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("ORDER_NOT_REFUNDABLE"))
+                .andExpect(jsonPath("$.error.message").value("This order cannot be refunded online. Contact the organizer."));
+        assertThat(requests.findFirstByOrderIdAndStatus(order.getId(), RefundRequestStatus.PENDING)).isEmpty();
     }
 
     /** A live, unconsumed link token for this test's order; returns the raw token the email would carry. */

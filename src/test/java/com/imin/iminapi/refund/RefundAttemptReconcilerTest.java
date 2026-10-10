@@ -9,6 +9,7 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.IminFixtures;
@@ -286,7 +287,128 @@ class RefundAttemptReconcilerTest {
         assertThat(refunds.findById(id).orElseThrow().getStripeAttempts()).isEqualTo(2);
     }
 
+    // ── stale PENDING: the webhook never came ──
+
+    /** Settled from Stripe's own record, exactly once: a late webhook and a second pass change nothing. */
+    @ParameterizedTest(name = "stripeSays={0}")
+    @ValueSource(strings = {"succeeded", "failed"})
+    void stalePending_isSettledFromStripeOnce_andALateWebhookIsANoOp(String stripeSays) throws Exception {
+        Order order = paidOrder(1500);
+        TicketTier tier = fx.tier(event, 1500, 10);
+        jdbc.update("UPDATE ticket_tiers SET sold = 2 WHERE id = ?", tier.getId());
+        Ticket ticket = fx.ticket(order, Ticket.STATE_ISSUED);
+        jdbc.update("UPDATE tickets SET tier_id = ? WHERE id = ?", tier.getId(), ticket.getId());
+        com.stripe.model.Refund pending = stripeRefund("pending");
+        UUID id = pendingPost(order, ticket, pending);
+
+        com.stripe.model.Refund settled = stripeRefund(stripeSays);
+        settled.setId(pending.getId());
+        settled.setCharge(pending.getCharge());
+        settled.setPaymentIntent(order.getStripePaymentIntentId());
+        if ("failed".equals(stripeSays)) settled.setFailureReason("expired_or_canceled_card");
+        when(stripeRefunds.retrieve(pending.getId())).thenReturn(settled);
+        clock.advance(Duration.ofMinutes(61));
+        reconcile();
+
+        RefundStatus expected = "succeeded".equals(stripeSays) ? RefundStatus.SUCCEEDED : RefundStatus.FAILED;
+        assertSettled(id, ticket, tier, expected);
+
+        // The webhook that was lost arrives after all; then another pass runs much later.
+        refundService.handleWebhookStatusChange(pending.getId(), expected, settled.getFailureReason(),
+                settled.getFailureReason(), order.getStripePaymentIntentId(), pending.getCharge(), 1500L, id.toString());
+        clock.advance(Duration.ofHours(2));
+        reconcile();
+
+        assertSettled(id, ticket, tier, expected);
+        verify(stripeRefunds, times(1)).retrieve(pending.getId());
+    }
+
+    private void assertSettled(UUID id, Ticket ticket, TicketTier tier, RefundStatus expected) {
+        Refund after = refunds.findById(id).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo(expected);
+        Integer sold = jdbc.queryForObject("SELECT sold FROM ticket_tiers WHERE id = ?", Integer.class, tier.getId());
+        String state = jdbc.queryForObject("SELECT state FROM tickets WHERE id = ?", String.class, ticket.getId());
+        if (expected == RefundStatus.SUCCEEDED) {
+            assertThat(sold).as("sold decremented exactly once").isEqualTo(1);
+            assertThat(state).isEqualTo(Ticket.STATE_REFUNDED);
+            assertThat(claims(id)).containsExactly(ticket.getId());
+        } else {
+            assertThat(sold).isEqualTo(2);
+            assertThat(state).isEqualTo(Ticket.STATE_ISSUED);
+            assertThat(after.getFailureCode()).isEqualTo("expired_or_canceled_card");
+            assertThat(after.getIdempotencyKey()).isEqualTo("failed:" + id);
+            assertThat(claims(id)).isEmpty();
+        }
+    }
+
+    enum PendingExcluded { FRESH, OTHER_STRIPE_MODE, CHECKED_RECENTLY }
+
+    /** Each case seeds a stale row too, so a skipped tick cannot pass for an excluded row. */
+    @ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.EnumSource(PendingExcluded.class)
+    void pendingRowsTheRecheckMustNotTouch(PendingExcluded excluded) throws Exception {
+        Order stale = paidOrder(1500);
+        com.stripe.model.Refund stalePending = stripeRefund("pending");
+        UUID staleId = pendingPost(stale, fx.ticket(stale, Ticket.STATE_ISSUED), stalePending);
+        if (excluded == PendingExcluded.FRESH) clock.advance(Duration.ofMinutes(59));
+        Order skipped = paidOrder(1500);
+        com.stripe.model.Refund skippedPending = stripeRefund("pending");
+        UUID skippedId = pendingPost(skipped, fx.ticket(skipped, Ticket.STATE_ISSUED), skippedPending);
+        if (excluded == PendingExcluded.OTHER_STRIPE_MODE) {
+            jdbc.update("UPDATE orders SET test_mode = false WHERE id = ?", skipped.getId());
+        }
+        clock.advance(Duration.ofMinutes(excluded == PendingExcluded.FRESH ? 2 : 61));
+        if (excluded == PendingExcluded.CHECKED_RECENTLY) {
+            jdbc.update("UPDATE refunds SET stripe_checked_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(clock.instant().minus(Duration.ofMinutes(10))), skippedId);
+        }
+        when(stripeRefunds.retrieve(stalePending.getId())).thenReturn(stalePending);
+        when(stripeRefunds.retrieve(skippedPending.getId())).thenReturn(skippedPending);
+
+        reconcile();
+
+        verify(stripeRefunds).retrieve(stalePending.getId());
+        verify(stripeRefunds, never()).retrieve(skippedPending.getId());
+        assertThat(refunds.findById(staleId).orElseThrow().getStatus())
+                .as("Stripe still says pending").isEqualTo(RefundStatus.PENDING);
+        assertThat(refunds.findById(skippedId).orElseThrow().getStatus()).isEqualTo(RefundStatus.PENDING);
+    }
+
+    @Test
+    void pendingRecheckThatCannotReadStripe_keepsTheRowAndRotatesIt() throws Exception {
+        Order order = paidOrder(1500);
+        com.stripe.model.Refund pending = stripeRefund("pending");
+        UUID id = pendingPost(order, fx.ticket(order, Ticket.STATE_ISSUED), pending);
+        when(stripeRefunds.retrieve(pending.getId())).thenThrow(new ApiConnectionException("read timeout"));
+        clock.advance(Duration.ofMinutes(61));
+        reconcile();
+        clock.advance(Duration.ofMinutes(30));
+        reconcile();
+
+        verify(stripeRefunds, times(1)).retrieve(pending.getId());
+        assertThat(refunds.findById(id).orElseThrow().getStatus()).isEqualTo(RefundStatus.PENDING);
+        assertThat(jdbc.queryForObject("SELECT stripe_checked_at FROM refunds WHERE id = ?", java.sql.Timestamp.class, id))
+                .as("rotated behind the other stale rows").isNotNull();
+    }
+
     // ── helpers ──
+
+    /** POSTs a refund Stripe answers {@code pending}; returns the PENDING row id. */
+    private UUID pendingPost(Order order, Ticket ticket, com.stripe.model.Refund answer) throws Exception {
+        when(stripeRefunds.create(argThat((RefundCreateParams p) -> p != null
+                && order.getStripePaymentIntentId().equals(p.getPaymentIntent())), any(RequestOptions.class)))
+                .thenReturn(answer);
+        mvc.perform(post("/api/v1/orders/{id}/refund", order.getId())
+                        .with(auth(principal))
+                        .header("Idempotency-Key", "k-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "ticketIds", List.of(ticket.getId().toString()), "reason", "other"))))
+                .andExpect(status().is2xxSuccessful());
+        Refund row = refunds.findByStripeRefundId(answer.getId()).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(RefundStatus.PENDING);
+        return row.getId();
+    }
 
     /** POSTs a refund whose Stripe call has no known outcome; returns the REQUESTED row id. */
     private UUID uncertainPost(Order order, Ticket ticket) throws Exception {
