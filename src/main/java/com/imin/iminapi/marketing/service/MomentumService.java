@@ -216,9 +216,8 @@ public class MomentumService {
         int dismissed30d = (int) suggestions.countByOrgIdAndStatusAndActedAtAfter(orgId, "dismissed", since);
 
         // attributedMinor: 30-day attributed REVENUE in minor units for momentum campaigns.
-        // No per-campaign revenue-minor source exists today (orders carry no utm key — see
-        // MarketingHubService.attributedRevMinor / CampaignAttributionService), so it is a
-        // literal 0, never faked.
+        // Per-campaign revenue exists (orders.utm_campaign, CampaignAttributionService) but is
+        // not wired to momentum suggestions yet, so this stays a literal 0, never faked.
         long attributedMinor = 0L;
 
         // log: 10 most recent non-'suggested' suggestions, newest first.

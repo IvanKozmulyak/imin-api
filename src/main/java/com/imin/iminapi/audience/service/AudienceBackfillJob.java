@@ -19,7 +19,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * One-shot backfill: iterates all orders with a stripe_payment_intent_id (paid orders)
+ * One-shot backfill: iterates every order that has an email (free and paid)
  * through the same upsertMembership path as live ingestion → identical projection.
  * ShedLock-guarded so only one replica runs at a time.
  *

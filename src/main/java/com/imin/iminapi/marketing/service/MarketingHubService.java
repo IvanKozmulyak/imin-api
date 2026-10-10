@@ -93,7 +93,8 @@ public class MarketingHubService {
         //  - attributedPurchases: distinct checkout-start SESSIONS carrying each campaign's
         //    utm_campaign (the /track funnel beacon).
         //  - attributedRevMinor: a TRUE per-order sum of the revenue those campaigns drove,
-        //    joined on orders.utm_campaign = campaign id (V62). One batched query, not N.
+        //    joined on orders.utm_campaign = campaign id (V62), live orders only and net of
+        //    succeeded refunds. One batched query, not N.
         // The two come from different sources on purpose (sessions vs money that moved), so
         // they can legitimately disagree — see CampaignAttributionService.
         List<Campaign> recent = campaigns.findByOrgCreatedSince(orgId, now.minus(ATTRIBUTION_WINDOW));

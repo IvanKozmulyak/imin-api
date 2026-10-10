@@ -47,6 +47,9 @@ management:
       enabled: false
 
 imin:
+  # The test config shadows main's, so the dashboard origin is repeated for the CORS test.
+  cors:
+    allowed-origin-patterns: https://dashboard.imin.wtf
   # No @Scheduled dispatch in test contexts; ShedLock proxies stay. Refused outside the test profile.
   scheduling:
     enabled: false

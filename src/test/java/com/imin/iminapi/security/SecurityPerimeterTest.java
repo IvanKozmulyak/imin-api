@@ -90,6 +90,16 @@ class SecurityPerimeterTest {
                         "camera=(), microphone=(), geolocation=()"));
     }
 
+    /** Without this the dashboard cannot read export filenames cross-origin. */
+    @Test
+    void dashboard_origin_may_read_the_content_disposition_header() throws Exception {
+        mvc.perform(get("/api/v1/events").header("Origin", "https://dashboard.imin.wtf"))
+.andExpect(header().string("Access-Control-Allow-Origin", "https://dashboard.imin.wtf"))
+                .andExpect(result -> assertThat(
+                        result.getResponse().getHeader("Access-Control-Expose-Headers"))
+                        .contains("Content-Disposition"));
+    }
+
     /** Order and ticket tokens live in the URL path, so a leaked referrer leaks the ticket. */
     @Test
     void api_responses_carry_the_strict_csp_and_cannot_be_framed() throws Exception {
