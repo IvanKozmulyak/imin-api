@@ -41,9 +41,14 @@ public interface ConsumerRepository extends Repository<Consumer, UUID> {
     int insertIfAbsent(@Param("id") UUID id, @Param("email") String normalizedEmail,
                        @Param("displayName") String displayName, @Param("createdAt") java.time.Instant createdAt);
 
-    /** Batch fetch by consumerIds — used by SendGateService for email resolution. */
+    /** Batch fetch by consumerIds — used by SendGateService for email resolution. Any number of ids. */
+    default List<Consumer> findAllByConsumerIdIn(Collection<UUID> ids) {
+        return com.imin.iminapi.util.IdChunks.query(ids, this::findChunkByConsumerIdIn);
+    }
+
+    /** At most {@link com.imin.iminapi.util.IdChunks#MAX_IDS_PER_QUERY} ids; callers use findAllByConsumerIdIn. */
     @Query("select c from Consumer c where c.consumerId in :ids")
-    List<Consumer> findAllByConsumerIdIn(@Param("ids") Collection<UUID> ids);
+    List<Consumer> findChunkByConsumerIdIn(@Param("ids") Collection<UUID> ids);
 
     /** How many memberships reference this consumer (across all orgs). Used by DSAR erase. */
     @Query("select count(m) from Membership m where m.consumerId = :consumerId")

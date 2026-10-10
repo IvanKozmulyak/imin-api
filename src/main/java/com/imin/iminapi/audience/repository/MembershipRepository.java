@@ -144,9 +144,15 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.recencyDays <= 30 and m.events <= 1")
     List<Membership> findNewest30d(@Param("orgId") UUID orgId);
 
+    /** Any number of ids: chunked under the bind-parameter limit. */
+    default List<Membership> findByIdsAndOrgId(Collection<UUID> ids, @Param("orgId") UUID orgId) {
+        return com.imin.iminapi.util.IdChunks.query(ids, chunk -> findChunkByIdsAndOrgId(chunk, orgId));
+    }
+
+    /** At most {@link com.imin.iminapi.util.IdChunks#MAX_IDS_PER_QUERY} ids; callers use findByIdsAndOrgId. */
     @Query("select m from Membership m where m.membershipId in :ids and m.orgId = :orgId")
-    List<Membership> findByIdsAndOrgId(@Param("ids") Collection<UUID> ids,
-                                        @Param("orgId") UUID orgId);
+    List<Membership> findChunkByIdsAndOrgId(@Param("ids") Collection<UUID> ids,
+                                            @Param("orgId") UUID orgId);
 
     // ---- segment live counts (the Audience tab asks for a number, not a page of people) ----
 

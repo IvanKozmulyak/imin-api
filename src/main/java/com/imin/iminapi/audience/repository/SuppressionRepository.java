@@ -56,10 +56,16 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
     @Query("select s from SuppressionEntry s where s.scope = 'marketing' and s.orgId = :orgId")
     List<SuppressionEntry> findMarketingByOrg(@Param("orgId") UUID orgId);
 
-    /** Batch check: which of these membership IDs are marketing-suppressed in this org? */
+    /** Batch check: which of these membership IDs are marketing-suppressed in this org? Any number of ids. */
+    default List<UUID> findMarketingSuppressedMembershipIds(UUID orgId, java.util.Collection<UUID> membershipIds) {
+        return com.imin.iminapi.util.IdChunks.query(membershipIds,
+                chunk -> findMarketingSuppressedMembershipIdsChunk(orgId, chunk));
+    }
+
+    /** At most {@link com.imin.iminapi.util.IdChunks#MAX_IDS_PER_QUERY} ids; callers use the unchunked name. */
     @Query("select s.membershipId from SuppressionEntry s where s.scope = 'marketing' and s.orgId = :orgId and s.membershipId in :membershipIds")
-    List<UUID> findMarketingSuppressedMembershipIds(@Param("orgId") UUID orgId,
-                                                     @Param("membershipIds") java.util.Collection<UUID> membershipIds);
+    List<UUID> findMarketingSuppressedMembershipIdsChunk(@Param("orgId") UUID orgId,
+                                                          @Param("membershipIds") java.util.Collection<UUID> membershipIds);
 
     @Modifying
     @Transactional
@@ -80,9 +86,14 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
     int insertDeliverabilityIfAbsent(@Param("id") UUID id, @Param("email") String email,
                                      @Param("reason") String reason);
 
-    /** Batch check: which of these emails are deliverability-suppressed? */
+    /** Batch check: which of these emails are deliverability-suppressed? Any number of emails. */
+    default List<String> findDeliverabilityEmailsIn(java.util.Collection<String> emails) {
+        return com.imin.iminapi.util.IdChunks.query(emails, this::findDeliverabilityEmailsInChunk);
+    }
+
+    /** At most {@link com.imin.iminapi.util.IdChunks#MAX_IDS_PER_QUERY} emails; callers use findDeliverabilityEmailsIn. */
     @Query("select s.normalizedEmail from SuppressionEntry s where s.scope = 'deliverability' and s.normalizedEmail in :emails")
-    List<String> findDeliverabilityEmailsIn(@Param("emails") java.util.Collection<String> emails);
+    List<String> findDeliverabilityEmailsInChunk(@Param("emails") java.util.Collection<String> emails);
 
     // ---- DSAR cascade ----
 

@@ -88,8 +88,8 @@ public class CampaignSendUnit {
             c.setStatus("sending");
             c.setUpdatedAt(now);
         }
-        // ponytail: materialize runs whole, outside the run budget; set-based, ~0.6 s per 5,000 members, but the gate
-        // binds the whole audience in one IN list, so past 65,535 members the bind limit fails it.
+        // ponytail: materialize runs whole, outside the run budget, holding the audience in memory; ~0.6 s per 5,000
+        // members, ids queried 10,000 at a time, so the ceiling is time and heap in one transaction, not bind limits.
         materializer.materialize(c);
         // Drive batches until nothing claimable remains. Bounded loop; each call commits
         // its own batch and heartbeats.
