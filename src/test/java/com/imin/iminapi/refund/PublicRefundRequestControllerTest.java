@@ -169,6 +169,67 @@ class PublicRefundRequestControllerTest {
         assertThat(requests.findFirstByOrderIdAndStatus(order.getId(), RefundRequestStatus.PENDING)).isEmpty();
     }
 
+    /** Nothing refundable is permanent for this link, so the 409 burns it and a retry is told the link is spent. */
+    @Test
+    void submit_withNothingRefundable_burnsTheToken_soTheNextUseIs410() throws Exception {
+        jdbc.update("UPDATE tickets SET state = ? WHERE order_id = ?", Ticket.STATE_REDEEMED, order.getId());
+        String raw = token();
+
+        mvc.perform(submit(raw))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("NO_REFUNDABLE_TICKETS"));
+
+        assertThat(consumedAt(raw)).as("the burn survives the 409's rollback").isNotNull();
+        mvc.perform(submit(raw))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.error.code").value("REFUND_TOKEN_EXPIRED_OR_CONSUMED"));
+        mvc.perform(get("/api/v1/public/refund-requests/by-token/{t}", raw))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.error.code").value("REFUND_TOKEN_EXPIRED_OR_CONSUMED"));
+    }
+
+    /** A refusal the buyer can outlive leaves the link usable: once the cause clears, the same link submits. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"wrong Stripe mode", "request already open"})
+    void submit_refusedForAFixableReason_leavesTheTokenUsable(String kind) throws Exception {
+        RefundRequest open = null;
+        String expectedCode;
+        if ("wrong Stripe mode".equals(kind)) {
+            jdbc.update("UPDATE orders SET test_mode = false WHERE id = ?", order.getId());
+            expectedCode = "ORDER_NOT_REFUNDABLE";
+        } else {
+            String first = json.readTree(mvc.perform(submit(token()))
+                    .andExpect(status().isCreated())
+                    .andReturn().getResponse().getContentAsString()).get("id").asText();
+            open = requests.findById(UUID.fromString(first)).orElseThrow();
+            expectedCode = "REFUND_REQUEST_ALREADY_OPEN";
+        }
+        String raw = token();
+
+        mvc.perform(submit(raw))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value(expectedCode));
+        assertThat(consumedAt(raw)).isNull();
+
+        if (open == null) {
+            jdbc.update("UPDATE orders SET test_mode = true WHERE id = ?", order.getId());
+        } else {
+            jdbc.update("UPDATE refund_requests SET status = 'REJECTED', pending_marker = NULL WHERE id = ?", open.getId());
+        }
+        mvc.perform(submit(raw)).andExpect(status().isCreated());
+    }
+
+    private static MockHttpServletRequestBuilder submit(String raw) {
+        return post("/api/v1/public/refund-requests/by-token/{t}", raw)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"cant_attend\",\"explanation\":\"Can't make it.\"}");
+    }
+
+    private java.sql.Timestamp consumedAt(String raw) {
+        return jdbc.queryForObject("SELECT consumed_at FROM refund_request_tokens WHERE token_hash = ?",
+                java.sql.Timestamp.class, RefundRequestService.sha256Hex(raw));
+    }
+
     /** A live, unconsumed link token for this test's order; returns the raw token the email would carry. */
     private String token() {
         String raw = "rt-" + UUID.randomUUID();

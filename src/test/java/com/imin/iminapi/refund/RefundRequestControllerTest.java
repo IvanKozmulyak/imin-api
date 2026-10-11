@@ -240,6 +240,26 @@ class RefundRequestControllerTest {
         assertThat(byId.get(liveMode.getId().toString()).get("currency").isNull()).isTrue();
     }
 
+    /** Approve on an order the running key cannot refund proposes nothing, confirmed or not, and decides nothing. */
+    @org.junit.jupiter.params.ParameterizedTest(name = "confirm={0}")
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void approve_ofAWrongModeOrder_is409OrderNotRefundable_withNoProposedRefund(boolean confirm) throws Exception {
+        RefundRequest rr = pendingRequest(event);
+        jdbc.update("UPDATE orders SET test_mode = false WHERE id = ?", rr.getOrderId());
+
+        mvc.perform(post("/api/v1/orgs/{orgId}/refund-requests/{id}/approve", org.getId(), rr.getId())
+                        .with(auth(me))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"confirm\":" + confirm + "}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("ORDER_NOT_REFUNDABLE"))
+                .andExpect(jsonPath("$.error.fields").doesNotExist());
+
+        assertThat(requests.findById(rr.getId()).orElseThrow().getStatus()).isEqualTo(RefundRequestStatus.PENDING);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM refunds WHERE order_id = ?", Long.class, rr.getOrderId()))
+                .isZero();
+    }
+
     /** A submitted request: a paid order with one live ticket and its open request. */
     private RefundRequest pendingRequest(Event e) {
         String buyer = fx.email("buyer");

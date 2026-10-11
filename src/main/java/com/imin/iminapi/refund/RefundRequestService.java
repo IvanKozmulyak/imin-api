@@ -323,9 +323,8 @@ public class RefundRequestService {
         if (!eligibility.modeMatches()) throw wrongMode();
         List<Ticket> refundable = eligibility.refundable();
         if (refundable.isEmpty()) {
-            // Burn the token so a retry doesn't hit lookup-then-409 again.
-            token.setConsumedAt(Times.nowMicros());
-            tokens.save(token);
+            // Burn the token so a retry doesn't hit lookup-then-409 again; committed apart, as the throw rolls this back.
+            tokens.markConsumed(token.getId(), Times.nowMicros());
             throw new ApiException(
                 HttpStatus.CONFLICT,
                 ErrorCode.NO_REFUNDABLE_TICKETS,
@@ -646,7 +645,13 @@ public class RefundRequestService {
             }
         }
 
-        List<Ticket> refundable = eligibilityFor(order).refundable();
+        RefundEligibility eligibility = eligibilityFor(order);
+        // The running key cannot refund the other mode's payment, so no proposal either way.
+        if (!eligibility.modeMatches()) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
+                "Order was paid in the other Stripe mode and cannot be refunded with the running key");
+        }
+        List<Ticket> refundable = eligibility.refundable();
         if (refundable.isEmpty()) {
             throw new ApiException(
                 HttpStatus.CONFLICT,
