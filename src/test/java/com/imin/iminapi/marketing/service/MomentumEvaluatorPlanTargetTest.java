@@ -14,6 +14,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -45,6 +46,7 @@ class MomentumEvaluatorPlanTargetTest {
     final OrderRepository orders = mock(OrderRepository.class);
     final TicketTierRepository tiers = mock(TicketTierRepository.class);
     final TicketRepository tickets = mock(TicketRepository.class);
+    final EventSalesTotals salesTotals = mock(EventSalesTotals.class);
     final MomentumSuggestionRepository suggestions = mock(MomentumSuggestionRepository.class);
     final MomentumCopyGenerator copy = mock(MomentumCopyGenerator.class);
     final SendGateService sendGate = mock(SendGateService.class);
@@ -54,7 +56,7 @@ class MomentumEvaluatorPlanTargetTest {
     final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     final AudiencePlanProperties planProps = new AudiencePlanProperties();
     final ConsentGate consentGate = mock(ConsentGate.class);
-    final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, suggestions,
+    final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, salesTotals, suggestions,
             new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher,
             new AllCampaignsConsent(planProps, consentGate));
 
@@ -77,9 +79,9 @@ class MomentumEvaluatorPlanTargetTest {
         // 5 of 100 sold, on sale 50 h: launch push fires.
         event.setOnSaleAt(NOW.minus(Duration.ofHours(50)));
         event.setStartsAt(NOW.plus(Duration.ofDays(30)));
-        when(tiers.sumSoldByEventId(event.getId())).thenReturn(5);
+        when(salesTotals.soldForEvent(event.getId())).thenReturn(5);
         when(tiers.sumQuantityByEventId(event.getId())).thenReturn(100);
-        when(orders.findCreatedAtAndTotalSince(eq(event.getId()), any())).thenReturn(List.of());
+        when(orders.findLiveCreatedAtAndTotalSince(eq(event.getId()), any())).thenReturn(List.of());
         when(tickets.findSoldCreatedAtSince(eq(event.getId()), any())).thenReturn(List.of());
         when(suggestions.findByEventIdAndTriggerTypeAndStatus(any(), any(), any())).thenReturn(Optional.empty());
         when(suggestions.findTopByEventIdAndTriggerTypeOrderBySuggestedAtDesc(any(), any())).thenReturn(Optional.empty());
@@ -222,7 +224,7 @@ class MomentumEvaluatorPlanTargetTest {
 
     @Test
     void noTrigger_publishesNothing() {
-        when(tiers.sumSoldByEventId(event.getId())).thenReturn(50); // 50 % sold, 30 days out: no rule fires
+        when(salesTotals.soldForEvent(event.getId())).thenReturn(50); // 50 % sold, 30 days out: no rule fires
 
         evaluator.evaluateOne(event, NOW);
 

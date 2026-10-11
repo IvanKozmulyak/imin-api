@@ -46,6 +46,7 @@ class MomentumEvaluatorTest {
 
     @Autowired MomentumEvaluator evaluator;
     @Autowired MomentumSuggestionRepository suggestions;
+    @Autowired MomentumService momentum;
     @Autowired MomentumTestSupport support;
     @Autowired MomentumThresholds thresholds;
     @Autowired PropertyFlips flips;
@@ -129,6 +130,63 @@ class MomentumEvaluatorTest {
                 .filter(s -> "launch_push".equals(s.getTriggerType())).findFirst().orElseThrow();
         assertThat(made.getMetricsSnapshot()).contains("\"spark\":[0,0,0,0,0,0,0,1,3,1]");
         assertThat(made.getMetricsSnapshot()).contains("\"ticketsPerDay7d\":");
+    }
+
+    /**
+     * tier.sold 100/100 with 95 of those seats held by a test-mode order: the room is physically full,
+     * so the card is sold out, while sold, velocity (3 live orders) and the spark stay live.
+     */
+    @Test
+    void test_mode_orders_count_in_neither_sold_velocity_nor_spark() {
+        UUID event = liveEvent(/*sold*/ 100, /*capacity*/ 100,
+                /*onSaleAt*/ Instant.now().minusSeconds(10L * 86400),
+                /*startsAt*/ Instant.now().plusSeconds(30L * 86400));
+        support.seedDailyTickets(event, 1, 3, 1);
+        support.seedTestModeOrder(event, 95);
+
+        evaluate(event);
+
+        assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).containsExactly("sold_out");
+        String snapshot = live(event).get(0).getMetricsSnapshot();
+        assertThat(snapshot).contains("\"sold\":5,", "\"sellThroughPct\":5,", "\"velocity7d\":0.43,",
+                "\"spark\":[0,0,0,0,0,0,0,1,3,1]", "\"seatsLeft\":0");
+        var card = momentum.list(support.principalFor(support.orgIdOf(event)), "suggested").stream()
+                .filter(s -> s.eventId().equals(event)).findFirst().orElseThrow();
+        assertThat(card.pace()).startsWith("100 of 100 gone");
+    }
+
+    /** No tier quantity is unknown capacity, not a full room: no seat is left, yet nothing sold out. */
+    @Test
+    void an_event_without_capacity_is_never_called_sold_out() {
+        UUID event = liveEvent(/*sold*/ 0, /*capacity*/ 0,
+                /*onSaleAt*/ Instant.now().minusSeconds(10L * 86400),
+                /*startsAt*/ Instant.now().plusSeconds(30L * 86400));
+
+        evaluate(event);
+
+        assertThat(live(event)).isEmpty();
+    }
+
+    /**
+     * 60 of 100 seats gone, 20 of them to a test-mode order: live sold is 40% (inside the urgency band),
+     * and the card counts the 40 seats still buyable, not 100 − 40 live.
+     */
+    @Test
+    void urgency_counts_the_seats_left_including_test_held_ones() {
+        UUID event = liveEvent(/*sold*/ 60, /*capacity*/ 100,
+                /*onSaleAt*/ Instant.now().minusSeconds(10L * 86400),
+                /*startsAt*/ Instant.now().plusSeconds(60L * 3600));
+        support.seedDailyTickets(event, 40);
+        support.seedTestModeOrder(event, 20);
+
+        evaluate(event);
+
+        assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).containsExactly("urgency_72h");
+        assertThat(live(event).get(0).getMetricsSnapshot()).contains("\"sold\":40,", "\"seatsLeft\":40");
+        var card = momentum.list(support.principalFor(support.orgIdOf(event)), "suggested").stream()
+                .filter(s -> s.eventId().equals(event)).findFirst().orElseThrow();
+        assertThat(card.headline()).isEqualTo("LAST 40 TICKETS");
+        assertThat(card.pace()).contains("40 of 100 left");
     }
 
     @Test

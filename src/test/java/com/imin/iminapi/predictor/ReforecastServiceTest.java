@@ -18,7 +18,9 @@ import com.imin.iminapi.predictor.service.PacingEngine.CurvePoint;
 import com.imin.iminapi.predictor.service.PacingEngine.Projection;
 import com.imin.iminapi.predictor.service.SalesTrajectoryService.NormalizedCurve;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -60,6 +62,8 @@ class ReforecastServiceTest {
 
     private final EventRepository events = mock(EventRepository.class);
     private final TicketTierRepository tiers = mock(TicketTierRepository.class);
+    private final TicketRepository tickets = mock(TicketRepository.class);
+    private final EventSalesTotals salesTotals = mock(EventSalesTotals.class);
     private final PacingCurveService pacingCurves = mock(PacingCurveService.class);
     private final PacingEngine engine = mock(PacingEngine.class);
     private final SalesTrajectoryService trajectories = mock(SalesTrajectoryService.class);
@@ -72,7 +76,7 @@ class ReforecastServiceTest {
     private final PredictorProperties props = new PredictorProperties();
 
     private final ReforecastService sut = new ReforecastService(
-            events, tiers, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
+            events, tiers, tickets, salesTotals, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
             narrator, alertNotifier, competingNights, weather, props, clock);
 
     private final UUID eventId = UUID.randomUUID();
@@ -94,13 +98,15 @@ class ReforecastServiceTest {
         when(events.findActive(eventId)).thenReturn(Optional.of(e));
 
         when(tiers.sumQuantityByEventId(eventId)).thenReturn(200);
-        when(tiers.sumSoldByEventId(eventId)).thenReturn(90);
+        when(salesTotals.soldForEvent(eventId)).thenReturn(90);
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
         t.setName("GA");
+        t.setId(UUID.randomUUID());
         t.setSold(90);
         t.setPriceMinor(2000);
         when(tiers.findByEventIdOrderBySortOrderAsc(eventId)).thenReturn(List.of(t));
+        when(tickets.liveTierAggregates(eventId)).thenReturn(List.<Object[]>of(new Object[] {t.getId(), "GA", 90L, 180_000L, 0L}));
 
         when(trajectories.normalizedCurve(eventId)).thenReturn(new NormalizedCurve(eventId, 90, List.of()));
         when(trajectories.velocityPerDayLast7(any(), any())).thenReturn(4.0);
@@ -436,7 +442,7 @@ class ReforecastServiceTest {
                 mock(com.imin.iminapi.email.EmailService.class), new com.imin.iminapi.email.EmailTemplateRenderer(),
                 new com.imin.iminapi.email.EmailProperties(), clock);
         ReforecastService withRealNotifier = new ReforecastService(
-                events, tiers, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
+                events, tiers, tickets, salesTotals, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
                 narrator, realNotifier, competingNights, weather, props, clock);
         stubBands(ProjectionBand.TRACKING_85_100, ProjectionBand.TRACKING_60_85);
 

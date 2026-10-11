@@ -86,6 +86,27 @@ class MomentumReadModelTest {
                 .map(sg -> sg.getId()).findFirst().orElseThrow();
     }
 
+    // ---------- snapshots written before seatsLeft ----------
+
+    /** A frozen snapshot from before seatsLeft existed read sold over every mode, so its seats are capacity − sold. */
+    @Test
+    void anOldSnapshotWithoutSeatsLeftReadsItsSeatsAsCapacityLessSold() {
+        UUID event = liveEvent(487, 600, Instant.now().minus(Duration.ofDays(30)),
+                Instant.now().plus(Duration.ofHours(64)));
+        UUID org = support.orgIdOf(event);
+        MomentumSuggestion s = seed(org, event, "urgency_72h", 487, 600, Instant.now().minus(Duration.ofDays(30)),
+                Instant.now().plus(Duration.ofHours(64)), repeatSegmentId(org), List.of());
+        s.setMetricsSnapshot("{\"sold\":487,\"capacity\":600,\"sellThroughPct\":81,\"daysOut\":2,"
+                + "\"hoursSinceOnSale\":720,\"velocity7d\":0.43,\"hoursToStart\":64,\"ticketsPerDay7d\":0.00,"
+                + "\"sparkStartDate\":null,\"spark\":[]}");
+        suggestions.save(s);
+
+        MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
+
+        assertThat(dto.headline()).isEqualTo("LAST 113 TICKETS");
+        assertThat(dto.pace()).isEqualTo("113 of 600 left, doors in 64h");
+    }
+
     // ---------- eventName ----------
 
     @Test
@@ -249,7 +270,7 @@ class MomentumReadModelTest {
                 ticketTimestamps(event));
 
         MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
-        // 10 issued − 3 refunded = 7 in the SOLD set, the same predicate tierAggregates uses.
+        // 10 issued − 3 refunded = 7 in the SOLD set, the same predicate liveTierAggregates uses.
         assertThat(dto.spark().stream().mapToInt(Integer::intValue).sum()).isEqualTo(7);
     }
 

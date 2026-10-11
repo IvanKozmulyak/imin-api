@@ -10,6 +10,7 @@ import com.imin.iminapi.predictor.service.ReforecastService;
 import com.imin.iminapi.predictor.service.ReforecastTriggerService;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import com.imin.iminapi.service.event.SalesMilestoneReachedEvent;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import org.junit.jupiter.api.Test;
@@ -49,11 +50,12 @@ class ReforecastTriggerServiceTest {
     private final ReforecastService reforecast = mock(ReforecastService.class);
     private final OrderRepository orders = mock(OrderRepository.class);
     private final TicketTierRepository tiers = mock(TicketTierRepository.class);
+    private final EventSalesTotals salesTotals = mock(EventSalesTotals.class);
     private final PredictorProperties props = new PredictorProperties(); // debounce 60s default
     private final MutableClock clock = new MutableClock();
 
     private final ReforecastTriggerService sut =
-            new ReforecastTriggerService(reforecast, orders, tiers, props, clock);
+            new ReforecastTriggerService(reforecast, orders, tiers, salesTotals, props, clock);
 
     private final UUID eventId = UUID.randomUUID();
 
@@ -92,7 +94,7 @@ class ReforecastTriggerServiceTest {
         order.setEventId(eventId);
         when(orders.findById(orderId)).thenReturn(Optional.of(order));
         when(tiers.sumQuantityByEventId(eventId)).thenReturn(200);
-        when(tiers.sumSoldByEventId(eventId)).thenReturn(60);     // 30%
+        when(salesTotals.soldForEvent(eventId)).thenReturn(60);     // 30%
         when(reforecast.lastForecastSold(eventId)).thenReturn(0); // was 0% → crosses 25
 
         sut.onTicketsIssued(new TicketsIssuedEvent(orderId));
@@ -106,7 +108,7 @@ class ReforecastTriggerServiceTest {
         order.setEventId(eventId);
         when(orders.findById(orderId)).thenReturn(Optional.of(order));
         when(tiers.sumQuantityByEventId(eventId)).thenReturn(200);
-        when(tiers.sumSoldByEventId(eventId)).thenReturn(61);      // 30%
+        when(salesTotals.soldForEvent(eventId)).thenReturn(61);      // 30%
         when(reforecast.lastForecastSold(eventId)).thenReturn(60); // still 30% → no new threshold
 
         sut.onTicketsIssued(new TicketsIssuedEvent(orderId));

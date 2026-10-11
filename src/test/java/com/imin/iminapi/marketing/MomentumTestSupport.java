@@ -30,9 +30,9 @@ import java.util.UUID;
  * <p>Seeds a real {@link Organization} (with its 7 prebuilt segments, so the evaluator's
  * {@code defaultTargetSegmentId("Repeat")} resolves against the un-mocked {@code SegmentService}),
  * a {@code LIVE} on-sale {@link Event}, one {@link TicketTier} whose {@code quantity} = capacity and
- * {@code sold} = sold (the evaluator reads TICKETS-sold via {@code TicketTierRepository.sumSoldByEventId},
+ * {@code sold} = sold (the evaluator reads live TICKETS-sold via {@code EventSalesTotals.soldForEvent},
  * NOT order count), and a small fixed number of paid {@link Order} rows purely to drive the
- * 7-day order-arrival velocity ({@code findCreatedAtAndTotalSince}) — decoupled from ticket count.
+ * 7-day order-arrival velocity ({@code findLiveCreatedAtAndTotalSince}) — decoupled from ticket count.
  */
 @Component
 public class MomentumTestSupport {
@@ -142,7 +142,7 @@ public class MomentumTestSupport {
 
         // tickets.order_id FKs orders(id) (V24, ON DELETE CASCADE), so the tickets need a real
         // carrier order. It is dated 30 days back — OUTSIDE the evaluator's 7-day order window
-        // (findCreatedAtAndTotalSince) — so seeding a spark cannot move velocity7d and silently
+        // (findLiveCreatedAtAndTotalSince) — so seeding a spark cannot move velocity7d and silently
         // change which trigger fires. Tickets drive the spark, orders drive velocity: the same
         // decoupling seedLiveEvent already documents.
         Order carrier = new Order();
@@ -174,6 +174,38 @@ public class MomentumTestSupport {
             }
         }
         return tier.getId();
+    }
+
+    /**
+     * One TEST-mode order created two hours ago holding {@code count} issued tickets stamped at midday UTC
+     * today: inside the 7-day velocity window and the spark's last day.
+     */
+    public void seedTestModeOrder(UUID eventId, int count) {
+        TicketTier tier = tiers.findByEventIdOrderBySortOrderAsc(eventId).get(0);
+        Order o = new Order();
+        o.setToken("tok-test-" + UUID.randomUUID());
+        o.setEventId(eventId);
+        o.setOrgId(orgIdOf(eventId));
+        o.setEmail("test+" + UUID.randomUUID() + "@example.com");
+        o.setTotalMinor(2500L * count);
+        o.setCurrency("EUR");
+        o.setPaymentMethod("stripe");
+        o.setTestMode(true);
+        o.setCreatedAt(Instant.now().minusSeconds(2 * 3600));
+        UUID orderId = orders.save(o).getId();
+        Instant middayToday = Instant.now().truncatedTo(ChronoUnit.DAYS).plus(12, ChronoUnit.HOURS);
+        for (int n = 0; n < count; n++) {
+            Ticket t = new Ticket();
+            t.setToken("tkt-" + UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setEventId(eventId);
+            t.setTierId(tier.getId());
+            t.setTierName(tier.getName());
+            t.setPriceMinor(tier.getPriceMinor());
+            t.setState(Ticket.STATE_ISSUED);
+            t.setCreatedAt(middayToday);
+            tickets.save(t);
+        }
     }
 
     /**

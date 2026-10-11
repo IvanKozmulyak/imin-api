@@ -54,7 +54,12 @@ public record MomentumMetrics(
         /** UTC date that {@code spark[0]} covers; null when {@code spark} is empty. */
         LocalDate sparkStartDate,
         /** TICKETS/day over the last 7 spark points. Prose-only — see the class note. */
-        double ticketsPerDay7d) {
+        double ticketsPerDay7d,
+        /**
+         * Seats still unsold, every order mode: test-era tickets hold seats though they are not live
+         * sales. Sold-out and "N left" read this; {@code sold} and the percentages stay live.
+         */
+        int seatsLeft) {
 
     /** Days of daily history the spark carries. The prototype card ships 7–10 points. */
     public static final int SPARK_DAYS = 10;
@@ -83,6 +88,20 @@ public record MomentumMetrics(
             Instant startsAt,
             Instant now,
             List<Instant> soldTicketCreatedAt) {
+        return compute(sold, capacity, ordersLast7d, onSaleAt, startsAt, now, soldTicketCreatedAt,
+                Math.max(0, capacity - sold));
+    }
+
+    /** @param seatsLeft capacity less every seat sold in any mode, floored at 0. */
+    public static MomentumMetrics compute(
+            int sold,
+            int capacity,
+            int ordersLast7d,
+            Instant onSaleAt,
+            Instant startsAt,
+            Instant now,
+            List<Instant> soldTicketCreatedAt,
+            int seatsLeft) {
 
         int sellThrough = capacity <= 0 ? 0 : (int) Math.round(sold * 100.0 / capacity);
         int daysOut = startsAt == null ? 0 : (int) Math.max(0, Duration.between(now, startsAt).toDays());
@@ -95,7 +114,7 @@ public record MomentumMetrics(
         double ticketsPerDay = ticketsPerDay(spark);
 
         return new MomentumMetrics(sold, capacity, sellThrough, daysOut, hoursSinceOnSale,
-                velocity, hoursToStart, spark, sparkStart, ticketsPerDay);
+                velocity, hoursToStart, spark, sparkStart, ticketsPerDay, Math.max(0, seatsLeft));
     }
 
     /**
@@ -156,9 +175,14 @@ public record MomentumMetrics(
         return remaining / daysOut;
     }
 
-    /** Tickets still unsold. Never negative (an oversold tier would otherwise read as < 0). */
+    /** Seats still unsold ({@link #seatsLeft}). Never negative. */
     public int remaining() {
-        return Math.max(0, capacity - sold);
+        return seatsLeft;
+    }
+
+    /** Seats gone in any mode: what a sold-out card counts as "gone". */
+    public int seatsGone() {
+        return Math.max(0, capacity - seatsLeft);
     }
 
     /**
@@ -185,7 +209,8 @@ public record MomentumMetrics(
                 + "\"hoursToStart\":" + hoursToStart + ","
                 + "\"ticketsPerDay7d\":" + fmt(ticketsPerDay7d) + ","
                 + "\"sparkStartDate\":" + (sparkStartDate == null ? "null" : "\"" + sparkStartDate + "\"") + ","
-                + "\"spark\":" + sparkJson()
+                + "\"spark\":" + sparkJson() + ","
+                + "\"seatsLeft\":" + seatsLeft
                 + "}";
     }
 

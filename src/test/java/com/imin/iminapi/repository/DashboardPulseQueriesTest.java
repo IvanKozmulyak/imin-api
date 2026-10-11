@@ -67,7 +67,7 @@ class DashboardPulseQueriesTest {
         order(orgB, theirs, now.minusSeconds(60));
         Order mine = order(orgA, ours, now.minusSeconds(3600));
 
-        List<Order> got = orders.findByOrgIdOrderByCreatedAtDesc(orgA, PageRequest.of(0, 32));
+        List<Order> got = orders.findLiveByOrgIdOrderByCreatedAtDesc(orgA, PageRequest.of(0, 32));
 
         assertThat(got).extracting(Order::getId).containsExactly(mine.getId());
     }
@@ -78,7 +78,7 @@ class DashboardPulseQueriesTest {
         Order older = order(orgA, ev, now.minusSeconds(3600));
         Order newer = order(orgA, ev, now.minusSeconds(60));
 
-        assertThat(orders.findByOrgIdOrderByCreatedAtDesc(orgA, PageRequest.of(0, 32)))
+        assertThat(orders.findLiveByOrgIdOrderByCreatedAtDesc(orgA, PageRequest.of(0, 32)))
                 .extracting(Order::getId).containsExactly(newer.getId(), older.getId());
     }
 

@@ -15,8 +15,8 @@ public record DashboardPulseResponse(
         @Schema(description = "LIVE, not deleted, future events whose own sale window is open now."
                 + " Tier-level closures are not considered.")
         int onSaleCount,
-        @Schema(types = {"object", "null"}, description = "Newest order in scope with at least one non-refunded ticket,"
-                + " test mode included. Null when there is none.")
+        @Schema(types = {"object", "null"}, description = "Newest live-mode order in scope with at least one non-refunded ticket;"
+                + " test-mode orders are left out. Null when there is none.")
         LastSale lastSale) {
 
     public record LastSale(

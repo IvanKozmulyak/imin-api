@@ -263,7 +263,7 @@ class SalesDashboardServiceTest {
 
         SalesDashboardResponse r = service.dashboard(principal, event.getId());
         assertThat(r.tiles().netRevenueMinor()).isEqualTo(10000L);  // 11149 − 1149
-        // tierAggregates already drops the revoked ticket, so sold needs no adjustment here.
+        // liveTierAggregates already drops the revoked ticket, so sold needs no adjustment here.
         assertThat(r.tiles().ticketsSold()).isEqualTo(1);
     }
 

@@ -61,8 +61,8 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
      * {@code EventRepository.findActive}/{@code findAllPublished} — every other Event query
      * carries the soft-delete filter. A cancelled event's tickets are refunded, so finalizing it
      * would stamp {@code sold_total ≈ 0}, {@code sell_out = false} and {@code attendance ≈ 0};
-     * because {@code finalizedAt is not null} is the ONLY membership test the three corpus
-     * segment queries below apply, that row would then become a cross-org comparable for every
+     * because {@code finalizedAt is not null} (with {@code corpusExcluded = false}) is the membership
+     * test the three corpus segment queries below apply, that row would then become a cross-org comparable for every
      * other organizer in its city × genre × band × season and drag the aggregates — and
      * {@code PacingCurveService}'s median/P25/P75 shapes — toward a result that never happened.
      * It would also write fresh derived data for an event the org asked to have deleted.
@@ -82,13 +82,15 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
 
     // ---------------------------------------------------------------------------
     // Comparable corpus segment queries — FINALIZED outcomes only (a comparable is
-    // an event whose actual result is known). All params non-null (trap-free).
+    // an event whose actual result is known), never a corpus-excluded one (test-mode
+    // orders only, V184). All params non-null (trap-free).
     // ---------------------------------------------------------------------------
 
     /** RelaxationLevel.NONE: city × genre family × capacity band × season. */
     @Query("""
             select o from EventOutcome o
              where o.finalizedAt is not null
+               and o.corpusExcluded = false
                and o.city = :city
                and o.genreFamily = :genreFamily
                and o.capacityBand = :capacityBand
@@ -103,6 +105,7 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
     @Query("""
             select o from EventOutcome o
              where o.finalizedAt is not null
+               and o.corpusExcluded = false
                and o.country = :country
                and o.genreFamily = :genreFamily
                and o.capacityBand = :capacityBand
@@ -117,6 +120,7 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
     @Query("""
             select o from EventOutcome o
              where o.finalizedAt is not null
+               and o.corpusExcluded = false
                and o.country = :country
                and o.genreFamily = :genreFamily
                and o.capacityBand = :capacityBand

@@ -16,8 +16,10 @@ import com.imin.iminapi.predictor.service.PacingCurveService.CurveMatch;
 import com.imin.iminapi.predictor.service.PacingEngine.Projection;
 import com.imin.iminapi.predictor.service.SalesTrajectoryService.NormalizedCurve;
 import com.imin.iminapi.predictor.service.SalesTrajectoryService.NormalizedPoint;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -65,6 +67,8 @@ public class ReforecastService {
 
     private final EventRepository events;
     private final TicketTierRepository tiers;
+    private final TicketRepository tickets;
+    private final EventSalesTotals salesTotals;
     private final PacingCurveService pacingCurves;
     private final PacingEngine engine;
     private final SalesTrajectoryService trajectories;
@@ -77,14 +81,16 @@ public class ReforecastService {
     private final PredictorProperties props;
     private final Clock clock;
 
-    public ReforecastService(EventRepository events, TicketTierRepository tiers,
-                             PacingCurveService pacingCurves, PacingEngine engine,
+    public ReforecastService(EventRepository events, TicketTierRepository tiers, TicketRepository tickets,
+                             EventSalesTotals salesTotals, PacingCurveService pacingCurves, PacingEngine engine,
                              SalesTrajectoryService trajectories, PredictionLedgerService ledgerService,
                              PredictionLedgerRepository ledgerRepo, ReforecastNarrator narrator,
                              ReforecastAlertNotifier alertNotifier, CompetingNightsService competingNights,
                              WeatherService weather, PredictorProperties props, Clock clock) {
         this.events = events;
         this.tiers = tiers;
+        this.tickets = tickets;
+        this.salesTotals = salesTotals;
         this.pacingCurves = pacingCurves;
         this.engine = engine;
         this.trajectories = trajectories;
@@ -111,7 +117,7 @@ public class ReforecastService {
         if (e == null) return ReforecastResult.none(clock.instant());
 
         int capacity = tiers.sumQuantityByEventId(eventId);
-        int currentSold = tiers.sumSoldByEventId(eventId);
+        int currentSold = salesTotals.soldForEvent(eventId);
         ZoneId zone = resolveZone(e.getTimezone());
         Instant startsAt = e.getStartsAt();
         Integer daysOut = daysOut(startsAt, zone);
@@ -243,16 +249,21 @@ public class ReforecastService {
 
     /**
      * Projected gross-revenue range = projected sold range × realized average ticket price, where
-     * realized avg price = Σ(tier.sold × tier.priceMinor) / Σ(tier.sold). Null when nothing has
-     * sold yet (no realized price to project from). Arithmetic only — never generated.
+     * realized avg price = Σ(live tickets per tier × tier.priceMinor) / Σ(live tickets). Null when
+     * nothing has sold yet (no realized price to project from). Arithmetic only — never generated.
      */
     private ReforecastResult.RevenueRange revenueRange(UUID eventId, int currentSold, ReforecastResult.Range range) {
         if (currentSold <= 0 || range == null) return null;
+        Map<UUID, Long> liveByTier = new java.util.HashMap<>();
+        for (Object[] row : tickets.liveTierAggregates(eventId)) {
+            liveByTier.put((UUID) row[0], ((Number) row[2]).longValue());
+        }
         long weighted = 0;
-        int sold = 0;
+        long sold = 0;
         for (TicketTier t : tiers.findByEventIdOrderBySortOrderAsc(eventId)) {
-            weighted += (long) t.getSold() * t.getPriceMinor();
-            sold += t.getSold();
+            long n = liveByTier.getOrDefault(t.getId(), 0L);
+            weighted += n * t.getPriceMinor();
+            sold += n;
         }
         if (sold <= 0) return null;
         double avg = (double) weighted / sold;

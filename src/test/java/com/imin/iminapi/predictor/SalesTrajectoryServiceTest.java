@@ -134,6 +134,25 @@ class SalesTrajectoryServiceTest {
         assertThat(daily.findByEventIdOrderBySalesDateAscTierIdAsc(event.getId())).hasSize(4);
     }
 
+    /** A test-mode order's tickets on 03-04 stay out of the curve every comparable segment learns from. */
+    @Test
+    void materialize_counts_live_orders_only() {
+        Order testOrder = fx.order(event, fx.email("test-buyer"));
+        testOrder.setTestMode(true);
+        orders.save(testOrder);
+        UUID liveOrder = orderId;
+        orderId = testOrder.getId();   // ticket() hangs tickets off orderId
+        sold(tierA, "2026-03-04T10:00:00Z", 6);
+        orderId = liveOrder;
+
+        service.materialize(event.getId());
+
+        List<EventSalesDaily> rows = daily.findByEventIdOrderBySalesDateAscTierIdAsc(event.getId());
+        assertThat(rows).extracting(EventSalesDaily::getSalesDate).doesNotContain(LocalDate.parse("2026-03-04"));
+        assertThat(rows).hasSize(4);
+        assertThat(service.normalizedCurve(event.getId()).finalTotal()).isEqualTo(10);
+    }
+
     @Test
     void normalizedCurve_reportsPctOfFinalAndDaysToEvent() {
         service.materialize(event.getId());

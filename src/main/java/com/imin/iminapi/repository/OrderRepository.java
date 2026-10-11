@@ -40,17 +40,18 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId);
 
-    List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId, Pageable pageable);
+    /** The event's LIVE-mode orders, newest first (Overview recent buyers, event-scope pulse). */
+    List<Order> findByEventIdAndTestModeFalseOrderByCreatedAtDesc(UUID eventId, Pageable pageable);
 
-    /** The org's orders, newest first (dashboard pulse). */
-    @Query("select o from Order o where o.orgId = :orgId " +
+    /** The org's LIVE-mode orders, newest first (dashboard pulse). */
+    @Query("select o from Order o where o.orgId = :orgId and o.testMode = false " +
            "order by o.createdAt desc")
-    List<Order> findByOrgIdOrderByCreatedAtDesc(@Param("orgId") UUID orgId, Pageable pageable);
+    List<Order> findLiveByOrgIdOrderByCreatedAtDesc(@Param("orgId") UUID orgId, Pageable pageable);
 
-    /** Number of orders for an event, all modes (draft deletion and predictor outcomes). */
+    /** Number of orders for an event, all modes: the draft-deletion guard and the outcome's test-only check. */
     long countByEventId(UUID eventId);
 
-    /** LIVE-mode orders (= completed payments) for an event: the Sales funnel's PAYMENTS_COMPLETED stage. */
+    /** LIVE-mode orders (= completed payments) for an event: the Sales funnel's PAYMENTS_COMPLETED stage and the outcome's funnel_paid. */
     long countByEventIdAndTestModeFalse(UUID eventId);
 
     /** Has this org ever taken an order? Gate on org deletion — see {@code OrgService.delete}. */
@@ -137,20 +138,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                   @Param("before") Instant before);
 
     /**
-     * Created-at + total-minor pairs for orders since {@code since}, all modes: the Momentum
-     * evaluator's 7-day velocity. Returned as {@code Object[]} to avoid a per-row entity
-     * hydration cost — the only columns the caller needs are the timestamp and the amount.
+     * Created-at + total-minor pairs for the event's LIVE-mode orders since {@code since}: the Overview
+     * sales-velocity chart and the Momentum evaluator's 7-day velocity. Returned as {@code Object[]} to
+     * avoid a per-row entity hydration cost — the only columns the callers need are the timestamp and the amount.
      */
-    @Query("""
-            select o.createdAt, o.totalMinor from Order o
-             where o.eventId = :eventId
-               and o.createdAt >= :since
-             order by o.createdAt asc
-            """)
-    List<Object[]> findCreatedAtAndTotalSince(@Param("eventId") UUID eventId,
-                                              @Param("since") Instant since);
-
-    /** {@link #findCreatedAtAndTotalSince} over LIVE-mode orders only: the Overview sales-velocity chart. */
     @Query("""
             select o.createdAt, o.totalMinor from Order o
              where o.eventId = :eventId

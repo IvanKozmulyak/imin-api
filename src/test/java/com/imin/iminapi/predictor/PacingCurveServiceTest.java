@@ -92,6 +92,10 @@ class PacingCurveServiceTest {
 
     /** Completed event in a fixed segment, with a 3-point normalized-able trajectory. */
     private void completedEvent(String genre, double p10, double p5) {
+        completedEvent(genre, p10, p5, false);
+    }
+
+    private void completedEvent(String genre, double p10, double p5, boolean corpusExcluded) {
         Event e = new Event();
         e.setOrgId(orgId);
         e.setName("E");
@@ -112,6 +116,7 @@ class PacingCurveServiceTest {
         oc.setSeason(Season.SPRING);
         oc.setCapacity(200);
         oc.setFinalizedAt(Instant.now());
+        oc.setCorpusExcluded(corpusExcluded);
         outcomes.save(oc);
 
         UUID tier = UUID.randomUUID();
@@ -129,6 +134,18 @@ class PacingCurveServiceTest {
         d.setDailySold(dailySold);
         d.setCumulativeSold(cumulative);
         daily.save(d);
+    }
+
+    /** An outcome excluded from the corpus (test-mode orders only) does not count towards the floor of 3. */
+    @Test
+    void rebuildSkipsCorpusExcludedOutcomes() {
+        completedEvent(techno, 0.2, 0.5);
+        completedEvent(techno, 0.3, 0.6);
+        completedEvent(techno, 0.4, 0.7, true);
+
+        service.rebuildAll();
+
+        assertThat(ownCurveKeys(techno)).isEmpty();
     }
 
     @Test

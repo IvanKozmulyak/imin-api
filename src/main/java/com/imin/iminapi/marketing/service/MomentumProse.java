@@ -92,7 +92,7 @@ public final class MomentumProse {
     public static String pace(MomentumTriggerType trigger, MomentumMetrics m) {
         if (trigger == null || m == null) return null;
         return switch (trigger) {
-            case SOLD_OUT -> m.sold() + " of " + m.capacity() + " gone"
+            case SOLD_OUT -> m.seatsGone() + " of " + m.capacity() + " gone"
                     + (m.daysOut() > 0 ? " with " + plural(m.daysOut(), "day", "days") + " still to sell" : "");
             case URGENCY_72H -> {
                 String base = m.remaining() + " of " + m.capacity() + " left, " + doorsIn(m).toLowerCase(Locale.ROOT);

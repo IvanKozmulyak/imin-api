@@ -38,6 +38,9 @@ import java.util.UUID;
  * them out of the cross-org comparable corpus, and they are counted as skipped rather than
  * failed so the pass does not warn about them for the life of the event.
  *
+ * <p>An event whose orders are all test-mode is finalized as {@code corpusExcluded}: it leaves
+ * the due set, so it cannot hold a page, and never enters the corpus or scoring.
+ *
  * <p>Idempotent: {@link EventOutcomeService#finalize} recomputes from source, and once
  * {@code finalizedAt} is set the row drops out of the candidate query — so a finished
  * event is finalized exactly once under normal operation.

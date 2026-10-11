@@ -13,6 +13,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,7 @@ public class MomentumEvaluator {
     private final OrderRepository orders;
     private final TicketTierRepository tiers;
     private final TicketRepository tickets;
+    private final EventSalesTotals salesTotals;
     private final MomentumSuggestionRepository suggestions;
     private final MomentumThresholds thresholds;
     private final MomentumCopyGenerator copy;
@@ -53,7 +55,7 @@ public class MomentumEvaluator {
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
-                             MomentumSuggestionRepository suggestions,
+                             EventSalesTotals salesTotals, MomentumSuggestionRepository suggestions,
                              MomentumThresholds thresholds, MomentumCopyGenerator copy,
                              SendGateService sendGate, SegmentService segments,
                              MomentumNotifier notifier, MomentumPlanTarget planTarget,
@@ -63,6 +65,7 @@ public class MomentumEvaluator {
         this.orders = orders;
         this.tiers = tiers;
         this.tickets = tickets;
+        this.salesTotals = salesTotals;
         this.suggestions = suggestions;
         this.thresholds = thresholds;
         this.copy = copy;
@@ -110,20 +113,22 @@ public class MomentumEvaluator {
     }
 
     void evaluateOne(Event e, Instant now) {
-        // sold = TICKETS sold (SUM of tier.sold), the same figure SalesDashboardService
-        // reports — NOT orders.countByEventId (one order can hold several tickets).
-        int sold = tiers.sumSoldByEventId(e.getId());
+        // sold = live TICKETS sold, the figure the events list and Overview show — NOT an order
+        // count (one order can hold several tickets). Velocity and spark are live orders too.
+        int sold = salesTotals.soldForEvent(e.getId());
         int capacity = tiers.sumQuantityByEventId(e.getId());
-        List<Object[]> last7d = orders.findCreatedAtAndTotalSince(
+        List<Object[]> last7d = orders.findLiveCreatedAtAndTotalSince(
                 e.getId(), now.minus(Duration.ofDays(7)));
-        // Real per-day sold series for the card's chart: SOLD tickets from the tickets
+        // Real per-day sold series for the card's chart: live SOLD tickets from the tickets
         // table, bucketed by UTC day in MomentumMetrics. Snapshotted with the rest of the
         // evidence so the curve the organizer sees is the curve the engine fired on — and
         // so it can never contradict the `sold` scalar printed next to it.
         List<Instant> soldAt = tickets.findSoldCreatedAtSince(
                 e.getId(), now.minus(Duration.ofDays(MomentumMetrics.SPARK_DAYS)));
+        // Seats, not live sales, decide sold out and "N left": a test-era ticket still holds its seat.
+        int seatsLeft = Math.max(0, capacity - tiers.sumSoldByEventId(e.getId()));
         MomentumMetrics m = MomentumMetrics.compute(
-                sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now, soldAt);
+                sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now, soldAt, seatsLeft);
 
         MomentumTriggerType fired = pickTrigger(m);
         log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} hoursToStart={} ticketsPerDay7d={} required50={} -> {}",
@@ -243,7 +248,7 @@ public class MomentumEvaluator {
 
     /** First matching rule, evaluated most-urgent first (spec §6.1). */
     private MomentumTriggerType pickTrigger(MomentumMetrics m) {
-        if (m.sellThroughPct() >= 100) {
+        if (m.capacity() > 0 && m.seatsLeft() <= 0) {
             return MomentumTriggerType.SOLD_OUT;
         }
         // Urgency: within 72h of start AND sell-through in [30,90].
@@ -277,10 +282,9 @@ public class MomentumEvaluator {
     }
 
     private String triggerContext(MomentumTriggerType t, MomentumMetrics m) {
-        int remaining = Math.max(0, m.capacity() - m.sold());
         return switch (t) {
-            case SOLD_OUT -> "Sold out — " + m.sold() + " of " + m.capacity() + " gone.";
-            case URGENCY_72H -> m.daysOut() + " days left, " + remaining + " tickets remain.";
+            case SOLD_OUT -> "Sold out — " + m.seatsGone() + " of " + m.capacity() + " gone.";
+            case URGENCY_72H -> m.daysOut() + " days left, " + m.remaining() + " tickets remain.";
             case LAUNCH_PUSH -> "On sale " + m.hoursSinceOnSale() + "h, only "
                     + m.sellThroughPct() + "% sold.";
             case SLUMP -> "Pace has slowed at " + m.sellThroughPct() + "% sold, "

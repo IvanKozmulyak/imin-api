@@ -207,15 +207,27 @@ public class EventOutcomeService {
     /**
      * Fill the post-event fields. Assumes the caller has confirmed the event is due
      * (ended + grace). Idempotent — recomputes from source every time, so a re-run
-     * simply rewrites the same figures (and picks up any late refunds if re-run).
+     * simply rewrites the same figures (and picks up any late refunds if re-run). Live-mode
+     * orders only: a test-era order is not demand the corpus should learn from, and an event whose
+     * orders are all test-mode is finalized as {@code corpusExcluded} with no figures written.
      */
     @Transactional
     public void finalize(EventOutcome o, Event e, Instant now) {
+        // Orders but none live: test checkouts, not zero demand. Leave the due set, stay out of the corpus.
+        boolean testOnly = orders.countByEventIdAndTestModeFalse(e.getId()) == 0
+                && orders.countByEventId(e.getId()) > 0;
+        o.setCorpusExcluded(testOnly);
+        if (testOnly) {
+            clearFigures(o);   // a re-run on a row finalized before the flag existed
+            o.setFinalizedAt(now);
+            outcomes.save(o);
+            return;
+        }
         long soldTotal = 0;
         long grossRevenue = 0;
         long redeemed = 0;
         List<SoldTier> perTier = new ArrayList<>();
-        for (Object[] row : tickets.tierAggregates(e.getId())) {
+        for (Object[] row : tickets.liveTierAggregates(e.getId())) {
             UUID tierId = (UUID) row[0];
             String tierName = (String) row[1];
             long sold = ((Number) row[2]).longValue();
@@ -234,8 +246,11 @@ public class EventOutcomeService {
         // Unknown capacity → the sell-out FACT is undefined. NULL says that; false would be a
         // definitive "did not sell out" for an event whose capacity was never stated
         // (predictor-edge-4) — the same honesty rule as refundRate below.
+        // Sell-out is the room filling, so it reads seats (tier.sold, every mode): a test-era ticket
+        // holds its seat. sold_total above stays live demand.
         Integer capacity = o.getCapacity();
-        Boolean sellOut = (capacity == null || capacity <= 0) ? null : soldTotal >= capacity;
+        Boolean sellOut = (capacity == null || capacity <= 0) ? null
+                : tiers.sumSoldByEventId(e.getId()) >= capacity;
         o.setSellOut(sellOut);
         if (Boolean.TRUE.equals(sellOut)) {
             Instant lastSold = tickets.findLastSoldCreatedAt(e.getId());
@@ -244,7 +259,7 @@ public class EventOutcomeService {
             o.setTimeToSellOutHours(null);
         }
 
-        long refundCount = tickets.countByEventIdAndState(e.getId(), "refunded");
+        long refundCount = tickets.countRefundedOnLiveOrdersByEventId(e.getId());
         o.setRefundCount((int) refundCount);
         long issued = soldTotal + refundCount;
         // Nothing issued → the refund RATE is undefined. NULL says that; 0.0000 would claim the
@@ -273,7 +288,7 @@ public class EventOutcomeService {
         }
         o.setFunnelViews(views);
         o.setFunnelCheckoutStarts(checkoutStarts);
-        o.setFunnelPaid((int) orders.countByEventId(e.getId()));
+        o.setFunnelPaid((int) orders.countByEventIdAndTestModeFalse(e.getId()));
 
         Instant windowFrom = e.getPublishedAt() != null ? e.getPublishedAt() : e.getCreatedAt();
         Instant windowTo = e.getEndsAt() != null ? e.getEndsAt() : now;
@@ -286,6 +301,24 @@ public class EventOutcomeService {
     }
 
     // ---- helpers --------------------------------------------------------------
+
+    /** Every post-event figure back to unknown; finalizedAt and the flag are the caller's. */
+    private static void clearFigures(EventOutcome o) {
+        o.setSoldTotal(null);
+        o.setSoldPerTierJson(null);
+        o.setGrossRevenueMinor(null);
+        o.setSellOut(null);
+        o.setTimeToSellOutHours(null);
+        o.setRefundCount(null);
+        o.setRefundRate(null);
+        o.setAttendance(null);
+        o.setAttendanceSource(null);
+        o.setFunnelViews(null);
+        o.setFunnelCheckoutStarts(null);
+        o.setFunnelPaid(null);
+        o.setCampaignSends(null);
+        o.setNps(null);
+    }
 
     private String writeJson(Object value, String fallback) {
         try {

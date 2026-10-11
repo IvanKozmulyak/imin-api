@@ -504,6 +504,7 @@ Response: {
 Note: `recentPurchases.time` is a human-friendly pre-computed label for V1;
 an ISO timestamp field (e.g. `createdAt`) would be preferred if the server
 can return one, so the FE can format via `formatDistance`.
+`recentPurchases` lists live orders only; test-mode (pre-cutover) orders are left out.
 
 ---
 

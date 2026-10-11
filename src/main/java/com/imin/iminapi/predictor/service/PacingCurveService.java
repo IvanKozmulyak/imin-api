@@ -80,6 +80,7 @@ public class PacingCurveService {
         Map<String, List<NormalizedCurve>> groups = new LinkedHashMap<>();
         for (EventOutcome o : outcomes.findAll()) {
             if (o.getFinalizedAt() == null) continue; // a comparable is an event whose result is known
+            if (o.isCorpusExcluded()) continue;       // test-mode orders only: no demand measured
             String genre = o.getGenreFamily();
             CapacityBand band = o.getCapacityBand();
             Season season = o.getSeason();

@@ -6,6 +6,7 @@ import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.model.ReforecastTrigger;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.EventSalesTotals;
 import com.imin.iminapi.service.event.SalesMilestoneReachedEvent;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import org.slf4j.Logger;
@@ -28,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p><b>Milestone hook.</b> Rides the fulfilment path via {@link TicketsIssuedEvent} (published
  * AFTER_COMMIT when a paid order is issued — where sold counts change). On each, it computes the
- * event-level 25/50/75% sold crossing relative to the last re-forecast's sold count
+ * event-level 25/50/75% live-sold crossing relative to the last re-forecast's sold count
  * ({@link ReforecastMilestones}); a newly-crossed threshold requests a recompute.
  *
  * <p><b>Burst debounce (leading-edge).</b> {@link #requestRecompute} coalesces triggers for the
@@ -49,14 +50,17 @@ public class ReforecastTriggerService {
     private final ReforecastService reforecast;
     private final OrderRepository orders;
     private final TicketTierRepository tiers;
+    private final EventSalesTotals salesTotals;
     private final PredictorProperties props;
     private final Clock clock;
 
     public ReforecastTriggerService(ReforecastService reforecast, OrderRepository orders,
-                                    TicketTierRepository tiers, PredictorProperties props, Clock clock) {
+                                    TicketTierRepository tiers, EventSalesTotals salesTotals,
+                                    PredictorProperties props, Clock clock) {
         this.reforecast = reforecast;
         this.orders = orders;
         this.tiers = tiers;
+        this.salesTotals = salesTotals;
         this.props = props;
         this.clock = clock;
     }
@@ -100,7 +104,7 @@ public class ReforecastTriggerService {
             UUID eventId = order.getEventId();
 
             int capacity = tiers.sumQuantityByEventId(eventId);
-            int newSold = tiers.sumSoldByEventId(eventId);
+            int newSold = salesTotals.soldForEvent(eventId);
             int prevSold = reforecast.lastForecastSold(eventId);
             List<Integer> crossed = ReforecastMilestones.newlyCrossed(prevSold, newSold, capacity);
             if (crossed.isEmpty()) return; // only 25/50/75% event-level crossings warrant a milestone recompute

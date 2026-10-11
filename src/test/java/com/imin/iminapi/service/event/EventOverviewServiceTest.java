@@ -278,6 +278,22 @@ class EventOverviewServiceTest {
     }
 
     @Test
+    void recent_purchases_leave_out_test_mode_orders() {
+        gaAndVip();
+        Order test = newOrder("test@example.com", 1500, Instant.now().minusSeconds(60));
+        test.setTestMode(true);
+        orders.save(test);
+        newTicket(test, ga);
+        Order live = newOrder("live@example.com", 1500, Instant.now().minusSeconds(120));
+        newTicket(live, ga);
+
+        EventOverviewResponse r = service.overview(principal, event.getId());
+
+        assertThat(r.recentPurchases()).extracting(EventOverviewResponse.RecentPurchase::name)
+                .containsExactly("live@example.com");
+    }
+
+    @Test
     void recent_purchase_amount_excludes_refunded_tickets() {
         gaAndVip();
         // 3 GA tickets at 1500 each = 4500 gross. One refunded → live = 3000.

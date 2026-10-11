@@ -63,7 +63,7 @@ class DashboardPulseServiceTest {
     }
 
     private void orgOrders(Order... os) {
-        when(orders.findByOrgIdOrderByCreatedAtDesc(eq(orgId), any())).thenReturn(List.of(os));
+        when(orders.findLiveByOrgIdOrderByCreatedAtDesc(eq(orgId), any())).thenReturn(List.of(os));
     }
 
     private void ticketsAre(Ticket... ts) {
@@ -159,7 +159,7 @@ class DashboardPulseServiceTest {
         Order o = order(e.getId(), Instant.parse("2026-05-25T19:37:00Z"));
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.countOnSaleById(eq(e.getId()), any())).thenReturn(0L);
-        when(orders.findByEventIdOrderByCreatedAtDesc(eq(e.getId()), any(Pageable.class)))
+        when(orders.findByEventIdAndTestModeFalseOrderByCreatedAtDesc(eq(e.getId()), any(Pageable.class)))
                 .thenReturn(List.of(o));
         ticketsAre(ticket(o, "Early Bird", Ticket.STATE_ISSUED));
 
@@ -171,7 +171,7 @@ class DashboardPulseServiceTest {
         assertThat(r.lastSale().tierNames()).containsExactly("Early Bird");
         verify(events).countOnSaleById(eq(e.getId()), any());
         verify(events, never()).countOnSaleByOrg(any(), any());
-        verify(orders, never()).findByOrgIdOrderByCreatedAtDesc(any(), any());
+        verify(orders, never()).findLiveByOrgIdOrderByCreatedAtDesc(any(), any());
     }
 
     @Test

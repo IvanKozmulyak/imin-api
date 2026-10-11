@@ -18,6 +18,8 @@ import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -96,6 +98,19 @@ class DashboardPulseCostTest {
 
         assertThat(pulse.pulse(p, ev.getId())).isEqualTo(new DashboardPulseResponse(true, 1,
                 new LastSale(base.plusSeconds(20), ev.getId(), ev.getName(), List.of("GA"), 2)));
+    }
+
+    /** The newest order is a test-mode one with a held ticket; the last sale is the live order before it. */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void last_sale_skips_test_mode_orders(boolean eventScope) {
+        Event ev = futureLive();
+        Order test = order(ev, 30, "Test:" + Ticket.STATE_ISSUED);
+        jdbc.update("UPDATE orders SET test_mode = true WHERE id = ?", test.getId());
+        order(ev, 20, "GA:" + Ticket.STATE_ISSUED);
+
+        assertThat(pulse.pulse(p, eventScope ? ev.getId() : null)).isEqualTo(new DashboardPulseResponse(true, 1,
+                new LastSale(base.plusSeconds(20), ev.getId(), ev.getName(), List.of("GA"), 1)));
     }
 
     @Test

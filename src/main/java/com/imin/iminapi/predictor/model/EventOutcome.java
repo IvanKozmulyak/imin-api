@@ -148,6 +148,13 @@ public class EventOutcome {
     @Column(name = "finalized_at")
     private Instant finalizedAt;
 
+    /**
+     * True when finalize found only test-mode orders (V184): the row leaves the due set but stays out
+     * of the comparable corpus, the pacing curves and prediction scoring, since it measured no demand.
+     */
+    @Column(name = "corpus_excluded", nullable = false)
+    private boolean corpusExcluded = false;
+
     @PrePersist
     @PreUpdate
     void truncateTimestamps() {

@@ -111,14 +111,14 @@ public class EventOverviewService {
         Metrics m = new Metrics(sold, capacity, revenueMinor, revenueAfterFeesMinor,
                 e.getCurrency(), Math.max(0, daysOut), disputedCount, disputedMinor);
 
-        // Recent buyers: skip fully-refunded orders, and within each order count
+        // Recent buyers: live-mode orders only; skip fully-refunded orders, and within each order count
         // only non-refunded tickets (so the tier breakdown + amount reflect what
         // the buyer actually still holds). Take the most-recent RECENT_LIMIT
         // surviving orders. Cap the fetch at RECENT_LIMIT * RECENT_FETCH_FACTOR
         // so a high-volume event doesn't load every order just to take 8, and
         // batch the per-order tickets lookup into a single query (was N+1).
         int fetchCap = RECENT_LIMIT * RECENT_FETCH_FACTOR;
-        List<Order> recentOrders = orders.findByEventIdOrderByCreatedAtDesc(
+        List<Order> recentOrders = orders.findByEventIdAndTestModeFalseOrderByCreatedAtDesc(
                 id, PageRequest.of(0, fetchCap, Sort.by(Sort.Direction.DESC, "createdAt")));
         Map<UUID, List<Ticket>> ticketsByOrder = recentOrders.isEmpty()
                 ? Map.of()

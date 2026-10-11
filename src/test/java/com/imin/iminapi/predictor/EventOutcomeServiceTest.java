@@ -7,7 +7,11 @@ import com.imin.iminapi.predictor.model.AttendanceSource;
 import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.Season;
+import com.imin.iminapi.predictor.model.PredictionLedger;
+import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
+import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
+import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.predictor.service.PredictorSegmentKeys;
 import com.imin.iminapi.repository.*;
@@ -17,6 +21,8 @@ import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 
@@ -46,6 +52,8 @@ class EventOutcomeServiceTest {
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
     @Autowired IminFixtures fx;
+    @Autowired PredictionLedgerService ledger;
+    @Autowired PredictionLedgerRepository ledgerRepo;
     private final ObjectMapper json = new ObjectMapper();
 
     private Organization org;
@@ -249,6 +257,196 @@ class EventOutcomeServiceTest {
         assertThat(perTier).hasSize(2);
     }
 
+    /**
+     * A test-mode order's tickets, scans, refunds and payment stay out of the demand the corpus learns
+     * from, but its two held seats still fill the room: 4 of 4 seats gone is a sell-out (live sold is 2),
+     * reached when the last seat went, 50h after publish.
+     */
+    @Test
+    void finalize_counts_live_orders_only() {
+        Event e = liveEvent();
+        TicketTier ga = tier(e.getId(), "GA", 1500, 4, 0);
+        ga.setSold(4);
+        tiers.save(ga);
+        service.freezeOnPublish(e);
+        UUID live = newOrder(e.getId());
+        Order test = orders.findById(newOrder(e.getId())).orElseThrow();
+        test.setTestMode(true);
+        orders.save(test);
+        Instant liveAt = PUBLISHED.plus(5, ChronoUnit.HOURS);
+        Instant testAt = PUBLISHED.plus(50, ChronoUnit.HOURS);
+        ticketAt(e.getId(), live, ga, "redeemed", liveAt);
+        ticketAt(e.getId(), live, ga, "issued", liveAt);
+        ticketAt(e.getId(), live, ga, "refunded", liveAt);
+        ticketAt(e.getId(), test.getId(), ga, "redeemed", testAt);
+        ticketAt(e.getId(), test.getId(), ga, "issued", testAt);
+        ticketAt(e.getId(), test.getId(), ga, "refunded", testAt);
+
+        service.finalize(outcomes.findById(e.getId()).orElseThrow(), e, Instant.now());
+
+        EventOutcome fin = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(fin.getSoldTotal()).isEqualTo(2);
+        assertThat(fin.getGrossRevenueMinor()).isEqualTo(3000L);
+        assertThat(fin.getSellOut()).isTrue();
+        assertThat(fin.getTimeToSellOutHours()).isEqualTo(50);
+        assertThat(fin.getRefundCount()).isEqualTo(1);
+        assertThat(fin.getRefundRate().doubleValue()).isEqualTo(0.3333);
+        assertThat(fin.getAttendance()).isEqualTo(1);
+        assertThat(fin.getAttendanceSource()).isEqualTo(AttendanceSource.SCANS);
+        assertThat(fin.getFunnelPaid()).isEqualTo(1);
+        JsonNode perTier = readJson(fin.getSoldPerTierJson());
+        assertThat(perTier).hasSize(1);
+        assertThat(perTier.get(0).get("sold").asLong()).isEqualTo(2L);
+    }
+
+    /**
+     * An event whose only orders are test-mode is not zero demand: it is finalized out of the due set
+     * (so it cannot starve the page) but marked excluded, so no segment query returns it and its
+     * pre-publish render is never scored against it. The live-order event beside it stays in.
+     */
+    @Test
+    void finalize_keeps_an_event_with_only_test_mode_orders_out_of_corpus_and_scoring() {
+        Event testOnly = liveEvent();
+        tier(testOnly.getId(), "GA", 1500, 120, 0);
+        service.freezeOnPublish(testOnly);
+        Order test = orders.findById(newOrder(testOnly.getId())).orElseThrow();
+        test.setTestMode(true);
+        orders.save(test);
+        ticket(testOnly.getId(), test.getId(), UUID.randomUUID(), "GA", 1500, "issued", false);
+        Event liveSold = liveEvent();
+        tier(liveSold.getId(), "GA", 1500, 120, 0);
+        service.freezeOnPublish(liveSold);
+        ticket(liveSold.getId(), newOrder(liveSold.getId()), UUID.randomUUID(), "GA", 1500, "issued", false);
+        UUID testRender = prePublishRender(testOnly);
+        UUID liveRender = prePublishRender(liveSold);
+        Instant cutoff = STARTS.plus(1, ChronoUnit.DAYS);
+
+        service.finalize(outcomes.findById(testOnly.getId()).orElseThrow(), testOnly, Instant.now());
+        service.finalize(outcomes.findById(liveSold.getId()).orElseThrow(), liveSold, Instant.now());
+
+        EventOutcome excluded = outcomes.findById(testOnly.getId()).orElseThrow();
+        assertThat(excluded.getFinalizedAt()).isNotNull();
+        assertThat(excluded.isCorpusExcluded()).isTrue();
+        assertThat(outcomes.findById(liveSold.getId()).orElseThrow().isCorpusExcluded()).isFalse();
+        assertThat(outcomes.findDueForFinalize(cutoff, PageRequest.of(0, 10_000)))
+                .extracting(EventOutcome::getEventId).doesNotContain(testOnly.getId());
+        String genre = "house & techno";
+        assertThat(outcomes.findFinalizedByCitySegment(cityKey, genre, CapacityBand.B101_300, Season.WINTER))
+                .extracting(EventOutcome::getEventId).contains(liveSold.getId()).doesNotContain(testOnly.getId());
+        assertThat(outcomes.findFinalizedByCountrySegment("NL", genre, CapacityBand.B101_300, Season.WINTER))
+                .extracting(EventOutcome::getEventId).contains(liveSold.getId()).doesNotContain(testOnly.getId());
+        assertThat(outcomes.findFinalizedByCountrySegmentNoSeason("NL", genre, CapacityBand.B101_300))
+                .extracting(EventOutcome::getEventId).contains(liveSold.getId()).doesNotContain(testOnly.getId());
+        assertThat(ledgerRepo.findJoinable(PageRequest.of(0, 10_000)))
+                .extracting(PredictionLedger::getId).contains(liveRender).doesNotContain(testRender);
+    }
+
+    enum Orders { NONE, TEST_ONLY, MIXED }
+
+    /**
+     * No orders is measured zero demand and stays in the corpus; test orders only is excluded; mixed
+     * keeps live figures (sold 2) with sell-out on seats (120 of 120 gone, 118 test-held). Capacity 120 = B101_300.
+     */
+    @ParameterizedTest
+    @EnumSource(Orders.class)
+    void finalize_by_order_modes(Orders mode) {
+        Event e = liveEvent();
+        TicketTier ga = tier(e.getId(), "GA", 1500, 120, 0);
+        service.freezeOnPublish(e);
+        if (mode != Orders.NONE) {
+            Order test = orders.findById(newOrder(e.getId())).orElseThrow();
+            test.setTestMode(true);
+            orders.save(test);
+            int testSeats = mode == Orders.MIXED ? 118 : 3;
+            for (int i = 0; i < testSeats; i++) ticket(e.getId(), test.getId(), ga.getId(), "GA", 1500, "issued", false);
+            int liveSeats = 0;
+            if (mode == Orders.MIXED) {
+                UUID live = newOrder(e.getId());
+                for (; liveSeats < 2; liveSeats++) ticket(e.getId(), live, ga.getId(), "GA", 1500, "issued", false);
+            }
+            ga.setSold(testSeats + liveSeats);
+            tiers.save(ga);
+        }
+
+        service.finalize(outcomes.findById(e.getId()).orElseThrow(), e, Instant.now());
+
+        EventOutcome fin = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(fin.getFinalizedAt()).isNotNull();
+        assertThat(fin.isCorpusExcluded()).isEqualTo(mode == Orders.TEST_ONLY);
+        var segment = outcomes.findFinalizedByCitySegment(cityKey, "house & techno", CapacityBand.B101_300, Season.WINTER)
+                .stream().map(EventOutcome::getEventId).toList();
+        assertThat(segment.contains(e.getId())).isEqualTo(mode != Orders.TEST_ONLY);
+        switch (mode) {
+            case NONE -> {
+                assertThat(fin.getSoldTotal()).isZero();
+                assertThat(fin.getSellOut()).isFalse();
+            }
+            case TEST_ONLY -> assertThat(fin.getSoldTotal()).isNull();
+            case MIXED -> {
+                assertThat(fin.getSoldTotal()).isEqualTo(2);
+                assertThat(fin.getFunnelPaid()).isEqualTo(1);
+                assertThat(fin.getSellOut()).isTrue();
+            }
+        }
+    }
+
+    /** A row finalized with figures before it was known to be test-only loses them when re-finalized. */
+    @Test
+    void refinalizing_a_test_only_event_clears_its_old_figures() {
+        Event e = liveEvent();
+        tier(e.getId(), "GA", 1500, 120, 0);
+        service.freezeOnPublish(e);
+        Order test = orders.findById(newOrder(e.getId())).orElseThrow();
+        test.setTestMode(true);
+        orders.save(test);
+        EventOutcome o = outcomes.findById(e.getId()).orElseThrow();
+        o.setSoldTotal(3);
+        o.setSoldPerTierJson("[]");
+        o.setGrossRevenueMinor(4500L);
+        o.setSellOut(false);
+        o.setTimeToSellOutHours(7);
+        o.setRefundCount(0);
+        o.setRefundRate(java.math.BigDecimal.ZERO);
+        o.setAttendance(3);
+        o.setAttendanceSource(AttendanceSource.SALES);
+        o.setFunnelViews(9);
+        o.setFunnelCheckoutStarts(4);
+        o.setFunnelPaid(1);
+        o.setCampaignSends(2);
+        o.setFinalizedAt(Instant.now().minus(1, ChronoUnit.DAYS));
+        outcomes.save(o);
+
+        service.finalize(outcomes.findById(e.getId()).orElseThrow(), e, Instant.now());
+
+        EventOutcome fin = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(fin.isCorpusExcluded()).isTrue();
+        assertThat(fin).extracting(EventOutcome::getSoldTotal, EventOutcome::getSoldPerTierJson,
+                        EventOutcome::getGrossRevenueMinor, EventOutcome::getSellOut, EventOutcome::getTimeToSellOutHours,
+                        EventOutcome::getRefundCount, EventOutcome::getRefundRate, EventOutcome::getAttendance,
+                        EventOutcome::getAttendanceSource, EventOutcome::getFunnelViews,
+                        EventOutcome::getFunnelCheckoutStarts, EventOutcome::getFunnelPaid, EventOutcome::getCampaignSends)
+                .containsOnlyNulls();
+    }
+
+    private UUID prePublishRender(Event e) {
+        return ledger.record(new PredictionLedgerService.RecordCommand(e.getId(), org.getId(),
+                PredictionSurface.PRE_PUBLISH, 0, "test/model", "v1", "h", null, null));
+    }
+
+    private void ticketAt(UUID eventId, UUID orderId, TicketTier tier, String state, Instant at) {
+        Ticket t = new Ticket();
+        t.setToken(UUID.randomUUID().toString().replace("-", ""));
+        t.setOrderId(orderId);
+        t.setEventId(eventId);
+        t.setTierId(tier.getId());
+        t.setTierName(tier.getName());
+        t.setPriceMinor(tier.getPriceMinor());
+        t.setState(state);
+        t.setCreatedAt(at);
+        if ("redeemed".equals(state)) t.setRedeemedAt(at);
+        tickets.save(t);
+    }
+
     @Test
     void finalize_fallsBackToSalesAttendance_whenNoScans() {
         Event e = liveEvent();
@@ -289,6 +487,8 @@ class EventOutcomeServiceTest {
     void finalize_marksSellOut_andTimeToSellOut() {
         Event e = liveEvent();
         TicketTier a = tier(e.getId(), "Tiny", 1000, 2, 0);
+        a.setSold(2);
+        tiers.save(a);
         service.freezeOnPublish(e);
         UUID ord = newOrder(e.getId());
         ticket(e.getId(), ord, a.getId(), "Tiny", 1000, "issued", false);

@@ -25,7 +25,7 @@ import java.util.UUID;
  *
  * <p>Materialization is a scheduled read-side aggregation — it never touches the checkout
  * path. {@link #materialize(UUID)} recomputes one event's whole per-tier daily series from
- * the SOLD ticket set and REPLACES it (delete + reinsert), so it is idempotent: re-running
+ * the SOLD tickets of its live-mode orders and REPLACES it (delete + reinsert), so it is idempotent: re-running
  * yields the same rows, and the job's first run backfills all history for free.
  *
  * <p>Day bucketing is done in Java in the event's timezone, never a SQL {@code date(...)}
@@ -57,7 +57,7 @@ public class SalesTrajectoryService {
     public record NormalizedCurve(UUID eventId, int finalTotal, List<NormalizedPoint> points) {}
 
     /**
-     * Recompute and replace an event's daily trajectory from the SOLD ticket set.
+     * Recompute and replace an event's daily trajectory from the SOLD tickets of its live-mode orders.
      * No-op (clears any stale rows) when the event has no sold tickets.
      */
     @Transactional

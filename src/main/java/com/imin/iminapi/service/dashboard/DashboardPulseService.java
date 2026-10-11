@@ -28,7 +28,7 @@ import java.util.stream.Collectors;
 @Service
 public class DashboardPulseService {
 
-    // ponytail: only the newest 32 orders are scanned; a run of 32 fully refunded orders reads as no sale.
+    // ponytail: only the newest 32 live orders are scanned; a run of 32 fully refunded orders reads as no sale.
     static final int ORDER_SCAN_LIMIT = 32;
 
     private final EventRepository events;
@@ -52,11 +52,11 @@ public class DashboardPulseService {
             if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
             scopeEvent = e;
             onSaleCount = events.countOnSaleById(eventIdOrNull, now);
-            recent = orders.findByEventIdOrderByCreatedAtDesc(eventIdOrNull,
+            recent = orders.findByEventIdAndTestModeFalseOrderByCreatedAtDesc(eventIdOrNull,
                     PageRequest.of(0, ORDER_SCAN_LIMIT, Sort.by(Sort.Direction.DESC, "createdAt")));
         } else {
             onSaleCount = events.countOnSaleByOrg(p.orgId(), now);
-            recent = orders.findByOrgIdOrderByCreatedAtDesc(p.orgId(), PageRequest.of(0, ORDER_SCAN_LIMIT));
+            recent = orders.findLiveByOrgIdOrderByCreatedAtDesc(p.orgId(), PageRequest.of(0, ORDER_SCAN_LIMIT));
         }
         int count = (int) Math.min(Integer.MAX_VALUE, onSaleCount);
         return new DashboardPulseResponse(count > 0, count, lastSale(recent, scopeEvent));

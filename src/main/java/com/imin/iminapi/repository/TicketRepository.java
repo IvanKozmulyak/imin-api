@@ -44,8 +44,8 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<Ticket> findByOrderIdInOrderByOrderIdAscCreatedAtAsc(Collection<UUID> orderIds);
 
     /**
-     * Per-tier sold aggregates for an event, all modes (predictor outcomes), over the SOLD set
-     * ({@code state NOT IN ('refunded','revoked')}). Tuple shape:
+     * Per-tier sold aggregates for an event over the tickets of its LIVE-mode orders (the Sales tab
+     * and the predictor outcome), SOLD set ({@code state NOT IN ('refunded','revoked')}). Tuple shape:
      * {@code [UUID tierId, String tierName, Long sold, Long grossRevenueMinor, Long redeemed]}.
      * Grouped by {@code tierId} only, so each tier yields exactly ONE row even
      * when its name changed mid-sale ({@code tier_name} is a purchase-time
@@ -54,19 +54,6 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      * their live name. Summed across rows, these give the headline tiles, so the
      * tier breakdown reconciles with the headline by construction.
      */
-    @Query("""
-            select t.tierId, max(t.tierName),
-                   count(t),
-                   coalesce(sum(t.priceMinor), 0),
-                   coalesce(sum(case when t.state = 'redeemed' then 1 else 0 end), 0)
-              from Ticket t
-             where t.eventId = :eventId
-               and t.state not in ('refunded', 'revoked')
-             group by t.tierId
-            """)
-    List<Object[]> tierAggregates(@Param("eventId") UUID eventId);
-
-    /** {@link #tierAggregates} over the tickets of LIVE-mode orders only: the event Sales tab. */
     @Query("""
             select t.tierId, max(t.tierName),
                    count(t),
@@ -117,12 +104,12 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<Object[]> attendeeRows(@Param("eventId") UUID eventId);
 
     /**
-     * {@code created_at} of every SOLD ticket for an event since {@code since}, oldest
-     * first. Feeds the Momentum suggestion's daily sold-per-day spark series
+     * {@code created_at} of every SOLD ticket on the event's LIVE-mode orders since {@code since},
+     * oldest first. Feeds the Momentum suggestion's daily sold-per-day spark series
      * ({@code MomentumMetrics.dailySpark}).
      *
      * <p>SOLD set = {@code state not in ('refunded','revoked')} — the SAME predicate as
-     * {@link #tierAggregates}, so the series reconciles with the sold figures elsewhere
+     * {@link #liveTierAggregates}, so the series reconciles with the live sold figures elsewhere
      * rather than telling a second story.
      *
      * <p><b>Semantics, stated plainly:</b> {@code state} is MUTATED in place on refund
@@ -139,7 +126,9 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      */
     @Query("""
             select t.createdAt from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
              where t.eventId = :eventId
+               and o.testMode = false
                and t.createdAt >= :since
                and t.state not in ('refunded', 'revoked')
              order by t.createdAt asc
@@ -190,12 +179,19 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             """)
     long countSoldByEventId(@Param("eventId") UUID eventId);
 
-    /** Ticket count for an event in a given state. Predictor finalize uses it for refund_count ('refunded'). */
-    long countByEventIdAndState(UUID eventId, String state);
+    /** Refunded tickets on the event's LIVE-mode orders: the predictor outcome's refund_count. */
+    @Query("""
+            select count(t) from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
+             where t.eventId = :eventId
+               and o.testMode = false
+               and t.state = 'refunded'
+            """)
+    long countRefundedOnLiveOrdersByEventId(@Param("eventId") UUID eventId);
 
     /**
-     * Latest {@code created_at} across an event's SOLD tickets ({@code state not in
-     * ('refunded','revoked')}), or NULL when the event has sold nothing. The predictor
+     * Latest {@code created_at} across an event's SOLD tickets ({@code state not in ('refunded','revoked')}),
+     * every order mode because sell-out is seats, or NULL when none. The predictor
      * finalize job uses this as the "last seat sold" instant to derive time-to-sell-out
      * (publish → this) — only meaningful when the event actually sold out.
      */
@@ -206,7 +202,10 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             """)
     java.time.Instant findLastSoldCreatedAt(@Param("eventId") UUID eventId);
 
-    /** Distinct event ids that have at least one SOLD ticket. Drives the sales-trajectory materialization + backfill. */
+    /**
+     * Distinct event ids that have at least one SOLD ticket, all modes. Drives the sales-trajectory
+     * materialization, so an event with only test-mode sales is still re-run and its stale rows cleared.
+     */
     @Query("""
             select distinct t.eventId from Ticket t
              where t.state not in ('refunded', 'revoked')
@@ -214,14 +213,16 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<UUID> findDistinctEventIdsWithSoldTickets();
 
     /**
-     * (tierId, createdAt) for every SOLD ticket of an event, oldest first. The trajectory
+     * (tierId, createdAt) for every SOLD ticket of an event's LIVE-mode orders, oldest first. The trajectory
      * materialization buckets these by calendar day in the event's timezone IN JAVA — never
-     * a SQL {@code date(...)}, which truncates in the session zone. The SOLD predicate matches {@link #tierAggregates} so the daily series
-     * reconciles with the per-tier sold figures.
+     * a SQL {@code date(...)}, which truncates in the session zone. The SOLD predicate matches
+     * {@link #liveTierAggregates} so the daily series reconciles with the per-tier sold figures.
      */
     @Query("""
             select t.tierId, t.createdAt from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
              where t.eventId = :eventId
+               and o.testMode = false
                and t.state not in ('refunded', 'revoked')
              order by t.createdAt asc
             """)

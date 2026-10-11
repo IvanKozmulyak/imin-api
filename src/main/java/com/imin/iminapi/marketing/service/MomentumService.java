@@ -177,7 +177,10 @@ public class MomentumService {
                     n.path("hoursToStart").asLong(),
                     List.copyOf(spark),
                     sparkStart,
-                    n.path("ticketsPerDay7d").asDouble());
+                    n.path("ticketsPerDay7d").asDouble(),
+                    // Snapshots before seatsLeft read sold over every mode, so capacity − sold was the seats.
+                    n.has("seatsLeft") ? n.path("seatsLeft").asInt()
+                            : Math.max(0, n.path("capacity").asInt() - n.path("sold").asInt()));
         } catch (Exception e) {
             return null;
         }

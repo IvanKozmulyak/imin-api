@@ -74,7 +74,7 @@ class TicketAggregateQueryTest {
         ticket(o, Ticket.STATE_REVOKED);   // excluded
 
         Map<UUID, Object[]> byTier = new HashMap<>();
-        for (Object[] row : tickets.tierAggregates(eventId)) byTier.put((UUID) row[0], row);
+        for (Object[] row : tickets.liveTierAggregates(eventId)) byTier.put((UUID) row[0], row);
         Object[] ga = byTier.get(gaTier);
 
         assertThat(((Number) ga[2]).longValue()).isEqualTo(2L);     // sold

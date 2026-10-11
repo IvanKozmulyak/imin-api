@@ -178,17 +178,16 @@ public class SubjectVariantsService {
     }
 
     /**
-     * Sell-through summary for urgency grounding — "N of M tickets left (P% sold)".
-     * Failure-isolated and only produced when a real capacity exists; null otherwise.
+     * Seats summary for urgency grounding — "N of M tickets left". Seats in every order mode, since
+     * test-era tickets still hold theirs; no sold share, which would need a second basis. Failure-isolated;
+     * null without a real capacity.
      */
     private String urgency(UUID eventId) {
         try {
             int capacity = tiers.sumQuantityByEventId(eventId);
             if (capacity <= 0) return null;
-            int sold = Math.max(0, tiers.sumSoldByEventId(eventId));
-            int remaining = Math.max(0, capacity - sold);
-            int pct = (int) Math.round(Math.min(sold, capacity) * 100.0 / capacity);
-            return remaining + " of " + capacity + " tickets left (" + pct + "% sold)";
+            int remaining = Math.max(0, capacity - tiers.sumSoldByEventId(eventId));
+            return remaining + " of " + capacity + " tickets left";
         } catch (Exception e) {
             log.debug("urgency lookup failed for event {}: {}", eventId, e.getMessage());
             return null;
