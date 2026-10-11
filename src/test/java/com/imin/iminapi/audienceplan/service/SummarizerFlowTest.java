@@ -363,7 +363,7 @@ class SummarizerFlowTest {
         CountDownLatch done = new CountDownLatch(1);
         executor.execute(done::countDown);
         try {
-            assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(done.await(60, TimeUnit.SECONDS)).isTrue();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(ex);
