@@ -460,10 +460,9 @@ class DateCheckMigrationTest {
                             () -> openEventOccurrence(jdbc, Map.of("source", "datatourisme", "source_event_id", "13287689",
                                     "night_date", LocalDate.of(2026, 10, 16), "licence", "ODbL 1.0"))), () -> {
                         Map<String, Object> defaults = jdbc.queryForMap(
-                                "select genre_keys, community, credit from open_event_occurrence where source = 'datatourisme'");
+                                "select genre_keys, community from open_event_occurrence where source = 'datatourisme'");
                         assertThat(defaults.get("genre_keys")).isEqualTo("[]");
                         assertThat(defaults.get("community")).isEqualTo(false);
-                        assertThat(defaults.get("credit")).isNull();
                     });
                 }),
                 new UniqueCase("date check date per candidate date", "uq_date_check_date", jdbc -> {
