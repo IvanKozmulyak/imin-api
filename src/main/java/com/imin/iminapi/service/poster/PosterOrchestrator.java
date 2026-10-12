@@ -473,6 +473,8 @@ public class PosterOrchestrator {
         t.put("evaluated", text.evaluated());
         t.put("missing", sizeOf(text.missingRequired()));
         t.put("extra", sizeOf(text.extraText()));
+        t.put("read", text.read().wire());
+        t.put("edge", text.edge().wire());
         m.put("text", t);
         Map<String, Object> s = new LinkedHashMap<>();
         if (style == null) {
@@ -494,6 +496,7 @@ public class PosterOrchestrator {
         Map<String, Object> t = new LinkedHashMap<>();
         t.put("accepted", false);
         t.put("evaluated", false);
+        t.put("read", "not_run");
         t.put("reason", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         m.put("text", t);
         return m;

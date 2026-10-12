@@ -105,19 +105,20 @@ poster:
     # Read timeout of the offline style-card generator's OpenRouter client (tools profile only).
     generator-read-timeout-seconds: ${POSTER_STYLE_CARDS_GENERATOR_READ_TIMEOUT_SECONDS:180}
   text-validation:
-    # Legibility + invented-text (vision) gate — HARD. Enforced server-side: the gate fails on ANY
-    # missing required string or invented/garbled text, regardless of the model's own `accepted` verdict;
-    # every failure (missing, extra or unjudged text) triggers a fresh generate with a new seed, and the
-    # fewest-errors attempt ships best-effort. Uses a strong vision model because the
-    # old gpt-4o-mini under-read dense poster type and false-passed hallucinated text. For a cheaper
-    # reader set POSTER_TEXT_VALIDATION_MODEL=google/gemini-2.0-flash-001 (strong OCR, low cost).
+    # Text (vision) gate — HARD. The model only transcribes; PosterTextMatcher decides: a listed string
+    # matches as written or in ALL CAPS, once (copies and fragments are extra). Any missing or extra text
+    # triggers a fresh generate with a new seed, and the fewest-errors attempt ships best-effort. Uses a
+    # strong vision model because gpt-4o-mini under-read dense poster type.
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o}
+    edge-pass:
+      # Second read of the four enlarged edge strips (fine print, vertical credits), only after a clean
+      # main read. An edge call that fails keeps the main verdict.
+      enabled: ${POSTER_TEXT_VALIDATION_EDGE_PASS_ENABLED:true}
     # Server-side tolerance for invented text items before the gate fails. 0 = reject any invented text.
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:0}
-    # Cap on the gate's response length. Bounds a runaway OCR transcription (texture-heavy posters can
-    # make the model enumerate garbled "text" until it overruns and truncates the verdict JSON mid-string).
-    # A legitimate verdict is a few short strings, well under this. An unusable verdict is treated as a
+    # Cap on the gate's response length. Bounds a runaway transcription (texture-heavy posters can make the
+    # model enumerate garbled "text" until it truncates the JSON). An unusable main read is a
     # non-acceptance (regenerate / best-effort), never a fatal variant error.
     max-tokens: ${POSTER_TEXT_VALIDATION_MAX_TOKENS:1500}
   style-validation:

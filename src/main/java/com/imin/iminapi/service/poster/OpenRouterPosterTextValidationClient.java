@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.dto.PosterTextSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,36 +21,27 @@ import java.util.Map;
 public class OpenRouterPosterTextValidationClient implements PosterTextValidationClient {
     private static final Logger log = LoggerFactory.getLogger(OpenRouterPosterTextValidationClient.class);
 
-    private static final String VALIDATION_PROMPT = """
-            You are an OCR-and-verification checker for an event poster. Work in three steps.
-
-            STEP 1 — Transcribe: read and list EVERY piece of text visible in the image,
-            including small, faint, stylized, rotated, or decorative text. Do not skip anything.
-            Fine print, tiny marginal text, credit lines, vertical text columns and letter-like
-            pseudo-text count as text even if illegible.
-
-            STEP 2 — Classify each transcribed string against the lists below:
-              - matches a Required line (exactly or near-exactly) -> required
-              - matches an Allowed line -> allowed
-              - anything else -> invented. "invented" covers misspelled or garbled words,
-                nonsense or fake letterforms, pseudo-text, lorem ipsum, duplicated/repeated
-                text, logos, watermarks, and any words not present in the lists.
-
-            STEP 3 — Report:
-              - missingRequired: every Required line that does NOT appear in the image.
-              - extraText: the DISTINCT invented strings you found (most prominent first), deduplicated.
-                Do not repeat the same string, and list at most 25 — once you have captured the clearly
-                invented text, stop. A pattern with no letter-like shapes is not text; a block of
-                letter-like marks is — report it once as one extraText entry describing it, in square
-                brackets (e.g. "[fine print, bottom-left]").
-              - accepted: true ONLY IF missingRequired is empty AND extraText is empty.
-
-            Ignore QR codes. Be strict: when unsure whether a string is real or invented,
-            put it in extraText. Return JSON only.
+    private static final String READ_PROMPT = """
+            You are transcribing every piece of text on an event poster exactly as it is drawn. You do not check spelling or meaning.
+            - Copy each piece of text character for character, keeping the exact upper- and lower-case of every letter. Do not correct spelling, change case, or complete cut-off words.
+            - One entry per text block; join the lines of one block with a single space, in reading order.
+            - "count" is how many separate places that exact text appears, including faint, ghosted, repeated, mirrored or background-pattern copies.
+            - Include small, faint, rotated, vertical and marginal text: fine print, credit lines, captions, and logos or watermarks with letters.
+            - Letter-like marks you cannot read go in "unreadable", once per area, as a short description with its position (e.g. "fine print, bottom-left"). A pattern with no letter-like shapes is not text.
+            - At most 40 entries. Ignore QR codes.
+            Return JSON only: {"texts":[{"text":"...","count":1}],"unreadable":[]}
             """;
 
+    private static final String EDGE_PROMPT = """
+            The images are four strips cut from the edges of one event poster, in this order: top, bottom, left, right. Side strips may hold rotated or vertical text.
+            For each strip, transcribe every letter, digit or letter-like mark exactly as drawn (case kept, no corrections); text cut off by the strip edge counts. Marks you cannot read go in "unreadable" as a short description. A pattern with no letter-like shapes is not text.
+            Return JSON only: {"top":{"texts":[],"unreadable":[]},"bottom":{"texts":[],"unreadable":[]},"left":{"texts":[],"unreadable":[]},"right":{"texts":[],"unreadable":[]}}
+            """;
+
+    private static final int MAX_COUNT = 10;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final RestClient restClient;
-    private final ObjectMapper objectMapper;
     private final String model;
     private final int maxTokens;
 
@@ -60,7 +51,6 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
             @Value("${poster.text-validation.model:openai/gpt-4o}") String model,
             @Value("${poster.text-validation.max-tokens:1500}") int maxTokens,
             @Value("${poster.validation.read-timeout-seconds:60}") long readTimeoutSeconds) {
-        this.objectMapper = new ObjectMapper();
         this.model = model;
         this.maxTokens = maxTokens;
         this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
@@ -68,24 +58,33 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
     }
 
     @Override
-    public ValidationResult validate(byte[] imageBytes, PosterTextSpec spec) {
-        String dataUri = "data:image/png;base64," + Base64.getEncoder().encodeToString(imageBytes);
+    public Transcript read(byte[] png) {
+        return parseTranscript(complete(READ_PROMPT, List.of(png)));
+    }
 
-        String promptText = validationPrompt(spec);
+    @Override
+    public List<Transcript> readEdges(List<PosterEdgeBands.Band> bands) {
+        return parseEdges(complete(EDGE_PROMPT, bands.stream().map(PosterEdgeBands.Band::png).toList()));
+    }
 
+    private String complete(String prompt, List<byte[]> images) {
+        List<Object> content = new ArrayList<>();
         Map<String, Object> textPart = new LinkedHashMap<>();
         textPart.put("type", "text");
-        textPart.put("text", promptText);
-
-        Map<String, Object> imageUrl = new LinkedHashMap<>();
-        imageUrl.put("url", dataUri);
-        Map<String, Object> imagePart = new LinkedHashMap<>();
-        imagePart.put("type", "image_url");
-        imagePart.put("image_url", imageUrl);
+        textPart.put("text", prompt);
+        content.add(textPart);
+        for (byte[] png : images) {
+            Map<String, Object> imageUrl = new LinkedHashMap<>();
+            imageUrl.put("url", "data:image/png;base64," + Base64.getEncoder().encodeToString(png));
+            Map<String, Object> imagePart = new LinkedHashMap<>();
+            imagePart.put("type", "image_url");
+            imagePart.put("image_url", imageUrl);
+            content.add(imagePart);
+        }
 
         Map<String, Object> userMessage = new LinkedHashMap<>();
         userMessage.put("role", "user");
-        userMessage.put("content", List.of(textPart, imagePart));
+        userMessage.put("content", content);
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
@@ -95,9 +94,8 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
         body.put(com.imin.iminapi.config.OpenRouterPrivacy.PROVIDER_FIELD,
                 com.imin.iminapi.config.OpenRouterPrivacy.providerPolicy());
         body.put("temperature", 0);
-        // Bound the response so a runaway OCR transcription (texture-heavy posters can make the model
-        // enumerate garbled "text" until it overruns and truncates the JSON mid-string) can't produce an
-        // unparseable verdict. A real verdict is a handful of short strings, far under this cap.
+        // Bounds a runaway transcription (texture-heavy posters can make the model enumerate garbled
+        // "text" until the JSON truncates); a truncated reply is unusable, never "no text".
         if (maxTokens > 0) {
             body.put("max_tokens", maxTokens);
         }
@@ -110,53 +108,64 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
                 .body(body)
                 .retrieve()
                 .body(ChatCompletionResponse.class);
-
-        return parseValidationResult(extractContent(response));
+        return extractContent(response);
     }
 
-    private String validationPrompt(PosterTextSpec spec) {
-        return VALIDATION_PROMPT + "\n"
-                + "Required text:\n" + bulletLines(spec.required()) + "\n\n"
-                + "Allowed text:\n" + bulletLines(spec.allowed()) + "\n\n"
-                + "List every invented string you find in extraText.\n"
-                + "Expected JSON shape:\n"
-                + "{\"accepted\":true,\"missingRequired\":[],\"extraText\":[]}";
-    }
-
-    private static String bulletLines(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return "- none";
-        }
-        return values.stream()
-                .map(value -> "- " + value)
-                .reduce((a, b) -> a + "\n" + b)
-                .orElse("- none");
-    }
-
-    private String extractContent(ChatCompletionResponse response) {
+    private static String extractContent(ChatCompletionResponse response) {
         if (response == null || response.choices() == null || response.choices().isEmpty()) {
-            throw new IllegalStateException("OpenRouter poster text validation response contained no choices");
+            throw new UnusableReadException("OpenRouter poster text read contained no choices");
         }
         Choice choice = response.choices().get(0);
         if (choice.message() == null || choice.message().content() == null || choice.message().content().isBlank()) {
-            throw new IllegalStateException("OpenRouter poster text validation response contained no message content");
+            throw new UnusableReadException("OpenRouter poster text read contained no message content");
         }
         return choice.message().content().trim();
     }
 
-    private ValidationResult parseValidationResult(String content) {
-        try {
-            JsonNode root = objectMapper.readTree(content);
-            if (!root.path("accepted").isBoolean()
-                    || !root.path("missingRequired").isArray()
-                    || !root.path("extraText").isArray()) {
-                throw new IllegalStateException(
-                        "OpenRouter poster text validation returned malformed JSON: expected accepted boolean, missingRequired array, and extraText array");
-            }
-            return objectMapper.treeToValue(root, ValidationResult.class);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("OpenRouter poster text validation returned malformed JSON", e);
+    static Transcript parseTranscript(String content) {
+        return toTranscript(readTree(content), "transcript");
+    }
+
+    /** Top, bottom, left, right; a reply missing any strip is unusable. */
+    static List<Transcript> parseEdges(String content) {
+        JsonNode root = readTree(content);
+        List<Transcript> out = new ArrayList<>();
+        for (String band : PosterEdgeBands.BAND_NAMES) {
+            out.add(toTranscript(root.path(band), band));
         }
+        return out;
+    }
+
+    private static JsonNode readTree(String content) {
+        try {
+            JsonNode root = MAPPER.readTree(content);
+            if (root == null || !root.isObject()) {
+                throw new UnusableReadException("OpenRouter poster text read was not a JSON object");
+            }
+            return root;
+        } catch (JsonProcessingException e) {
+            throw new UnusableReadException("OpenRouter poster text read returned malformed JSON", e);
+        }
+    }
+
+    private static Transcript toTranscript(JsonNode node, String what) {
+        if (!node.path("texts").isArray() || !node.path("unreadable").isArray()) {
+            throw new UnusableReadException(
+                    "OpenRouter poster text read (" + what + ") lacks the texts and unreadable arrays");
+        }
+        List<Seen> texts = new ArrayList<>();
+        for (JsonNode entry : node.path("texts")) {
+            String text = entry.isTextual() ? entry.asText() : entry.path("text").asText("");
+            if (text.isBlank()) continue;
+            JsonNode count = entry.path("count");
+            int n = count.canConvertToInt() && count.asInt() >= 1 ? Math.min(count.asInt(), MAX_COUNT) : 1;
+            texts.add(new Seen(text, n));
+        }
+        List<String> unreadable = new ArrayList<>();
+        for (JsonNode entry : node.path("unreadable")) {
+            if (entry.isTextual() && !entry.asText().isBlank()) unreadable.add(entry.asText().trim());
+        }
+        return new Transcript(List.copyOf(texts), List.copyOf(unreadable));
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
