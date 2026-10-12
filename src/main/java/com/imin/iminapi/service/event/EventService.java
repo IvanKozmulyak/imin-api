@@ -41,12 +41,11 @@ public class EventService {
     private final EventRepository events;
     private final TicketTierRepository tiers;
     private final PromoCodeRepository promos;
-    private final PredictionRepository predictions;
     private final EventValidator validator;
     private final IfMatchSupport ifMatch;
     private final TicketTierService tierService;
     private final StripeConnectService stripeConnect;
-    /** Audit logger is optional so older 8-arg test constructors still work. */
+    /** Audit logger is optional so older 7-arg test constructors still work. */
     private final AuditLogger auditLogger;
     /**
      * Predictor outcome-record writer (spec §6.1). Optional so older test constructors
@@ -77,31 +76,31 @@ public class EventService {
      */
     private final DateCheckService dateChecks;
 
-    /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
+    /** Legacy 7-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
+                        PromoCodeRepository promos,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null, null, null);
+        this(events, tiers, promos, validator, ifMatch, tierService, stripeConnect, null, null, null);
     }
 
-    /** 11-arg constructor (pre-scope-B) used by tests that don't wire predictor reactivity. */
+    /** 10-arg constructor (pre-scope-B) used by tests that don't wire predictor reactivity. */
     public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
+                        PromoCodeRepository promos,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
                         AuditLogger auditLogger,
                         EventOutcomeService outcomeService,
                         ConceptRepository concepts) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+        this(events, tiers, promos, validator, ifMatch, tierService, stripeConnect,
                 auditLogger, outcomeService, concepts, null);
     }
 
-    /** 12-arg constructor used by tests that don't wire live sales totals. */
+    /** 11-arg constructor used by tests that don't wire live sales totals. */
     public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
+                        PromoCodeRepository promos,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
@@ -109,13 +108,13 @@ public class EventService {
                         EventOutcomeService outcomeService,
                         ConceptRepository concepts,
                         org.springframework.context.ApplicationEventPublisher eventPublisher) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+        this(events, tiers, promos, validator, ifMatch, tierService, stripeConnect,
                 auditLogger, outcomeService, concepts, eventPublisher, null);
     }
 
-    /** 13-arg constructor used by tests that don't wire the date-check service. */
+    /** 12-arg constructor used by tests that don't wire the date-check service. */
     public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
+                        PromoCodeRepository promos,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
@@ -124,14 +123,14 @@ public class EventService {
                         ConceptRepository concepts,
                         org.springframework.context.ApplicationEventPublisher eventPublisher,
                         EventSalesTotals salesTotals) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+        this(events, tiers, promos, validator, ifMatch, tierService, stripeConnect,
                 auditLogger, outcomeService, concepts, eventPublisher, salesTotals, null);
     }
 
     /** Primary constructor — Spring picks this one in the running app. */
     @org.springframework.beans.factory.annotation.Autowired
     public EventService(EventRepository events, TicketTierRepository tiers,
-                        PromoCodeRepository promos, PredictionRepository predictions,
+                        PromoCodeRepository promos,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
@@ -144,7 +143,6 @@ public class EventService {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
-        this.predictions = predictions;
         this.stripeConnect = stripeConnect;
         this.validator = validator;
         this.ifMatch = ifMatch;
@@ -225,9 +223,8 @@ public class EventService {
         Event e = loadOwned(p, id);
         var tiersList = tiers.findByEventIdOrderBySortOrderAsc(id).stream().map(TicketTierDto::from).toList();
         var promosList = promos.findByEventId(id).stream().map(PromoCodeDto::from).toList();
-        var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
         var figures = salesTotals == null ? EventSalesFigures.EMPTY : salesTotals.forEvent(id);
-        return EventDto.detail(e, figures, tiersList, promosList, prediction);
+        return EventDto.detail(e, figures, tiersList, promosList);
     }
 
     @Transactional

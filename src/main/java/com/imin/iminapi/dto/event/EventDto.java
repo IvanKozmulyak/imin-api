@@ -17,11 +17,11 @@ public record EventDto(
         Instant onSaleAt, Instant saleClosesAt,
         UUID createdBy, Instant createdAt, Instant updatedAt,
         Instant publishedAt, Instant deletedAt,
-        List<TicketTierDto> tiers, List<PromoCodeDto> promoCodes, PredictionDto prediction,
+        List<TicketTierDto> tiers, List<PromoCodeDto> promoCodes,
         Boolean almostGone, Integer ticketsLeft) {
 
     /**
-     * Summary form used by GET /events (no tiers/promos/prediction). Sales figures come from
+     * Summary form used by GET /events (no tiers/promos). Sales figures come from
      * live totals; the event's own sold/revenue columns are never written.
      */
     public static EventDto summary(Event e, EventSalesFigures f) {
@@ -45,13 +45,13 @@ public record EventDto(
                 e.getOnSaleAt(), e.getSaleClosesAt(),
                 e.getCreatedBy(), e.getCreatedAt(), e.getUpdatedAt(),
                 e.getPublishedAt(), e.getDeletedAt(),
-                null, null, null,
+                null, null,
                 almostGone, ticketsLeft);
     }
 
-    /** Detail form including tiers/promos/prediction (prediction may be null). */
+    /** Detail form including tiers and promos. */
     public static EventDto detail(Event e, EventSalesFigures f, List<TicketTierDto> tiers,
-                                  List<PromoCodeDto> promos, PredictionDto prediction) {
+                                  List<PromoCodeDto> promos) {
         EventDto base = summary(e, f);
         return new EventDto(base.id, base.orgId, base.name, base.slug,
                 base.visibility, base.status, base.genre, base.subGenre, base.type,
@@ -61,7 +61,7 @@ public record EventDto(
                 base.onSaleAt, base.saleClosesAt,
                 base.createdBy, base.createdAt, base.updatedAt,
                 base.publishedAt, base.deletedAt,
-                tiers, promos, prediction, null, null);
+                tiers, promos, null, null);
     }
 
     private static VenueDto venue(Event e) {

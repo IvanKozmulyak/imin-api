@@ -9,7 +9,7 @@ import java.util.Set;
 
 /**
  * One open-data event listing (OpenAgenda, Que Faire à Paris; DATAtourisme plugs in here with
- * {@code gate() = "datatourisme"}, licence Licence Ouverte 2.0 and {@code credit} = {@code hasBeenCreatedBy}).
+ * {@code gate() = "datatourisme"} and licence Licence Ouverte 2.0).
  * Clients filter every upstream classification field and return night dates, never descriptions.
  */
 public interface OpenEventSource {
@@ -57,7 +57,7 @@ public interface OpenEventSource {
 
     /** One kept listing; {@code nights} are already night dates (Europe/Paris, before 06:00 = previous night). */
     record RawEvent(String sourceEventId, String title, String url, List<LocalDate> nights, List<String> keywords,
-                    String licence, String credit) {
+                    String licence) {
         public RawEvent {
             nights = List.copyOf(nights);
             keywords = List.copyOf(keywords);

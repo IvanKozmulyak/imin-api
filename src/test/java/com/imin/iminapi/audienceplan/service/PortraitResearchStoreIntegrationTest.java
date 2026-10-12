@@ -79,10 +79,8 @@ class PortraitResearchStoreIntegrationTest {
     }
 
     @Test
-    void saveReady_storesTheGroups_bumpsTheVersion_andClearsTheReview() {
+    void saveReady_storesTheGroups_andBumpsTheVersion() {
         store.touch(HOUSE, "metz", NOW);
-        jdbc.update("UPDATE audience_portraits SET reviewed_by = 'ivan', reviewed_at = ? WHERE genre_key = ? AND city_key = ?",
-                Timestamp.from(NOW), HOUSE, "metz");
 
         store.saveReady(new Pair(HOUSE, "metz"), List.of(GROUP), NOW, NOW.plus(Duration.ofDays(90)), SPEND);
 
@@ -92,11 +90,10 @@ class PortraitResearchStoreIntegrationTest {
         assertThat(r.version()).isEqualTo(1);
         assertThat(r.generatedAt()).isEqualTo(NOW);
         assertThat(r.expiresAt()).isEqualTo(NOW.plus(Duration.ofDays(90)));
-        assertThat(r.reviewedBy()).isNull();
-        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd, reviewed_at FROM audience_portraits"
+        assertThat(jdbc.queryForMap("SELECT model_id, tokens_in, tokens_out, cost_usd FROM audience_portraits"
                 + " WHERE genre_key = ? AND city_key = ?", HOUSE, "metz"))
                 .containsEntry("model_id", "anthropic/claude-haiku-4.5").containsEntry("tokens_in", 2000)
-                .containsEntry("tokens_out", 500).containsEntry("reviewed_at", null)
+                .containsEntry("tokens_out", 500)
                 .hasEntrySatisfying("cost_usd", v -> assertThat((BigDecimal) v).isEqualByComparingTo("0.0361"));
     }
 

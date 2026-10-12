@@ -329,10 +329,10 @@ class SettlementIngestWebhookTest {
         jdbc.update("""
                 INSERT INTO events (id, org_id, name, slug, visibility, status, genre, type,
                                     timezone, venue_street, venue_city, venue_postal_code,
-                                    description, sold, revenue_minor, currency, created_by,
+                                    description, revenue_minor, currency, created_by,
                                     created_at, updated_at)
                 VALUES (?, ?, 'Recon Event', ?, 'PUBLIC', 'PAST', '', '', 'UTC', '', '', '',
-                        '', 0, 0, 'EUR', ?, ?, ?)
+                        '', 0, 'EUR', ?, ?, ?)
                 """, eventId, org.getId(), "recon-" + eventId.toString().substring(0, 8),
                 userId, java.sql.Timestamp.from(now), java.sql.Timestamp.from(now));
         return eventId;

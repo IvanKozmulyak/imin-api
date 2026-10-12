@@ -20,15 +20,8 @@ import java.util.UUID;
 public class ProviderEventDedupService {
 
     /**
-     * {@code payload} is deliberately absent from the column list, so it stays
-     * NULL. It used to carry the raw Resend and Bird bodies — recipient
-     * addresses and originating phone numbers — and <b>nothing has ever read
-     * it</b>: the complaint-rate breaker counts rows, it does not open them. The
-     * 2026-09 legal audit called that indefinite retention of personal data with
-     * no purpose and no purge. Not writing it is smaller and safer than a purge
-     * job for the same reason: a body that was never stored cannot be missed by
-     * an erasure request. The columns kept are exactly the ones something reads —
-     * the ids, the type, and the timestamp.
+     * Stores only what something reads — the ids, the type and the timestamp. The
+     * raw Resend and Bird bodies carry recipient addresses and phone numbers, so they are never kept.
      */
     private static final String INSERT_SQL = """
             INSERT INTO provider_events

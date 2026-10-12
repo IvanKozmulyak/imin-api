@@ -38,7 +38,7 @@ public class OpenEventsWriter {
 
     /** One matched night of one listing; {@code genres} are bucket names. */
     public record Row(String sourceEventId, LocalDate night, String title, String url, Set<String> genres,
-                      boolean community, String licence, String credit) {
+                      boolean community, String licence) {
         public Row {
             genres = Set.copyOf(genres);
         }
@@ -167,7 +167,6 @@ public class OpenEventsWriter {
             o.setGenreKeys(json(QuestionBank.GENRE_BUCKETS.stream().filter(r.genres()::contains).toList()));
             o.setCommunity(r.community());
             o.setLicence(r.licence());
-            o.setCredit(r.credit());
             o.setSyncedAt(syncedAt);
             toSave.add(o);
         }

@@ -323,7 +323,6 @@ class QueFaireAParisClientTest {
         assertThat(e.licence()).isEqualTo("ODbL 1.0");
         assertThat(client().licence()).isEqualTo("ODbL 1.0");
         assertThat(OpenEventSource.LICENCES).contains(QueFaireAParisClient.LICENCE);
-        assertThat(e.credit()).isNull();
         assertThat(e.keywords()).containsExactly("Concert", "Festival");
     }
 

@@ -40,17 +40,9 @@ public class EventOutcome {
     @Column(length = 2)
     private String country;
 
-    /** NULL — events carry no venue-type classification (honesty column). */
-    @Column(name = "venue_type", length = 64)
-    private String venueType;
-
     /** events.genre — the fixed 8-bucket family taxonomy (V32). */
     @Column(name = "genre_family", length = 64)
     private String genreFamily;
-
-    /** NULL — not derivable from any stored attribute (honesty column). */
-    @Column(name = "indoor_open_air", length = 16)
-    private String indoorOpenAir;
 
     @Column
     private Integer capacity;

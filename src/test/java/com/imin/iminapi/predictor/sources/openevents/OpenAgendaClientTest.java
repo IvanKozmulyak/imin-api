@@ -120,7 +120,6 @@ class OpenAgendaClientTest {
         assertThat(rap.nights()).containsExactly(LocalDate.of(2026, 10, 16));
         assertThat(rap.keywords()).containsExactly("concert", "rap");
         assertThat(rap.licence()).isEqualTo("Licence Ouverte 2.0");
-        assertThat(rap.credit()).isNull();
         assertThat(f.events().get(3).nights())
                 .containsExactly(LocalDate.of(2026, 10, 9), LocalDate.of(2026, 10, 10), LocalDate.of(2026, 10, 11));
         // Saint-Ouen-sur-Seine is not a Lille alias; the online one has attendanceMode 2

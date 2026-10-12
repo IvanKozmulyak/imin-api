@@ -99,7 +99,7 @@ public class DashboardService {
         List<Activity> activity = recentActivity(p);
 
         return new DashboardResponse(new Greeting(firstName), nowDto, cycle, lastEvent,
-                /* prediction */ null, business, activity);
+                business, activity);
     }
 
     /** A null capacity (no tier quantity) reads 0 on the cards that print a count. */

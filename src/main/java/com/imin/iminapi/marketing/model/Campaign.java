@@ -88,12 +88,6 @@ public class Campaign {
     @Column(name = "body_ai_generated", nullable = false)
     private boolean bodyAiGenerated;
 
-    @Column(name = "html_rendered")
-    private String htmlRendered;
-
-    @Column(name = "text_rendered")
-    private String textRendered;
-
     // sms-only (forward-compat, unused in Phase 1)
     @Column(name = "body_template")
     private String bodyTemplate;

@@ -12,7 +12,7 @@ import java.util.UUID;
 
 @RepositoryRestResource(exported = false)
 public interface GateSessionRepository extends JpaRepository<GateSession, UUID> {
-    Optional<GateSession> findByTokenHashAndRevokedAtIsNull(String tokenHash);
+    Optional<GateSession> findByTokenHash(String tokenHash);
 
     /**
      * Hard-delete every gate session for the org. Called from the credential

@@ -31,17 +31,12 @@ public class GeneratedEvent {
     private String city;
     private LocalDate eventDate;
     private String platforms;
-    private String accentColors;
-    private String posterUrls;
 
     @Column(precision = 10, scale = 2)
     private BigDecimal suggestedMinPrice;
 
     @Column(precision = 10, scale = 2)
     private BigDecimal suggestedMaxPrice;
-
-    @Column(columnDefinition = "TEXT")
-    private String pricingNotes;
 
     @Enumerated(STRING)
     @Column(nullable = false, length = 20)
@@ -53,9 +48,6 @@ public class GeneratedEvent {
     @OneToMany(mappedBy = "generatedEvent", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("sortOrder ASC")
     private List<Concept> concepts = new ArrayList<>();
-
-    @OneToMany(mappedBy = "generatedEvent", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<SocialCopy> socialCopies = new ArrayList<>();
 
     @Column(name = "org_id")
     private java.util.UUID orgId;

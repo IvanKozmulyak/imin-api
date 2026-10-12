@@ -97,7 +97,7 @@ class VenueGeocodingLostUpdateTest {
         return (street, city, postal, country) -> {
             jdbc.update("""
                     UPDATE events
-                       SET published_at = ?, deleted_at = ?, status = 'PAST', sold = 7, revenue_minor = 12345
+                       SET published_at = ?, deleted_at = ?, status = 'PAST', name = 'rival', revenue_minor = 12345
                      WHERE id = ?
                     """, Timestamp.from(NOW), Timestamp.from(NOW), eventId);
             return Optional.of(new Geocoder.GeoPoint(52.5111d, 13.4432d));
@@ -120,7 +120,7 @@ class VenueGeocodingLostUpdateTest {
                 .as("a deleted event must not resurrect in the public feed").isNotNull();
         assertThat(after.getStatus()).as("the sweeper's LIVE->PAST must not revert")
                 .isEqualTo(EventStatus.PAST);
-        assertThat(after.getSold()).as("sold must not regress").isEqualTo(7);
+        assertThat(after.getName()).as("a concurrent rename must not revert").isEqualTo("rival");
         assertThat(after.getRevenueMinor()).as("revenue must not regress").isEqualTo(12345L);
     }
 
@@ -134,7 +134,7 @@ class VenueGeocodingLostUpdateTest {
     void the_old_save_merge_path_is_exactly_what_clobbered_the_row() {
         Event stale = events.findById(eventId).orElseThrow();
 
-        jdbc.update("UPDATE events SET deleted_at = ?, sold = 7 WHERE id = ?", Timestamp.from(NOW), eventId);
+        jdbc.update("UPDATE events SET deleted_at = ?, name = 'rival' WHERE id = ?", Timestamp.from(NOW), eventId);
 
         stale.setVenueLatitude(52.5111d);
         stale.setVenueLongitude(13.4432d);
@@ -143,7 +143,7 @@ class VenueGeocodingLostUpdateTest {
         Event after = events.findById(eventId).orElseThrow();
         // deleted_at is mapped updatable=false, so even this merge can no longer resurrect the event.
         assertThat(after.getDeletedAt()).as("deleted_at is out of merge's reach").isNotNull();
-        assertThat(after.getSold()).as("merge regresses sold").isZero();
+        assertThat(after.getName()).as("merge reverts the rename").isEqualTo("Great Event");
     }
 
     @Test

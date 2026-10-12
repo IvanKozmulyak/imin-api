@@ -54,10 +54,8 @@ public record AudiencePortraitResponse(String genre, String cityKey, PortraitCat
     /**
      * @param status    none (never requested) | pending (requested, no answer yet) | ready | empty (no usable answer)
      * @param stale     true once the research is past its 90-day expiry and waits for the weekly refresh
-     * @param reviewedBy who reviewed the research by hand, null when nobody has
      */
-    public record PortraitResearchStatus(String status, Instant generatedAt, Instant expiresAt, boolean stale,
-                                         String reviewedBy) {}
+    public record PortraitResearchStatus(String status, Instant generatedAt, Instant expiresAt, boolean stale) {}
 
     public record SizeRange(int low, int high) {}
 

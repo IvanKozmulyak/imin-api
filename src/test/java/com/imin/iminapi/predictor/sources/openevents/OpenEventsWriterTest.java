@@ -55,7 +55,7 @@ class OpenEventsWriterTest {
     }
 
     private static Row row(String id, LocalDate night, String title, Set<String> genres) {
-        return new Row(id, night, title, "https://openagenda.com/fr/ville-de-lille/events/" + id, genres, false, LO, null);
+        return new Row(id, night, title, "https://openagenda.com/fr/ville-de-lille/events/" + id, genres, false, LO);
     }
 
     private static Row row(String id, LocalDate night) {
@@ -147,7 +147,7 @@ class OpenEventsWriterTest {
     @Test
     void repeatedRowStoredOnceWithNormalisedKeys() {
         Row r = new Row("77", LocalDate.of(2026, 10, 2), "Fête de la Musique — Techno!",
-                "https://openagenda.com/fr/x/events/77", Set.of("jazz & acoustic", HOUSE), true, LO, "Office de tourisme");
+                "https://openagenda.com/fr/x/events/77", Set.of("jazz & acoustic", HOUSE), true, LO);
 
         writer.replaceFuture("openagenda", lille, FROM, List.of(r, r), T1);
 
@@ -173,8 +173,8 @@ class OpenEventsWriterTest {
     @Test
     void overlongUrlOrIdDroppedAndTitleCut() {
         String title = "Techno ".repeat(50);
-        Row longUrl = new Row("1", WEEK, "A", "https://x.org/" + "a".repeat(500), Set.of(HOUSE), false, LO, null);
-        Row longId = new Row("9".repeat(65), WEEK, "B", "https://x.org/b", Set.of(HOUSE), false, LO, null);
+        Row longUrl = new Row("1", WEEK, "A", "https://x.org/" + "a".repeat(500), Set.of(HOUSE), false, LO);
+        Row longId = new Row("9".repeat(65), WEEK, "B", "https://x.org/b", Set.of(HOUSE), false, LO);
 
         Written w = writer.replaceFuture("openagenda", lille, FROM,
                 List.of(longUrl, longId, row("ok", WEEK, title, Set.of(HOUSE))), T1);

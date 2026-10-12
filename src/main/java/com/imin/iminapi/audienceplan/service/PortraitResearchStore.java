@@ -40,7 +40,7 @@ public class PortraitResearchStore {
                               List<WebSource> sources, String confidence) {}
 
     public record Row(String genreKey, String cityKey, String status, List<StoredGroup> groups, int version,
-                      Instant generatedAt, Instant expiresAt, Instant requestedAt, String reviewedBy) {}
+                      Instant generatedAt, Instant expiresAt, Instant requestedAt) {}
 
     /** What one generation spent. */
     public record Spend(String model, int tokensIn, int tokensOut, BigDecimal costUsd) {}
@@ -55,7 +55,7 @@ public class PortraitResearchStore {
 
     public Optional<Row> find(String genreKey, String cityKey) {
         return jdbc.query("""
-                SELECT genre_key, city_key, status, research_groups, version, generated_at, expires_at, requested_at, reviewed_by
+                SELECT genre_key, city_key, status, research_groups, version, generated_at, expires_at, requested_at
                   FROM audience_portraits WHERE genre_key = ? AND city_key = ?""",
                 (rs, i) -> row(rs), genreKey, cityKey).stream().findFirst();
     }
@@ -74,12 +74,11 @@ public class PortraitResearchStore {
         return find(genreKey, cityKey).orElseThrow();
     }
 
-    /** Stores a new answer; the hand review belongs to the text it reviewed, so it is cleared. */
+    /** Stores a new answer and bumps the version. */
     public void saveReady(Pair pair, List<StoredGroup> groups, Instant now, Instant expiresAt, Spend spend) {
         jdbc.update("""
                 UPDATE audience_portraits SET status = ?, research_groups = ?, version = version + 1, generated_at = ?,
-                       expires_at = ?, reviewed_by = NULL, reviewed_at = NULL, model_id = ?, tokens_in = ?,
-                       tokens_out = ?, cost_usd = ?
+                       expires_at = ?, model_id = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?
                  WHERE genre_key = ? AND city_key = ?""",
                 READY, write(groups), ts(now), ts(expiresAt), spend.model(), spend.tokensIn(), spend.tokensOut(),
                 spend.costUsd(), pair.genreKey(), pair.cityKey());
@@ -130,7 +129,7 @@ public class PortraitResearchStore {
         String groups = rs.getString("research_groups");
         return new Row(rs.getString("genre_key"), rs.getString("city_key"), rs.getString("status"),
                 groups == null ? List.of() : read(groups), rs.getInt("version"), instant(rs, "generated_at"),
-                instant(rs, "expires_at"), instant(rs, "requested_at"), rs.getString("reviewed_by"));
+                instant(rs, "expires_at"), instant(rs, "requested_at"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

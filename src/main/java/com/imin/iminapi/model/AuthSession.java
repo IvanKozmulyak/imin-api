@@ -36,9 +36,6 @@ public class AuthSession {
     @Column(name = "revoked_at")
     private Instant revokedAt;
 
-    @Column(name = "user_agent", length = 512)
-    private String userAgent;
-
     @PrePersist
     @PreUpdate
     void truncateTimestamps() {

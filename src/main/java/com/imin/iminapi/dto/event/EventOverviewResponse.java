@@ -8,7 +8,6 @@ import java.util.List;
 public record EventOverviewResponse(
         Metrics metrics,
         List<RecentPurchase> recentPurchases,
-        PredictionDto prediction,
         List<QuickAction> quickActions) {
 
     /**

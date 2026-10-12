@@ -309,7 +309,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * now-stale snapshot over whatever the row has become. {@code Event} has no {@code @Version}
      * to catch it. Inside that window an organizer's Publish is silently undone, a soft-delete
      * is nulled (the event reappears in the public feed), {@code EventStatusSweeper}'s LIVE→PAST
-     * is reverted, and {@code sold}/{@code revenueMinor} regress. A targeted UPDATE cannot do
+     * is reverted, and {@code revenueMinor} regresses. A targeted UPDATE cannot do
      * any of that: the two columns it names are the only two it can touch, and they are ones no
      * other writer sets. Both columns are {@code updatable = false} on the entity, so no full-entity save can revert them.
      *

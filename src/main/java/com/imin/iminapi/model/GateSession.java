@@ -37,14 +37,10 @@ public class GateSession {
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 
-    @Column(name = "revoked_at")
-    private Instant revokedAt;
-
     @PrePersist
     @PreUpdate
     void truncate() {
         issuedAt = issuedAt == null ? Times.nowMicros() : issuedAt.truncatedTo(ChronoUnit.MICROS);
         if (expiresAt != null) expiresAt = expiresAt.truncatedTo(ChronoUnit.MICROS);
-        if (revokedAt != null) revokedAt = revokedAt.truncatedTo(ChronoUnit.MICROS);
     }
 }

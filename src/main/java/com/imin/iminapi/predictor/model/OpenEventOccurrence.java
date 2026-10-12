@@ -59,10 +59,6 @@ public class OpenEventOccurrence {
     @Column(nullable = false, length = 32)
     private String licence;
 
-    /** Per-row author credit where the source requires one; null for today's sources. */
-    @Column(length = 255)
-    private String credit;
-
     @Column(name = "synced_at", nullable = false)
     private Instant syncedAt;
 

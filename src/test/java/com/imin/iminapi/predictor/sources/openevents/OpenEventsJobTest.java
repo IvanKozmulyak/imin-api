@@ -128,7 +128,7 @@ class OpenEventsJobTest {
     }
 
     private static RawEvent raw(String id, String title, LocalDate... nights) {
-        return new RawEvent(id, title, "https://example.org/" + id, List.of(nights), List.of(), LO, null);
+        return new RawEvent(id, title, "https://example.org/" + id, List.of(nights), List.of(), LO);
     }
 
     private static Fetch fetch(RawEvent... events) {

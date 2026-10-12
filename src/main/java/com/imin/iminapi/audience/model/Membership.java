@@ -136,12 +136,6 @@ public class Membership {
     @Column(name = "nps")
     private Short nps;
 
-    @Column(length = 64)
-    private String vibe;
-
-    @Column(columnDefinition = "TEXT")
-    private String quote;
-
     @Convert(converter = StringListJsonConverter.class)
     @Column(columnDefinition = "TEXT")
     private List<String> tags = new ArrayList<>();

@@ -25,7 +25,6 @@ public class Concept {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    private String tagline;
     private int sortOrder;
 
     @Column(name = "instagram_caption", columnDefinition = "TEXT")

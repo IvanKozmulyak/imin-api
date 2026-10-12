@@ -178,8 +178,6 @@ class EventOutcomeServiceTest {
         assertThat(o.isSnapshotReconstructed()).isFalse();
 
         // honesty columns: null, never invented
-        assertThat(o.getVenueType()).isNull();
-        assertThat(o.getIndoorOpenAir()).isNull();
         assertThat(o.getConceptAiGenerated()).isNull();
         assertThat(o.getPosterAiGenerated()).isNull();
         assertThat(o.getNps()).isNull();

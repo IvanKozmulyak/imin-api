@@ -2,7 +2,6 @@ package com.imin.iminapi.dto.dashboard;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.imin.iminapi.dto.event.EventDto;
-import com.imin.iminapi.dto.event.PredictionDto;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
@@ -13,7 +12,6 @@ public record DashboardResponse(
         Now now,
         Cycle cycle,
         LastEvent lastEvent,
-        PredictionDto prediction,
         Business business,
         List<Activity> activity) {
 

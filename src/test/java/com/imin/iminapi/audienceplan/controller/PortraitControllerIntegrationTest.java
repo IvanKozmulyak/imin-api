@@ -72,8 +72,8 @@ class PortraitControllerIntegrationTest {
         Instant generated = clock.instant().minus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS);
         jdbc.update("""
                 INSERT INTO audience_portraits (id, genre_key, city_key, status, research_groups, version, generated_at,
-                  expires_at, requested_at, reviewed_by, created_at) VALUES (?, 'pop', 'thionville', 'ready', ?, 1, ?, ?, ?,
-                  'ivan', ?)""", UUID.randomUUID(), """
+                  expires_at, requested_at, created_at) VALUES (?, 'pop', 'thionville', 'ready', ?, 1, ?, ?, ?,
+                  ?)""", UUID.randomUUID(), """
                 [{"label":"Thionville students","description":"They meet at the campus bar nights.",
                   "basis":"students","towns":["thionville"],
                   "sources":[{"url":"https://example.org/thionville","title":"Campus nights"}],"confidence":"assumed"}]""",
@@ -83,7 +83,6 @@ class PortraitControllerIntegrationTest {
         portrait(memberA, "pop", "Thionville").andExpect(status().isOk())
                 .andExpect(jsonPath("$.research.status").value("ready"))
                 .andExpect(jsonPath("$.research.stale").value(false))
-                .andExpect(jsonPath("$.research.reviewedBy").value("ivan"))
                 .andExpect(jsonPath("$.groups.length()").value(4))
                 .andExpect(jsonPath("$.groups[3].key").value("research_1"))
                 .andExpect(jsonPath("$.groups[3].origin").value("research"))

@@ -40,7 +40,7 @@ public final class OrgRows {
                 + " OR order_id IN " + orders, ids);
         run(jdbc, failures, "DELETE FROM payout_runs WHERE org_id IN " + in + " OR event_id IN " + events, ids);
         run(jdbc, failures, "DELETE FROM settlements WHERE org_id IN " + in, ids);
-        for (String child : List.of("concept", "social_copy", "poster_generations")) {
+        for (String child : List.of("concept", "poster_generations")) {
             run(jdbc, failures, "DELETE FROM " + child + " WHERE generated_event_id IN " + generated, ids);
         }
         // Events cascade orders, tickets, tiers and reservations; organizations cascade users and the rest.

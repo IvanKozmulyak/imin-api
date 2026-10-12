@@ -123,9 +123,6 @@ public class AudiencePlan {
     @Column(name = "inputs_hash", nullable = false, length = 64)
     private String inputsHash;
 
-    @Column(name = "portrait_id")
-    private UUID portraitId;
-
     /** JSON list of the portrait's new-people groups; null on plans computed before portraits. */
     @Column(name = "new_people", columnDefinition = "TEXT")
     private String newPeople;

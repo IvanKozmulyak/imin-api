@@ -107,7 +107,7 @@ public class PortraitService {
         AudiencePortraitResponse open = openData(genreKey, cityKey);
         Optional<PortraitResearchStore.Row> row = research.find(genreKey, cityKey);
         if (row.isEmpty()) {
-            return withResearch(open, open.groups(), new PortraitResearchStatus(STATUS_NONE, null, null, false, null));
+            return withResearch(open, open.groups(), new PortraitResearchStatus(STATUS_NONE, null, null, false));
         }
         PortraitResearchStore.Row r = row.get();
         boolean ready = PortraitResearchStore.READY.equals(r.status());
@@ -121,7 +121,7 @@ public class PortraitService {
             }
         }
         return withResearch(open, List.copyOf(groups), new PortraitResearchStatus(r.status(),
-                r.generatedAt(), ready ? r.expiresAt() : null, stale, ready ? r.reviewedBy() : null));
+                r.generatedAt(), ready ? r.expiresAt() : null, stale));
     }
 
     private static AudiencePortraitResponse withResearch(AudiencePortraitResponse open, List<NewPeopleGroup> groups,

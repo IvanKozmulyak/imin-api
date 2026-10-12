@@ -240,8 +240,7 @@ public class OpenEventsJob {
                 continue;
             }
             for (LocalDate night : e.nights()) {
-                out.add(new Row(e.sourceEventId(), night, e.title(), e.url(), m.genres(), m.community(), e.licence(),
-                        e.credit()));
+                out.add(new Row(e.sourceEventId(), night, e.title(), e.url(), m.genres(), m.community(), e.licence()));
             }
         }
         return out;

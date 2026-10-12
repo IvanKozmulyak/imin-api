@@ -38,9 +38,6 @@ public class CampaignRecipient {
     @Column(name = "skip_reason")
     private String skipReason;
 
-    @Column(name = "rendered_body")
-    private String renderedBody;
-
     @Column(name = "segment_count")
     private Short segmentCount;
 

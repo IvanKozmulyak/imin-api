@@ -6,14 +6,12 @@ import com.imin.iminapi.dto.event.EventOverviewResponse.Metrics;
 import com.imin.iminapi.dto.event.EventOverviewResponse.QuickAction;
 import com.imin.iminapi.dto.event.EventOverviewResponse.RecentPurchase;
 import com.imin.iminapi.dto.event.EventSalesFigures;
-import com.imin.iminapi.dto.event.PredictionDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.PredictionRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
@@ -51,7 +49,6 @@ public class EventOverviewService {
     private static final int RECENT_FETCH_FACTOR = 4;
 
     private final EventRepository events;
-    private final PredictionRepository predictions;
     private final TicketTierRepository tiers;
     private final OrderRepository orders;
     private final RefundRepository refunds;
@@ -60,7 +57,6 @@ public class EventOverviewService {
     private final EventSalesTotals salesTotals;
 
     public EventOverviewService(EventRepository events,
-                                PredictionRepository predictions,
                                 TicketTierRepository tiers,
                                 OrderRepository orders,
                                 RefundRepository refunds,
@@ -68,7 +64,6 @@ public class EventOverviewService {
                                 DisputeWithholding disputeWithholding,
                                 EventSalesTotals salesTotals) {
         this.events = events;
-        this.predictions = predictions;
         this.tiers = tiers;
         this.orders = orders;
         this.refunds = refunds;
@@ -135,8 +130,7 @@ public class EventOverviewService {
             if (!live.isEmpty()) recentPurchases.add(toRecentPurchase(o, live));
         }
 
-        var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
-        return new EventOverviewResponse(m, recentPurchases, prediction, ACTIONS);
+        return new EventOverviewResponse(m, recentPurchases, ACTIONS);
     }
 
     /**

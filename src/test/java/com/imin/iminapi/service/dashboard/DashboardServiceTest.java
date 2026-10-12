@@ -82,7 +82,6 @@ class DashboardServiceTest {
         assertThat(r.lastEvent().metrics().capacity()).isZero();
         assertThat(r.business().totalRevenueMinor()).isZero();
         assertThat(r.activity()).isEmpty();
-        assertThat(r.prediction()).isNull();
     }
 
     @Test

@@ -167,7 +167,7 @@ public class OpenAgendaClient implements OpenEventSource {
         if (nights.isEmpty()) return "no_night";
         out.add(new RawEvent(String.valueOf(uid.asLong()), title,
                 EVENT_PAGE + agenda.slug() + "/events/" + slug, List.copyOf(nights), keywords(e.path("keywords")),
-                LICENCE, null));
+                LICENCE));
         return null;
     }
 

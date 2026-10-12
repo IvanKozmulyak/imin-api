@@ -165,14 +165,14 @@ public class GateAuthService {
 
     /**
      * Bearer-token resolution for the security filter. Returns the gate
-     * principal if the token's hash matches a live, unexpired,
-     * non-revoked {@link GateSession}; empty otherwise. Never throws.
+     * principal if the token's hash matches an unexpired {@link GateSession}
+     * (revoking deletes the row); empty otherwise. Never throws.
      */
     @Transactional(readOnly = true)
     public Optional<AuthPrincipal> authenticate(String rawToken) {
         if (rawToken == null || rawToken.isBlank()) return Optional.empty();
         String hash = tokens.hashOf(rawToken);
-        Optional<GateSession> maybe = sessions.findByTokenHashAndRevokedAtIsNull(hash);
+        Optional<GateSession> maybe = sessions.findByTokenHash(hash);
         if (maybe.isEmpty()) return Optional.empty();
         GateSession s = maybe.get();
         if (s.getExpiresAt() == null || s.getExpiresAt().isBefore(Instant.now())) {

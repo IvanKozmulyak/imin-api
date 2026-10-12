@@ -289,28 +289,28 @@ class PortraitServiceTest {
     void noResearchRow_statusNone_onlyTheOpenDataGroups() {
         AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
 
-        assertThat(p.research()).isEqualTo(new PortraitResearchStatus("none", null, null, false, null));
+        assertThat(p.research()).isEqualTo(new PortraitResearchStatus("none", null, null, false));
         assertThat(p.groups()).extracting(NewPeopleGroup::origin).containsOnly("open_data");
         assertThat(p.groups()).allSatisfy(g -> assertThat(g.research()).isNull());
     }
 
     @Test
     void pendingOrEmptyRow_showsItsStatus_andNoResearchGroup() {
-        stored("pending", null, null, null);
+        stored("pending", null, null);
         AudiencePortraitResponse pending = service(70, NOW).forCity(HOUSE, "metz");
-        assertThat(pending.research()).isEqualTo(new PortraitResearchStatus("pending", null, null, false, null));
+        assertThat(pending.research()).isEqualTo(new PortraitResearchStatus("pending", null, null, false));
         assertThat(pending.groups()).hasSize(3);
 
-        stored("empty", GENERATED, GENERATED.plus(Duration.ofDays(1)), "ivan", group("Techno regulars", "regulars",
+        stored("empty", GENERATED, GENERATED.plus(Duration.ofDays(1)), group("Techno regulars", "regulars",
                 List.of(), "cited"));
         AudiencePortraitResponse empty = service(70, NOW).forCity(HOUSE, "metz");
-        assertThat(empty.research()).isEqualTo(new PortraitResearchStatus("empty", GENERATED, null, false, null));
+        assertThat(empty.research()).isEqualTo(new PortraitResearchStatus("empty", GENERATED, null, false));
         assertThat(empty.groups()).hasSize(3);
     }
 
     @Test
     void readyRow_appendsResearchGroups_sizedByCodeFromTheirBasisAndTowns() {
-        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), "ivan",
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)),
                 group("Nancy techno regulars", "regulars", List.of("nancy"), "cited"),
                 group("Students of the area", "students", List.of(), "assumed"),
                 group("Afterparty crowd", "none", List.of("metz"), "cited"));
@@ -318,7 +318,7 @@ class PortraitServiceTest {
         AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
 
         assertThat(p.research()).isEqualTo(new PortraitResearchStatus("ready", GENERATED,
-                GENERATED.plus(Duration.ofDays(90)), false, "ivan"));
+                GENERATED.plus(Duration.ofDays(90)), false));
         assertThat(p.groups()).extracting(NewPeopleGroup::key)
                 .containsExactly("genre_first", "regulars", "students", "research_1", "research_2", "research_3");
 
@@ -352,7 +352,7 @@ class PortraitServiceTest {
 
     @Test
     void researchGroup_namingOnlyTownsOutsideTheFrenchCatchment_isSizedOverTheWholeFrenchCatchment() {
-        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), null,
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)),
                 group("Cross-border workers", "genre_first", List.of("luxembourg"), "cited"));
 
         NewPeopleGroup g = service(70, NOW).forCity(HOUSE, "metz").groups().get(3);
@@ -363,7 +363,7 @@ class PortraitServiceTest {
 
     @Test
     void expiredResearch_isStillShown_andFlaggedStale() {
-        stored("ready", GENERATED, NOW.minus(Duration.ofDays(1)), null,
+        stored("ready", GENERATED, NOW.minus(Duration.ofDays(1)),
                 group("Techno regulars", "regulars", List.of(), "cited"));
 
         AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
@@ -381,7 +381,7 @@ class PortraitServiceTest {
         List<StoredGroup> parsed = new PortraitResearchParser(new IdentityLabelGuard(List.of()))
                 .parse(answer, List.of(new PortraitLlmClient.Citation(WEB_URL, "Metz club scene")),
                         java.util.Map.of("Metz", "metz", "Nancy", "nancy", "Thionville", "thionville"));
-        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), null, parsed.toArray(StoredGroup[]::new));
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), parsed.toArray(StoredGroup[]::new));
 
         NewPeopleGroup g = service(70, NOW).forCity(HOUSE, "metz").groups().get(3);
 
@@ -423,9 +423,9 @@ class PortraitServiceTest {
                 Clock.fixed(NOW, ZoneOffset.UTC)));
     }
 
-    private void stored(String status, Instant generatedAt, Instant expiresAt, String reviewedBy, StoredGroup... groups) {
+    private void stored(String status, Instant generatedAt, Instant expiresAt, StoredGroup... groups) {
         when(store.find(HOUSE, "metz")).thenReturn(Optional.of(new PortraitResearchStore.Row(HOUSE, "metz", status,
-                List.of(groups), 1, generatedAt, expiresAt, NOW.minus(Duration.ofDays(1)), reviewedBy)));
+                List.of(groups), 1, generatedAt, expiresAt, NOW.minus(Duration.ofDays(1)))));
     }
 
     private static StoredGroup group(String label, String basis, List<String> towns, String confidence) {

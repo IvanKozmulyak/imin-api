@@ -367,7 +367,7 @@ class PortraitResearchServiceTest {
     // ── lazy request ───────────────────────────────────────────────────────
 
     private Row row(String status, Instant expiresAt) {
-        return new Row(HOUSE, "metz", status, List.of(), 1, null, expiresAt, NOW, null);
+        return new Row(HOUSE, "metz", status, List.of(), 1, null, expiresAt, NOW);
     }
 
     @Test

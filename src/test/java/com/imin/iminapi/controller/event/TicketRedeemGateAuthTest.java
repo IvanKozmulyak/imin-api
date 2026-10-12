@@ -115,7 +115,7 @@ class TicketRedeemGateAuthTest {
      */
     @Test
     void a_gate_redemption_is_recorded_against_the_gate_session_that_did_it() throws Exception {
-        UUID sessionId = gateSessions.findByTokenHashAndRevokedAtIsNull(tokenService.hashOf(gateToken))
+        UUID sessionId = gateSessions.findByTokenHash(tokenService.hashOf(gateToken))
                 .orElseThrow().getId();
         String qr = signer.sign(ticket.getToken());
 

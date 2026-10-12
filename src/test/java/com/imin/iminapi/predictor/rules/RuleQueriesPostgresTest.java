@@ -142,7 +142,7 @@ class RuleQueriesPostgresTest {
     }
 
     private static Row row(String id, LocalDate night, String title, Set<String> genres, boolean community) {
-        return new Row(id, night, title, "https://openagenda.com/fr/ville-de-lille/events/" + id, genres, community, LO, null);
+        return new Row(id, night, title, "https://openagenda.com/fr/ville-de-lille/events/" + id, genres, community, LO);
     }
 
     /**

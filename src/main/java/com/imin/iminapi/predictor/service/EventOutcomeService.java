@@ -137,7 +137,6 @@ public class EventOutcomeService {
         o.setCity(PredictorSegmentKeys.cityKey(e.getVenueCity()));
         o.setCountry(blankToNull(e.getVenueCountry()));   // already upper-cased on write (V82)
         o.setGenreFamily(PredictorSegmentKeys.genreKey(e.getGenre()));
-        // venueType / indoorOpenAir stay NULL — no source in the data model.
 
         // A tier-less event (free/RSVP-style — EventValidator.validateForPublish requires no
         // tier) sums to 0, and the query COALESCEs to 0, so the caller can never pass null.

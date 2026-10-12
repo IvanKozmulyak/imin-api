@@ -180,7 +180,7 @@ class GateAuthServiceTest {
         assertThat(resp.expiresAt()).isAfter(Instant.now());
 
         // session persisted as hash, not plaintext
-        Optional<GateSession> s = sessions.findByTokenHashAndRevokedAtIsNull(tokens.hashOf(resp.token()));
+        Optional<GateSession> s = sessions.findByTokenHash(tokens.hashOf(resp.token()));
         assertThat(s).isPresent();
         assertThat(s.get().getOrgId()).isEqualTo(org.getId());
     }
@@ -240,7 +240,7 @@ class GateAuthServiceTest {
         service.rotate(owner, org.getId(), "correct-password-123");
         String token = service.login(new GateLoginRequest(org.getSlug(), "correct-password-123")).token();
         // Manually expire it.
-        GateSession s = sessions.findByTokenHashAndRevokedAtIsNull(tokens.hashOf(token)).orElseThrow();
+        GateSession s = sessions.findByTokenHash(tokens.hashOf(token)).orElseThrow();
         s.setExpiresAt(Instant.now().minusSeconds(60));
         sessions.save(s);
 

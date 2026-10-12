@@ -33,8 +33,6 @@ public record MemberDto(
         String subscriptionStatus,   // 'subscribed' | 'unsubscribed' | 'never'
         SuppressionInfo suppression, // null if not suppressed
         Integer nps,
-        String vibe,
-        String quote,
         List<String> tags,
         String notes,
         String lifecycle,
@@ -86,8 +84,6 @@ public record MemberDto(
                 m.getConsentStatus(),
                 suppInfo,
                 m.getNps() != null ? m.getNps().intValue() : null,
-                m.getVibe(),
-                m.getQuote(),
                 m.getTags(),
                 m.getNotes(),
                 m.getLifecycle(),
@@ -105,7 +101,7 @@ public record MemberDto(
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
-                nps, vibe, quote, tags, notes, lifecycle,
+                nps, tags, notes, lifecycle,
                 rfm, guestClass, taste, sends30d, history, records);
     }
 
@@ -114,7 +110,7 @@ public record MemberDto(
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
-                nps, vibe, quote, tags, notes, lifecycle,
+                nps, tags, notes, lifecycle,
                 rfm, guestClass, taste, sends30d, consentHistory, dsarRecords);
     }
 }

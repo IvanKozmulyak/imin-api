@@ -161,7 +161,7 @@ public class QueFaireAParisClient implements OpenEventSource {
         List<String> tags = new ArrayList<>();
         String rawTags = text(r.path("qfap_tags"));
         if (rawTags != null) for (String t : rawTags.split(";")) if (!t.isBlank()) tags.add(t.strip());
-        out.add(new RawEvent(id, title, url, List.copyOf(nights), tags, LICENCE, null));
+        out.add(new RawEvent(id, title, url, List.copyOf(nights), tags, LICENCE));
         return null;
     }
 

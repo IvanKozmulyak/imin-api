@@ -34,13 +34,12 @@ class EventServiceTest {
     EventRepository events = mock(EventRepository.class);
     TicketTierRepository tiers = mock(TicketTierRepository.class);
     PromoCodeRepository promos = mock(PromoCodeRepository.class);
-    PredictionRepository predictions = mock(PredictionRepository.class);
     IfMatchSupport ifMatch = new IfMatchSupport();
     EventValidator validator = new EventValidator();
     TicketTierService tierService = mock(TicketTierService.class);
     StripeConnectService stripeConnect = mock(StripeConnectService.class);
 
-    EventService sut = new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect);
+    EventService sut = new EventService(events, tiers, promos, validator, ifMatch, tierService, stripeConnect);
 
     private AuthPrincipal principal() {
         return new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
@@ -93,7 +92,7 @@ class EventServiceTest {
     }
 
     @Test
-    void detail_returns_event_with_tiers_promos_and_null_prediction() {
+    void detail_returns_event_with_tiers_and_promos() {
         AuthPrincipal p = principal();
         Event e = new Event();
         e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
@@ -101,12 +100,10 @@ class EventServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.detail(p, e.getId());
         assertThat(dto.tiers()).isEmpty();
         assertThat(dto.promoCodes()).isEmpty();
-        assertThat(dto.prediction()).isNull();
     }
 
     @Test
@@ -121,7 +118,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
@@ -200,7 +196,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.publish(p, e.getId());
         assertThat(dto.status()).isEqualTo("live");
@@ -231,7 +226,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.unpublish(p, e.getId());
 
@@ -295,7 +289,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
         UUID idA = UUID.randomUUID();
         UUID idB = UUID.randomUUID();
         when(tiers.findIdsByEventId(e.getId())).thenReturn(List.of(idB, idA));
@@ -362,7 +355,6 @@ class EventServiceTest {
         when(tiers.existsSyncedStripePrice(e.getId())).thenReturn(true);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest(null, null, null, null, null, null, null, null, null,
@@ -382,7 +374,6 @@ class EventServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
         return e;
     }
 
@@ -473,7 +464,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         TicketTierEmbeddedPatch tp =
                 new TicketTierEmbeddedPatch(
@@ -499,7 +489,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         UUID existingId = UUID.randomUUID();
         TicketTierEmbeddedPatch update =
@@ -530,7 +519,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("Renamed", null, null, null, null, null, null, null, null,
@@ -554,7 +542,6 @@ class EventServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         TicketTier paid = new TicketTier();
         paid.setEventId(e.getId());
@@ -670,7 +657,6 @@ class EventServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         TicketTier free = new TicketTier();
         free.setEventId(e.getId());
@@ -746,7 +732,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"", bodyWith(null, venue("NL")));
 
@@ -774,7 +759,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 bodyWith(null, new VenueDto(null, "2 Rue X", null, null, null)));
@@ -798,7 +782,6 @@ class EventServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         // Venue moves to FR, but the request carries no explicit timezone — the prior zone stays.
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"", bodyWith(null, venue("FR")));
@@ -825,7 +808,7 @@ class EventServiceTest {
      * leaves the publisher null, which is fine for tests that don't care about events.
      */
     private EventService serviceWithPublisher(org.springframework.context.ApplicationEventPublisher pub) {
-        return new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService,
+        return new EventService(events, tiers, promos, validator, ifMatch, tierService,
                 stripeConnect, null, null, null, pub);
     }
 
@@ -868,7 +851,6 @@ class EventServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
         when(promos.findByEventId(any())).thenReturn(List.of());
-        when(predictions.findById(any())).thenReturn(Optional.empty());
         return e.getId();
     }
 
@@ -909,7 +891,6 @@ class EventServiceTest {
             when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
             when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
             when(promos.findByEventId(any())).thenReturn(List.of());
-            when(predictions.findById(any())).thenReturn(Optional.empty());
             sut.patch(p, saved.getId(), null, body);
         }
 
