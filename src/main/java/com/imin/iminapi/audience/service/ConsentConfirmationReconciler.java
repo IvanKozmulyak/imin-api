@@ -19,7 +19,8 @@ import java.util.Set;
 
 /**
  * Re-applies V155's consent step to door QR and survey records written without the confirmation flag, which an
- * instance running the previous release can still do during a rolling deploy. Idempotent: a second pass finds nothing.
+ * instance running the previous release can still do during a rolling deploy, and drops survey scores held on
+ * confirmation emails that expired unclicked. Idempotent: a second pass finds nothing.
  */
 @Component
 public class ConsentConfirmationReconciler {
@@ -54,6 +55,10 @@ public class ConsentConfirmationReconciler {
             + "                                     AND (l.confirmation_required = FALSE OR l.confirmed_at IS NOT NULL)"
             + "                                     AND l.occurred_at >= d.occurred_at))";
 
+    private static final String DROP_EXPIRED_SCORES =
+            "UPDATE consent_confirmation_tokens SET nps_score = NULL"
+            + " WHERE nps_score IS NOT NULL AND (used_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP)";
+
     private final JdbcTemplate jdbc;
     // Calls reach run() through the proxy so the ShedLock and transaction advice apply.
     private final ObjectProvider<ConsentConfirmationReconciler> self;
@@ -82,10 +87,12 @@ public class ConsentConfirmationReconciler {
         }
     }
 
-    /** Flags unflagged, unconfirmed door/survey records and restores their members; empty when another node holds the lock. */
+    /** Drops expired held scores, then flags unflagged door/survey records; empty when another node holds the lock. */
     @SchedulerLock(name = "consent_confirmation_reconcile", lockAtMostFor = "PT10M")
     @Transactional
     public Optional<Integer> run() {
+        int dropped = jdbc.update(DROP_EXPIRED_SCORES);
+        if (dropped > 0) log.info("ConsentConfirmationReconciler: dropped {} unconfirmed survey score(s)", dropped);
         List<Map<String, Object>> rows = jdbc.queryForList(FIND_UNFLAGGED);
         if (rows.isEmpty()) return Optional.of(0);
         int flagged = 0;

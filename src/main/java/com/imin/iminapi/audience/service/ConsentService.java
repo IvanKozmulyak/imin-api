@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.service;
 import com.imin.iminapi.audience.model.ConsentRecord;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -49,6 +50,7 @@ public class ConsentService {
     private final ApplicationEventPublisher events;
     private final FanFeatureRepository fanFeatureRepo;
     private final EntityManager entityManager;
+    private final ConsentConfirmationTokenRepository confirmationTokens;
 
     public ConsentService(MembershipRepository membershipRepo,
                           ConsentRecordRepository consentRepo,
@@ -57,7 +59,8 @@ public class ConsentService {
                           AuditLogger auditLogger,
                           ApplicationEventPublisher events,
                           FanFeatureRepository fanFeatureRepo,
-                          EntityManager entityManager) {
+                          EntityManager entityManager,
+                          ConsentConfirmationTokenRepository confirmationTokens) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
         this.consumerRepo = consumerRepo;
@@ -66,6 +69,7 @@ public class ConsentService {
         this.events = events;
         this.fanFeatureRepo = fanFeatureRepo;
         this.entityManager = entityManager;
+        this.confirmationTokens = confirmationTokens;
     }
 
     /**
@@ -252,6 +256,7 @@ public class ConsentService {
             m.setObjectedProfiling(true);
             fanFeatureRepo.clearProfiling(membershipId);
             membershipRepo.updateNps(membershipId, null);
+            confirmationTokens.clearHeldScores(membershipId);
         }
         membershipRepo.save(m);
         // The global toggle fans out over every org and sets no objection, so it can wait for the nightly pass.

@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.webhook;
 
+import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentChanged;
 import com.imin.iminapi.audience.service.EmailNormalizer;
@@ -48,6 +49,7 @@ public class ResendWebhookProjector {
     private final ComplaintRateBreaker complaintRateBreaker;
     private final ApplicationEventPublisher events;
     private final FanFeatureRepository fanFeatureRepo;
+    private final ConsentConfirmationTokenRepository confirmationTokens;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
@@ -55,7 +57,8 @@ public class ResendWebhookProjector {
                                   SuppressionService suppressionService,
                                   ComplaintRateBreaker complaintRateBreaker,
                                   ApplicationEventPublisher events,
-                                  FanFeatureRepository fanFeatureRepo) {
+                                  FanFeatureRepository fanFeatureRepo,
+                                  ConsentConfirmationTokenRepository confirmationTokens) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
@@ -63,6 +66,7 @@ public class ResendWebhookProjector {
         this.complaintRateBreaker = complaintRateBreaker;
         this.events = events;
         this.fanFeatureRepo = fanFeatureRepo;
+        this.confirmationTokens = confirmationTokens;
     }
 
     /**
@@ -135,6 +139,7 @@ public class ResendWebhookProjector {
                         membershipRepo.save(m);
                         fanFeatureRepo.clearProfiling(membershipId);
                         membershipRepo.updateNps(membershipId, null);
+                        confirmationTokens.clearHeldScores(membershipId);
                         events.publishEvent(new ConsentChanged(orgId, membershipId, false));
                     });
                 }

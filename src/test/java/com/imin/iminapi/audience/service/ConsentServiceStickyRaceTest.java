@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.service;
 import com.imin.iminapi.audience.model.ConsentRecord;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -39,7 +40,7 @@ class ConsentServiceStickyRaceTest {
         MarketingOptOutRecorder recorder = mock(MarketingOptOutRecorder.class);
         ConsentService service = new ConsentService(memberships, consentRecords, consumers, recorder,
                 mock(AuditLogger.class), mock(ApplicationEventPublisher.class), mock(FanFeatureRepository.class),
-                mock(EntityManager.class));
+                mock(EntityManager.class), mock(ConsentConfirmationTokenRepository.class));
 
         UUID orgId = UUID.randomUUID();
         UUID mid = UUID.randomUUID();

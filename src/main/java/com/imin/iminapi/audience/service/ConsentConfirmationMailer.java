@@ -98,12 +98,23 @@ public class ConsentConfirmationMailer {
         var r = renderer.render(TEMPLATE, locale, Map.of(
                 "organizer", organizer,
                 "confirmUrl", confirmUrl(signer.sign(t.getId())),
-                "expiresInDays", String.valueOf(ConsentConfirmationService.TTL.toDays())));
+                "expiresInDays", String.valueOf(ConsentConfirmationService.TTL.toDays()),
+                "scoreLine", scoreLine(t.getNpsScore(), locale)));
         String subject = OrganizerIdentity.singleLine(EmailLocale.choose(locale,
                 "Confirm your email for " + organizer,
                 "Confirma tu correo para " + organizer,
                 "Confirmez votre e-mail pour " + organizer,
                 "Підтвердьте email для " + organizer));
         email.sendFrom(props.fromHeader(organizer), to, subject, r.html(), r.text());
+    }
+
+    /** The held survey score, so the owner sees what the click would keep; empty when the email holds none. */
+    static String scoreLine(Short score, String locale) {
+        if (score == null) return "";
+        return " " + EmailLocale.choose(locale,
+                "Your recommendation score, " + score + "/10, is kept with your email only if you confirm.",
+                "Tu puntuación de recomendación, " + score + "/10, solo se guarda con tu correo si confirmas.",
+                "Votre note de recommandation, " + score + "/10, n'est conservée avec votre e-mail que si vous confirmez.",
+                "Вашу оцінку рекомендації, " + score + "/10, збережуть разом з вашим email, лише якщо ви підтвердите.");
     }
 }

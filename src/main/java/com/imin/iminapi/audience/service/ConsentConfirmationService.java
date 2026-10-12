@@ -75,6 +75,14 @@ public class ConsentConfirmationService {
      */
     @Transactional
     public void requestFor(UUID orgId, UUID membershipId, UUID consentRecordId, String locale) {
+        requestFor(orgId, membershipId, consentRecordId, locale, null);
+    }
+
+    /** As above, holding a survey score that goes on the membership only when this email's link is clicked. */
+    @Transactional
+    public void requestFor(UUID orgId, UUID membershipId, UUID consentRecordId, String locale, Short npsScore) {
+        // ponytail: no new email (flag off, or mailed in the last 24 h) drops the score rather than moving it onto
+        // an earlier email someone else may have triggered; ceiling: one score per member per day.
         if (!access.consentConfirmationEmailsEnabled()) return;
         Instant now = clock.instant();
         Optional<ConsentConfirmationToken> last = tokens.findFirstByMembershipIdOrderBySentAtDesc(membershipId);
@@ -87,6 +95,7 @@ public class ConsentConfirmationService {
         t.setLocale(EmailLocale.normalize(locale));
         t.setSentAt(now);
         t.setExpiresAt(now.plus(TTL));
+        t.setNpsScore(npsScore);
         tokens.save(t);
         events.publishEvent(new ConsentConfirmationRequested(t.getId()));
     }
@@ -103,7 +112,8 @@ public class ConsentConfirmationService {
 
     /**
      * Burns the token, then confirms the member's pending sign-ups unless the address has since opted out, been
-     * suppressed or erased: confirming never brings back a withdrawn consent.
+     * suppressed or erased: confirming never brings back a withdrawn consent. A score held on this email goes on
+     * the membership unless the person has objected to profiling.
      */
     @Transactional
     public ConsentConfirmationResponse confirm(String rawToken) {
@@ -111,10 +121,14 @@ public class ConsentConfirmationService {
         Optional<Usable> found = usable(rawToken, now);
         if (found.isEmpty()) return ConsentConfirmationResponse.invalid();
         Usable u = found.get();
+        Short score = u.row().getNpsScore();
         if (tokens.markUsed(u.row().getId(), now) != 1) return ConsentConfirmationResponse.invalid();
         UUID orgId = u.row().getOrgId();
         if (optedOut(orgId, u.membership())) return ConsentConfirmationResponse.invalid();
+        // Read before confirmPending, which lifts an objection: a score is never applied over one.
+        boolean objected = u.membership().isObjectedProfiling();
         consentService.confirmPending(orgId, u.membership().getMembershipId(), now);
+        if (score != null && !objected) memberships.updateNps(u.membership().getMembershipId(), score);
         return new ConsentConfirmationResponse(ConsentConfirmationResponse.CONFIRMED, u.organizerName());
     }
 

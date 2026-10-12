@@ -1,7 +1,7 @@
 Confirm your email for {{organizer}}
 ────────────────────────────────
 
-You left this address on {{organizer}}'s sign-up form and asked to hear about their next events. Confirm it is really you, and {{organizer}} can start sending you news about their events. Every email has a one-click unsubscribe.
+You left this address on {{organizer}}'s sign-up form and asked to hear about their next events. Confirm it is really you, and {{organizer}} can start sending you news about their events. Every email has a one-click unsubscribe.{{scoreLine}}
 
 Confirm my email:
 

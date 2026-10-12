@@ -8,7 +8,11 @@ import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.audience.dto.ConsentConfirmationResponse;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.service.ConsentConfirmationReconciler;
+import com.imin.iminapi.audience.service.ConsentConfirmationTokenSigner;
+import com.imin.iminapi.audience.service.DsarService;
 import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
@@ -36,6 +40,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -102,6 +107,11 @@ class SurveyServiceTest {
     @Autowired AudienceOrderProjector projector;
     @Autowired ConsentService consentService;
     @Autowired com.imin.iminapi.audience.service.ConsentConfirmationService confirmations;
+    @Autowired ConsentConfirmationTokenSigner signer;
+    @Autowired ConsentConfirmationReconciler reconciler;
+    @Autowired DsarService dsar;
+    @Autowired AudiencePlanProperties props;
+    @Autowired PropertyFlips flips;
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
@@ -387,15 +397,22 @@ class SurveyServiceTest {
     }
 
     @Test
-    void aTickedLinkedAnswer_putsTheScoreOnTheMembership_andTheArt15ExportCarriesIt() throws Exception {
+    void aTickedLinkedAnswer_putsTheScoreOnTheMembership_onlyOnceTheEmailIsConfirmed_andTheArt15ExportCarriesIt()
+            throws Exception {
+        confirmationEmailsOn();
         String email = addr("promoter");
         service.submit(token, scored(9, LINKED, email));
 
         Map<String, Object> m = membership(email);
-        assertThat(m.get("nps")).isEqualTo(9);
+        assertThat(m.get("nps")).as("an unconfirmed address holds no score").isNull();
         Map<String, Object> r = onlyResponse();
         assertThat(r.values()).doesNotContain(email, m.get("membership_id"), m.get("consumer_id"));
         assertThat(r.get("nps_score")).isEqualTo(9);
+
+        assertThat(confirmations.confirm(link(email)).state()).isEqualTo("confirmed");
+
+        assertThat(membership(email).get("nps")).isEqualTo(9);
+        assertThat(pendingScore(email)).as("the held score goes once the link is used").isNull();
         mvc.perform(post("/api/v1/audience/members/{id}/export", m.get("membership_id"))
                         .with(authentication(new UsernamePasswordAuthenticationToken(organizer, null,
                                 List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))))))
@@ -403,14 +420,81 @@ class SurveyServiceTest {
                 .andExpect(jsonPath("$.nps").value(9));
     }
 
-    // An erased address has no membership left (erasure deletes it), so its row checks that none is created.
+    /** Anyone with the survey link could type a member's address and move them into or out of Promoters. */
+    @Test
+    void aTypedAddress_neverChangesThatMembersScore_untilTheLinkSentToItIsClicked() {
+        confirmationEmailsOn();
+        String victim = addr("victim");
+        projector.upsertMembership(orgId, victim, null);
+        UUID mid = (UUID) membership(victim).get("membership_id");
+        jdbc.update("update memberships set consent_status = 'subscribed', consent_basis = 'explicit', nps = 9"
+                + " where membership_id = ?", mid);
+
+        service.submit(token, scored(0, LINKED, victim));
+
+        assertThat(membership(victim).get("nps")).isEqualTo(9);
+        assertThat(pendingScore(victim)).as("held on the email the address's owner receives").isEqualTo(0);
+        assertThat(dsar.exportRecords(orgId, mid, organizer).consentConfirmations())
+                .singleElement().satisfies(c -> assertThat(c.pendingScore()).isEqualTo((short) 0));
+    }
+
+    @Test
+    void aScoreWhoseLinkExpired_isNeverApplied_andTheHeldScoreIsDropped() {
+        confirmationEmailsOn();
+        String email = addr("late");
+        service.submit(token, scored(9, LINKED, email));
+        String link = link(email);
+        jdbc.update("update consent_confirmation_tokens set expires_at = ? where membership_id = ?",
+                Timestamp.from(Instant.now().minusSeconds(60)), membership(email).get("membership_id"));
+
+        assertThat(confirmations.confirm(link)).isEqualTo(ConsentConfirmationResponse.invalid());
+        assertThat(membership(email).get("nps")).isNull();
+
+        assertThat(pendingScore(email)).isEqualTo(9);
+        reconciler.run();
+        assertThat(pendingScore(email)).isNull();
+    }
+
+    @Test
+    void anObjectionBetweenTheAnswerAndTheClick_keepsTheScoreOff() {
+        confirmationEmailsOn();
+        String email = addr("objects");
+        service.submit(token, scored(9, LINKED, email));
+        jdbc.update("update memberships set objected_profiling = true where membership_id = ?",
+                membership(email).get("membership_id"));
+
+        assertThat(confirmations.confirm(link(email)).state()).isEqualTo("confirmed");
+
+        assertThat(membership(email).get("nps")).isNull();
+    }
+
+    /** An opt-out between the answer and the click, by the person or by the organizer, keeps the score off. */
+    @ParameterizedTest
+    @EnumSource(value = ConsentOrigin.class, names = {"DATA_SUBJECT", "OPERATOR"})
+    void anOptOutBetweenTheAnswerAndTheClick_keepsTheScoreOff(ConsentOrigin origin) {
+        confirmationEmailsOn();
+        String email = addr("optsout");
+        service.submit(token, scored(9, LINKED, email));
+        String link = link(email);
+        consentService.unsubscribe(orgId, (UUID) membership(email).get("membership_id"), "unsubscribe_link", origin,
+                null);
+        // The person's own opt-out is an objection and drops the held score at once; the organizer's does not.
+        assertThat(pendingScore(email)).isEqualTo(origin == ConsentOrigin.DATA_SUBJECT ? null : 9);
+
+        assertThat(confirmations.confirm(link)).isEqualTo(ConsentConfirmationResponse.invalid());
+
+        assertThat(membership(email).get("nps")).isNull();
+    }
+
     enum NotLinked { OLD_NOTICE, UNTICKED, OBJECTED, ERASED, OPTED_OUT_MEMBER, UNSUBSCRIBED_MEMBER,
         MARKETING_SUPPRESSED_MEMBER, ERASE_PENDING_MEMBER }
 
+    // An erased address has no membership left (erasure deletes it), so its row checks that none is created.
     /** Only the linking notice, a ticked box, an unblocked address and no objection put the score on a person. */
     @ParameterizedTest
     @EnumSource(NotLinked.class)
     void aScoreIsNotLinked_whenAnyConditionFails(NotLinked kind) {
+        confirmationEmailsOn();
         String email = addr("notlinked");
         Integer before = null;
         if (kind.name().endsWith("_MEMBER") || kind == NotLinked.OBJECTED) {
@@ -450,6 +534,14 @@ class SurveyServiceTest {
             case UNTICKED -> scored(9, LINKED, null);
             default -> scored(9, LINKED, email);
         });
+        if (kind == NotLinked.OLD_NOTICE || kind == NotLinked.OBJECTED) {
+            assertThat(pendingScore(email)).as("nothing held for a link that must not set it").isNull();
+        }
+        if (kind.name().endsWith("_MEMBER") || kind == NotLinked.ERASED) {
+            assertThat(jdbc.queryForObject("select count(*) from consent_confirmation_tokens where org_id = ?",
+                    Integer.class, orgId)).as("a blocked address gets no confirmation email").isZero();
+        }
+        if (kind != NotLinked.UNTICKED && kind != NotLinked.ERASED) confirmEvery(email);
 
         assertThat(onlyResponse().get("nps_score")).isEqualTo(9);
         if (kind == NotLinked.ERASED) {
@@ -464,11 +556,19 @@ class SurveyServiceTest {
     }
 
     @Test
-    void aLaterLinkedAnswer_replacesTheScore() {
+    void aLaterConfirmedAnswer_replacesTheScore_andEvenAConfirmedMemberMustClickAgain() {
+        confirmationEmailsOn();
         String email = addr("changed");
         service.submit(token, scored(9, LINKED, email));
-        service.submit(token, scored(3, LINKED, email));
+        confirmations.confirm(link(email));
+        // The next answer a day later, outside the one-email-a-day window.
+        jdbc.update("update consent_confirmation_tokens set sent_at = ? where membership_id = ?",
+                Timestamp.from(Instant.now().minus(Duration.ofHours(25))), membership(email).get("membership_id"));
 
+        service.submit(token, scored(3, LINKED, email));
+        assertThat(membership(email).get("nps")).isEqualTo(9);
+
+        assertThat(confirmations.confirm(link(email)).state()).isEqualTo("confirmed");
         assertThat(membership(email).get("nps")).isEqualTo(3);
     }
 
@@ -824,6 +924,35 @@ class SurveyServiceTest {
     private int consentCount() {
         return jdbc.queryForObject("select count(*) from consent_records where event_id = ?", Integer.class,
                 event.getId());
+    }
+
+    private void confirmationEmailsOn() {
+        flips.set(props, "consentConfirmationEmailsEnabled", true);
+    }
+
+    /** The signed link of the newest confirmation email sent to this address. */
+    private String link(String email) {
+        UUID id = jdbc.queryForObject("select id from consent_confirmation_tokens where membership_id = ?"
+                + " order by sent_at desc limit 1", UUID.class, membership(email).get("membership_id"));
+        return signer.sign(id);
+    }
+
+    /** Clicks every confirmation email this address got, if any. */
+    private void confirmEvery(String email) {
+        for (UUID id : jdbc.queryForList("select id from consent_confirmation_tokens where membership_id = ?",
+                UUID.class, membership(email).get("membership_id"))) {
+            confirmations.confirm(signer.sign(id));
+        }
+    }
+
+    /** The score held on this address's newest confirmation email; null when it holds none or none was sent. */
+    private Integer pendingScore(String email) {
+        List<Integer> held = jdbc.queryForList("select t.nps_score from consent_confirmation_tokens t"
+                + " join memberships m on m.membership_id = t.membership_id"
+                + " join consumers c on c.consumer_id = m.consumer_id"
+                + " where m.org_id = ? and c.normalized_email = ? order by t.sent_at desc limit 1",
+                Integer.class, orgId, email);
+        return held.isEmpty() ? null : held.get(0);
     }
 
     private Map<String, Object> membership(String email) {

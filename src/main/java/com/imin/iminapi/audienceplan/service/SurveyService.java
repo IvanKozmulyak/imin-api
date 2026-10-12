@@ -55,8 +55,8 @@ import java.util.regex.Pattern;
 /**
  * Post-event survey: six optional questions, no identity questions; the answer row is never linked to a person.
  * The unticked box naming the organizer records a separate explicit {@code survey} consent. Never soft opt-in.
- * Under a linking notice version, a ticked box also puts the 0-10 recommendation score on that membership,
- * unless the address is blocked or the person objected to profiling; the latest score wins.
+ * Under a linking notice version, a ticked box holds the 0-10 recommendation score on the confirmation email; it
+ * goes on the membership only when that link is clicked (see {@link ConsentConfirmationService#confirm}).
  */
 @Service
 public class SurveyService {
@@ -193,29 +193,29 @@ public class SurveyService {
             String email = validEmail(body.email());
             String version = validVersion(body.consentTextVersion());
             String text = validText(body.consentText(), org);
-            Membership m = recordConsent(e, email, version, text, locale);
-            if (m != null && nps != null && logic.logic().legal().surveyLinkingNoticeVersions().contains(notice)) {
-                memberships.updateNps(m.getMembershipId(), nps.shortValue());
-            }
+            // Every score write needs a fresh confirmation click, even for a confirmed address.
+            Short held = nps != null && logic.logic().legal().surveyLinkingNoticeVersions().contains(notice)
+                    ? nps.shortValue() : null;
+            recordConsent(e, email, version, text, locale, held);
         }
         responses.save(r);
         return SurveyResponseResult.ok();
     }
 
     /**
-     * Records the explicit consent on its own and returns the locked membership the score may go on: null for an
-     * erased, opted-out, unsubscribed, erase-pending or suppressed address (nothing recorded), and null when the
-     * person had objected to profiling before this answer.
+     * Records the explicit consent on its own and asks for its confirmation, holding {@code score} on that email
+     * unless the person had objected to profiling. Nothing for an erased, opted-out, unsubscribed, erase-pending or
+     * suppressed address.
      */
-    private Membership recordConsent(Event e, String email, String version, String text, String locale) {
+    private void recordConsent(Event e, String email, String version, String text, String locale, Short score) {
         UUID orgId = e.getOrgId();
-        if (erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)) return null;
-        if (optOuts.existsById(new MarketingOptOutId(email, orgId, "email"))) return null;
+        if (erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)) return;
+        if (optOuts.existsById(new MarketingOptOutId(email, orgId, "email"))) return;
         Membership existing = findMembership(orgId, email);
         if (existing != null && ("unsubscribed".equals(existing.getConsentStatus())
                 || "erase_pending".equals(existing.getStatus())
                 || suppressions.findMarketingByOrgAndMembership(orgId, existing.getMembershipId()).isPresent())) {
-            return null;
+            return;
         }
         projector.upsertMembership(orgId, email, null);
         Membership m = findMembership(orgId, email);
@@ -225,8 +225,7 @@ public class SurveyService {
                 "Ticked the survey sign-up at event " + e.getId() + " (locale " + locale + ") next to: \""
                         + text + "\"",
                 "email", version, null, e.getId(), ConsentOrigin.DATA_SUBJECT, null);
-        confirmations.requestFor(orgId, m.getMembershipId(), recordId, locale);
-        return objected ? null : m;
+        confirmations.requestFor(orgId, m.getMembershipId(), recordId, locale, objected ? null : score);
     }
 
     /** One 404 for unknown token, deleted, draft, cancelled, unpublished, switched off and the kill switch. */

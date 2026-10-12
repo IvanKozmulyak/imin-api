@@ -20,8 +20,13 @@ public interface ConsentConfirmationTokenRepository extends JpaRepository<Consen
 
     List<ConsentConfirmationToken> findByMembershipIdOrderBySentAtAsc(UUID membershipId);
 
-    /** Burns the token; 1 only for the caller that got there first, so a race cannot confirm twice. */
+    /** Drops the survey scores held on this member's unclicked emails, beside every clear of {@code memberships.nps}. */
     @Modifying(flushAutomatically = true)
-    @Query("update ConsentConfirmationToken t set t.usedAt = :at where t.id = :id and t.usedAt is null")
+    @Query("update ConsentConfirmationToken t set t.npsScore = null where t.membershipId = :id and t.usedAt is null")
+    int clearHeldScores(@Param("id") UUID membershipId);
+
+    /** Burns the token and drops its held score; 1 only for the caller that got there first, so a race cannot confirm twice. */
+    @Modifying(flushAutomatically = true)
+    @Query("update ConsentConfirmationToken t set t.usedAt = :at, t.npsScore = null where t.id = :id and t.usedAt is null")
     int markUsed(@Param("id") UUID id, @Param("at") Instant at);
 }

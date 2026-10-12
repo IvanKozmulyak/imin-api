@@ -70,6 +70,7 @@ class ConsentConfirmationServiceTest {
     private static final String DOOR_VERSION = "door-org-named-2026-09";
     private static final String SURVEY_VERSION = "survey-org-named-2026-09";
     private static final String NOTICE = "survey-notice-2026-10";
+    private static final String LINKED = "survey-notice-2026-10-linked";
     private static final String TEXT = "Email me about events by " + ORG_NAME
             + ". I agree to receive email marketing and can unsubscribe any time, one click in every email.";
 
@@ -275,6 +276,41 @@ class ConsentConfirmationServiceTest {
         unsubscribe(a("preview-out"));
 
         assertThat(service.preview(token)).isEqualTo(ConsentConfirmationResponse.invalid());
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "en | Your recommendation score, 7/10, is kept with your email only if you confirm.",
+            "es | Tu puntuación de recomendación, 7/10, solo se guarda con tu correo si confirmas.",
+            "fr | Votre note de recommandation, 7/10, n'est conservée avec votre e-mail que si vous confirmez.",
+            "uk | Вашу оцінку рекомендації, 7/10, збережуть разом з вашим email, лише якщо ви підтвердите."})
+    void aSurveyEmailHoldingAScore_showsTheScoreItWouldKeep(String locale, String line) {
+        survey.submit(surveyToken(), scoredAnswer(LINKED, locale, a("score-" + locale)));
+
+        RecordingEmailService.SentEmail sent = lastOwn();
+        assertThat(sent.text()).contains(line);
+        assertThat(sent.html()).contains(line.replace("'", "&#39;"));
+    }
+
+    @Test
+    void anEmailHoldingNoScore_hasNoScoreLine() {
+        // A score under the older notice is never held, so its email says nothing about one.
+        survey.submit(surveyToken(), scoredAnswer(NOTICE, "en", a("noscore")));
+        signUpAtDoor(a("door-noscore"), "en");
+
+        assertThat(ownMail()).hasSize(2).allSatisfy(m -> {
+            assertThat(m.text()).contains("Every email has a one-click unsubscribe.\n").doesNotContain("/10");
+            assertThat(m.html()).contains("Every email has a one-click unsubscribe.\n").doesNotContain("/10");
+        });
+    }
+
+    private String surveyToken() {
+        return survey.setEnabled(owner, event.getId(), true).surveyUrl().replaceAll(".*\\?t=", "");
+    }
+
+    private static SurveyResponseRequest scoredAnswer(String notice, String locale, String email) {
+        return new SurveyResponseRequest(null, null, null, null, null, notice, locale, true, email, TEXT,
+                SURVEY_VERSION, 7, null);
     }
 
     // ── confirm (POST) ────────────────────────────────────────────────────

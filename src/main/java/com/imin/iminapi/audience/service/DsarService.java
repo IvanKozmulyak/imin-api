@@ -167,7 +167,7 @@ public class DsarService {
                         : new DsarRecords.EmailEngagementRecord(m.getLastEmailOpen(), m.getLastEmailClick()))
                 .withConsentConfirmations(confirmationTokenRepo.findByMembershipIdOrderBySentAtAsc(membershipId).stream()
                         .map(t -> new DsarRecords.ConsentConfirmationRecord(t.getConsentRecordId(), t.getLocale(),
-                                t.getSentAt(), t.getExpiresAt(), t.getUsedAt()))
+                                t.getSentAt(), t.getExpiresAt(), t.getUsedAt(), t.getNpsScore()))
                         .toList());
     }
 

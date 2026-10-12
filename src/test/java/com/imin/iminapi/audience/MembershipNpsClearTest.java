@@ -65,15 +65,18 @@ class MembershipNpsClearTest {
     @Test
     void the_persons_own_unsubscribe_clears_the_score() {
         memberships.updateNps(mid, (short) 9);
+        UUID held = holdScore();
 
         consentService.unsubscribe(orgId, mid, "unsubscribe_link", ConsentOrigin.DATA_SUBJECT, null);
 
         assertThat(nps()).as("an objection takes the person out of Promoters").isNull();
+        assertThat(heldScore(held)).as("and drops a score still waiting for its confirmation click").isNull();
     }
 
     @Test
     void a_spam_complaint_clears_the_score() {
         memberships.updateNps(mid, (short) 9);
+        UUID held = holdScore();
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(orgId);
@@ -90,6 +93,7 @@ class MembershipNpsClearTest {
         projector.project(campaignId, null, mid, null, ProviderEvent.TYPE_COMPLAINED, null, Instant.now());
 
         assertThat(nps()).as("a spam report is the person objecting").isNull();
+        assertThat(heldScore(held)).isNull();
     }
 
     @Test
@@ -112,6 +116,23 @@ class MembershipNpsClearTest {
         memberships.updateNps(mid, (short) 9);
 
         assertThat(nps()).isEqualTo((short) 9);
+    }
+
+    /** A survey sign-up's unclicked confirmation email holding a score of 7. */
+    private UUID holdScore() {
+        UUID record = consentService.capture(orgId, mid, "explicit", "survey", "Ticked the survey sign-up", "email",
+                "survey-org-named-2026-09", null, null, ConsentOrigin.DATA_SUBJECT, null);
+        UUID id = UUID.randomUUID();
+        jdbc.update("insert into consent_confirmation_tokens (id, org_id, membership_id, consent_record_id, locale,"
+                + " sent_at, expires_at, nps_score) values (?, ?, ?, ?, 'en', now(), now() + interval '7 days', 7)",
+                id, orgId, mid, record);
+        assertThat(heldScore(id)).isEqualTo((short) 7);
+        return id;
+    }
+
+    private Short heldScore(UUID tokenId) {
+        return jdbc.queryForObject("select nps_score from consent_confirmation_tokens where id = ?", Short.class,
+                tokenId);
     }
 
     private Short nps() {

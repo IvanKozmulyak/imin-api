@@ -1,7 +1,7 @@
 Confirmez votre e-mail pour {{organizer}}
 ─────────────────────────────────────
 
-Vous avez laissé cette adresse sur le formulaire d'inscription de {{organizer}} et demandé à être informé de ses prochains événements. Confirmez que c'est bien vous, et {{organizer}} pourra vous envoyer des nouvelles de ses événements. Chaque e-mail contient un lien de désinscription en un clic.
+Vous avez laissé cette adresse sur le formulaire d'inscription de {{organizer}} et demandé à être informé de ses prochains événements. Confirmez que c'est bien vous, et {{organizer}} pourra vous envoyer des nouvelles de ses événements. Chaque e-mail contient un lien de désinscription en un clic.{{scoreLine}}
 
 Confirmer mon e-mail :
 

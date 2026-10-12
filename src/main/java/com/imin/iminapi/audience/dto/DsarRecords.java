@@ -130,13 +130,17 @@ public record DsarRecords(
     /** Last open and click recorded on the membership before tracking was switched off; no longer written. */
     public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt) {}
 
-    /** One confirmation email for a door QR / survey sign-up: when it went, until when it worked, when it was used. */
+    /**
+     * One confirmation email for a door QR / survey sign-up: when it went, until when it worked, when it was used,
+     * and the survey score it holds until then (null when none).
+     */
     public record ConsentConfirmationRecord(
             UUID consentRecordId,
             String locale,
             Instant sentAt,
             Instant expiresAt,
-            Instant usedAt) {}
+            Instant usedAt,
+            Short pendingScore) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(

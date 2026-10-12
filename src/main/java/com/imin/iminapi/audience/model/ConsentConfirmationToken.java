@@ -37,6 +37,10 @@ public class ConsentConfirmationToken {
     @Column(name = "expires_at", nullable = false, updatable = false)
     private Instant expiresAt;
 
+    /** A survey score to put on the membership when this link is clicked; cleared once used or expired. */
+    @Column(name = "nps_score")
+    private Short npsScore;
+
     /** Set once, by the first confirm attempt that reaches this row; later attempts are refused. */
     @Column(name = "used_at")
     private Instant usedAt;
