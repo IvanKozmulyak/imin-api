@@ -585,8 +585,7 @@ class AiEventDescriptionServiceTest {
 
     private static final String SENTENCE = "A finished event poster whose only text is \"BIG NIGHT - BERLIN\" as the "
             + "huge headline, the date \"7 JUN 2026\" in large bold type directly under the title, and the venue "
-            + "\"RSO\" in smaller type below the date. These are the only words on the poster: no other "
-            + "lettering, captions, credits, fine print, or vertical text anywhere.";
+            + "\"RSO\" in smaller type below the date.";
 
     private static String labelFreePeople() {
         return "A lone dancer mid-spin under one hard flash, the crowd dissolving into motion blur behind her inside a "

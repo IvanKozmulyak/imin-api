@@ -10,7 +10,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.stream.Stream;
 
-import static com.imin.iminapi.service.poster.PosterTextSpecFactory.ONLY_WORDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class PosterTextSpecFactoryTest {
@@ -46,13 +45,13 @@ class PosterTextSpecFactoryTest {
                 Arguments.of("title, date and venue", "BIG NIGHT - BERLIN", june7, "RSO",
                         "A finished event poster whose only text is \"BIG NIGHT - BERLIN\" as the huge headline, "
                                 + "the date \"7 JUN 2026\" in large bold type directly under the title, "
-                                + "and the venue \"RSO\" in smaller type below the date." + ONLY_WORDS),
+                                + "and the venue \"RSO\" in smaller type below the date."),
                 Arguments.of("date and venue", null, june7, "RSO",
                         "A finished event poster whose only text is the date \"7 JUN 2026\" as the huge headline "
-                                + "and the venue \"RSO\" in smaller type below the date." + ONLY_WORDS),
+                                + "and the venue \"RSO\" in smaller type below the date."),
                 Arguments.of("title and date", "BIG NIGHT - BERLIN", june7, " ",
                         "A finished event poster whose only text is \"BIG NIGHT - BERLIN\" as the huge headline "
-                                + "and the date \"7 JUN 2026\" in large bold type directly under the title." + ONLY_WORDS),
+                                + "and the date \"7 JUN 2026\" in large bold type directly under the title."),
                 Arguments.of("nothing", null, null, null, "A finished event poster with no text at all."));
     }
 }

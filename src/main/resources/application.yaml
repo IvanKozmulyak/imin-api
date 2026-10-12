@@ -105,16 +105,16 @@ poster:
     # Read timeout of the offline style-card generator's OpenRouter client (tools profile only).
     generator-read-timeout-seconds: ${POSTER_STYLE_CARDS_GENERATOR_READ_TIMEOUT_SECONDS:180}
   text-validation:
-    # Text (vision) gate — HARD. The model only transcribes; PosterTextMatcher decides: a listed string
-    # matches as written or in ALL CAPS, once (copies and fragments are extra). Any missing or extra text
+    # Text (vision) gate — HARD. The model only transcribes; PosterTextMatcher decides: each word of a listed
+    # string matches as written, ALL CAPS, Title Case or lowercase, once (copies and fragments are extra). Any missing or extra text
     # triggers a fresh generate with a new seed, and the fewest-errors attempt ships best-effort. Uses a
     # strong vision model because gpt-4o-mini under-read dense poster type.
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o}
     edge-pass:
       # Second read of the four enlarged edge strips (fine print, vertical credits), only after a clean
-      # main read. An edge call that fails keeps the main verdict.
-      enabled: ${POSTER_TEXT_VALIDATION_EDGE_PASS_ENABLED:true}
+      # main read; off by default (lab: no extra catches, three false rejects). A failed edge call keeps the main verdict.
+      enabled: ${POSTER_TEXT_VALIDATION_EDGE_PASS_ENABLED:false}
     # Server-side tolerance for invented text items before the gate fails. 0 = reject any invented text.
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:0}
     # Cap on the gate's response length. Bounds a runaway transcription (texture-heavy posters can make the

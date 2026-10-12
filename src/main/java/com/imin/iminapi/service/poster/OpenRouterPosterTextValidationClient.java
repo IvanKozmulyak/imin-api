@@ -122,6 +122,11 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
         return choice.message().content().trim();
     }
 
+    /** Some models wrap the JSON in a markdown fence even with a JSON response format. */
+    private static String stripFence(String content) {
+        return content.replaceFirst("^```(?:json)?\\s*", "").replaceFirst("\\s*```$", "");
+    }
+
     static Transcript parseTranscript(String content) {
         return toTranscript(readTree(content), "transcript");
     }
@@ -138,7 +143,7 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
 
     private static JsonNode readTree(String content) {
         try {
-            JsonNode root = MAPPER.readTree(content);
+            JsonNode root = MAPPER.readTree(stripFence(content.trim()));
             if (root == null || !root.isObject()) {
                 throw new UnusableReadException("OpenRouter poster text read was not a JSON object");
             }

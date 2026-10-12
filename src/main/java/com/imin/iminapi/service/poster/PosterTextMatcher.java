@@ -16,8 +16,9 @@ import java.util.Set;
  * Decides missing and extra text from a verbatim transcript. The vision model only reads; every
  * comparison happens here, so a misspelled or re-cased word can never be waved through as "near".
  *
- * <p>A listed string matches when it is drawn exactly as written or in ALL CAPS, and each listed
- * string may appear once: further copies and fragments are extra.
+ * <p>A listed string matches when each word is drawn as written, in ALL CAPS, Title Case or lowercase
+ * (a word re-cased inside, like "BEAn", does not), and each listed string may appear once: further
+ * copies and fragments are extra. One block may hold several required strings joined by spaces.
  */
 public final class PosterTextMatcher {
 
@@ -39,9 +40,23 @@ public final class PosterTextMatcher {
     }
 
     static boolean matches(String seen, String target) {
-        String t = normalize(target);
-        String s = normalize(seen);
-        return s.equals(t) || s.equals(t.toUpperCase(Locale.ROOT));
+        String[] s = normalize(seen).split(" ");
+        String[] t = normalize(target).split(" ");
+        if (s.length != t.length) return false;
+        for (int i = 0; i < s.length; i++) {
+            if (!wordMatches(s[i], t[i])) return false;
+        }
+        return true;
+    }
+
+    private static boolean wordMatches(String seen, String target) {
+        if (seen.equals(target)) return true;
+        if (!seen.equalsIgnoreCase(target)) return false;
+        String lower = target.toLowerCase(Locale.ROOT);
+        String title = lower.isEmpty() ? lower
+                : lower.substring(0, lower.offsetByCodePoints(0, 1)).toUpperCase(Locale.ROOT)
+                        + lower.substring(lower.offsetByCodePoints(0, 1));
+        return seen.equals(target.toUpperCase(Locale.ROOT)) || seen.equals(lower) || seen.equals(title);
     }
 
     public static Match match(Transcript transcript, List<String> required, List<String> allowed) {
@@ -52,8 +67,13 @@ public final class PosterTextMatcher {
         boolean[] used = new boolean[entries.size()];
 
         List<String> missing = new ArrayList<>();
+        Set<String> covered = new LinkedHashSet<>();
         for (String target : required) {
-            if (!consume(entries, used, target)) missing.add(target);
+            if (covered.contains(target)) continue;
+            if (consume(entries, used, target)) continue;
+            List<String> group = consumeCombined(entries, used, target, required, covered);
+            if (group.isEmpty()) missing.add(target);
+            else covered.addAll(group);
         }
         for (String target : allowed) {
             if (!required.contains(target)) consume(entries, used, target);
@@ -90,6 +110,45 @@ public final class PosterTextMatcher {
             }
         }
         return false;
+    }
+
+    /**
+     * One unused block that is the space-joined concatenation of the target and other required strings
+     * not yet found, in any order (e.g. "3 OCT 2026 LA STATION"); returns the strings it covers.
+     */
+    private static List<String> consumeCombined(List<String> entries, boolean[] used, String target,
+                                                List<String> required, Set<String> covered) {
+        List<String> others = new ArrayList<>();
+        for (String r : required) {
+            if (!r.equals(target) && !covered.contains(r)) others.add(r);
+        }
+        List<List<String>> orders = new ArrayList<>();
+        permutations(new ArrayList<>(List.of(target)), others, orders);
+        for (List<String> order : orders) {
+            if (order.size() < 2) continue;
+            String joined = String.join(" ", order);
+            for (int i = 0; i < entries.size(); i++) {
+                if (!used[i] && matches(entries.get(i), joined)) {
+                    used[i] = true;
+                    return order;
+                }
+            }
+        }
+        return List.of();
+    }
+
+    /** Every ordering of the target with any subset of the others (required lists hold at most three strings). */
+    private static void permutations(List<String> chosen, List<String> rest, List<List<String>> out) {
+        out.add(List.copyOf(chosen));
+        for (int i = 0; i < rest.size(); i++) {
+            List<String> remaining = new ArrayList<>(rest);
+            String next = remaining.remove(i);
+            for (int pos = 0; pos <= chosen.size(); pos++) {
+                List<String> extended = new ArrayList<>(chosen);
+                extended.add(pos, next);
+                permutations(extended, remaining, out);
+            }
+        }
     }
 
     /**

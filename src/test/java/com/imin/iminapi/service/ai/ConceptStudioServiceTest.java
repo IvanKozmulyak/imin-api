@@ -607,7 +607,6 @@ class ConceptStudioServiceTest {
                 new com.imin.iminapi.service.poster.PosterTextSpecFactory().from(cap.getValue());
         assertThat(spec.required()).containsExactly("ANTRUM VII", "Void Club");
         assertThat(spec.textSentence()).isEqualTo("A finished event poster whose only text is \"ANTRUM VII\" "
-                + "as the huge headline and the venue \"Void Club\" in smaller type below the title. These are the only "
-                + "words on the poster: no other lettering, captions, credits, fine print, or vertical text anywhere.");
+                + "as the huge headline and the venue \"Void Club\" in smaller type below the title.");
     }
 }

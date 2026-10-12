@@ -12,9 +12,6 @@ import java.util.Locale;
 
 @Component
 public class PosterTextSpecFactory {
-    // The renderer adds fine print and credit lines unless told the listed text is all there is.
-    static final String ONLY_WORDS = " These are the only words on the poster: no other lettering, captions, "
-            + "credits, fine print, or vertical text anywhere.";
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
 
     public PosterTextSpec from(EventCreatorRequest r) {
@@ -64,7 +61,7 @@ public class PosterTextSpecFactory {
                     : "the venue \"" + venue + "\" in smaller type below the " + above);
         }
         if (parts.isEmpty()) return "A finished event poster with no text at all.";
-        return "A finished event poster whose only text is " + joinWithAnd(parts) + "." + ONLY_WORDS;
+        return "A finished event poster whose only text is " + joinWithAnd(parts) + ".";
     }
 
     private static String joinWithAnd(List<String> parts) {

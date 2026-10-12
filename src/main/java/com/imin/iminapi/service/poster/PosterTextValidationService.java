@@ -12,8 +12,8 @@ import java.util.Locale;
 
 /**
  * The HARD text gate. The vision model transcribes the poster; {@link PosterTextMatcher} decides
- * what is missing or extra. A clean main read gets a second read of the enlarged edge strips, where
- * fine print and vertical credit lines hide.
+ * what is missing or extra. When enabled, a clean main read gets a second read of the enlarged edge
+ * strips, where fine print and vertical credit lines hide.
  */
 @Service
 public class PosterTextValidationService {
@@ -28,7 +28,7 @@ public class PosterTextValidationService {
             PosterTextValidationClient client,
             @Value("${poster.text-validation.enabled:true}") boolean enabled,
             @Value("${poster.text-validation.max-extra-text-items:0}") int maxExtraTextItems,
-            @Value("${poster.text-validation.edge-pass.enabled:true}") boolean edgePassEnabled) {
+            @Value("${poster.text-validation.edge-pass.enabled:false}") boolean edgePassEnabled) {
         this.client = client;
         this.enabled = enabled;
         this.maxExtraTextItems = Math.max(0, maxExtraTextItems);

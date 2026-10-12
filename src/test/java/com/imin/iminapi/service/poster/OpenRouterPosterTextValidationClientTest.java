@@ -26,6 +26,9 @@ class OpenRouterPosterTextValidationClientTest {
         assertThat(t.texts()).containsExactly(new Seen("BEAN SOCIETY", 5), new Seen("31 OCT 2026", 1),
                 new Seen("A", 1), new Seen("B", 10));
         assertThat(t.unreadable()).containsExactly("fine print, bottom-left");
+        assertThat(OpenRouterPosterTextValidationClient.parseTranscript(
+                "```json\n{\"texts\":[{\"text\":\"BEAn\",\"count\":1}],\"unreadable\":[]}\n```").texts())
+                .containsExactly(new Seen("BEAn", 1));
 
         List<Transcript> edges = OpenRouterPosterTextValidationClient.parseEdges("""
                 {"top":{"texts":[],"unreadable":[]},

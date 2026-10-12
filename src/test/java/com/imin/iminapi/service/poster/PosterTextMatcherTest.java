@@ -27,7 +27,7 @@ class PosterTextMatcherTest {
     }
 
     // Catches: a misspelled, re-cased or repeated title shipping because the gate called it "near enough"
-    // (prod 2026-10-12: "BEAn SOCIETY" with ghost repeats passed).
+    // (prod 2026-10-12: "BEAn SOCIETY" with ghost repeats passed), and a clean re-cased title rejected.
     @ParameterizedTest(name = "{0}")
     @MethodSource("rows")
     void match_appliesCaseRepeatAndJoinRules(String name, List<Seen> texts, List<String> unreadable,
@@ -44,8 +44,17 @@ class PosterTextMatcherTest {
                 Arguments.of("all caps", List.of(s("THE MIDNIGHT BEAN SOCIETY"), s(DATE)), List.of(), List.of(), List.of()),
                 Arguments.of("one letter re-cased", List.of(s("THE MIDNIGHT BEAn SOCIETY"), s(DATE)), List.of(),
                         List.of(TITLE), List.of("THE MIDNIGHT BEAn SOCIETY")),
-                Arguments.of("lowercase", List.of(s("the midnight bean society"), s(DATE)), List.of(),
-                        List.of(TITLE), List.of("the midnight bean society")),
+                Arguments.of("lowercase", List.of(s("the midnight bean society"), s(DATE)), List.of(), List.of(), List.of()),
+                Arguments.of("Title Case of a string typed in caps", List.of(s(TITLE), s(DATE), s("Paris")), List.of(),
+                        List.of(), List.of()),
+                Arguments.of("each word in its own allowed case", List.of(s("THE Midnight bean SOCIETY"), s(DATE)),
+                        List.of(), List.of(), List.of()),
+                Arguments.of("one letter re-cased inside a word", List.of(s("THE MIDNIGHT BeaN SOCIETY"), s(DATE)),
+                        List.of(), List.of(TITLE), List.of("THE MIDNIGHT BeaN SOCIETY")),
+                Arguments.of("two required strings in one block", List.of(s("THE MIDNIGHT BEAN SOCIETY 31 OCT 2026")),
+                        List.of(), List.of(), List.of()),
+                Arguments.of("two required strings in one block, reversed", List.of(s("31 OCT 2026 The Midnight Bean Society")),
+                        List.of(), List.of(), List.of()),
                 Arguments.of("title split over two blocks", List.of(s("THE MIDNIGHT"), s("BEAN SOCIETY"), s(DATE)),
                         List.of(), List.of(), List.of()),
                 Arguments.of("title three times", List.of(s("THE MIDNIGHT BEAN SOCIETY", 3), s(DATE)), List.of(),
