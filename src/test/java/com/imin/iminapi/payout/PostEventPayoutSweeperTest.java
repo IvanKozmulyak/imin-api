@@ -337,7 +337,7 @@ class PostEventPayoutSweeperTest {
     }
 
     @Test
-    void cancelled_event_is_not_a_payout_candidate_unless_a_retrying_run_needs_replay() {
+    void cancelled_event_is_not_a_payout_candidate_unless_it_has_a_retrying_run() {
         Event cancelled = cancelledEvent(eligibleOrg(), Instant.now().minus(12, ChronoUnit.DAYS));
         Organization replayOrg = eligibleOrg();
         Event replaying = cancelledEvent(replayOrg, Instant.now().minus(11, ChronoUnit.DAYS));
@@ -345,7 +345,7 @@ class PostEventPayoutSweeperTest {
         Event past = endedEvent(eligibleOrg(), Instant.now().minus(10, ChronoUnit.DAYS));
 
         assertThat(candidateIds())
-                .as("a RETRYING run may already be a payout at Stripe; only its key replay resolves it")
+                .as("a RETRYING run keeps its event a candidate; step 0u holds it until the resolver settles it")
                 .contains(replaying.getId(), past.getId())
                 .doesNotContain(cancelled.getId());
     }

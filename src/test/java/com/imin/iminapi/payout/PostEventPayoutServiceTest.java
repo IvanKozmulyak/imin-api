@@ -1,6 +1,7 @@
 package com.imin.iminapi.payout;
 
 import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.model.Event;
@@ -23,11 +24,15 @@ import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PgFaults;
 import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.exception.ApiConnectionException;
+import com.stripe.exception.ApiException;
+import com.stripe.exception.IdempotencyException;
 import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
@@ -48,8 +53,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.invocation.InvocationOnMock;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.event.ApplicationEvents;
 import org.springframework.test.context.event.RecordApplicationEvents;
@@ -59,6 +66,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -126,6 +134,24 @@ class PostEventPayoutServiceTest {
         volatile String payoutPrefix = "po_test_";
         /** Runs when the payout reads the connected balance, i.e. after the step-0c status check. */
         volatile Runnable onBalanceRead = null;
+        /** When set, payouts().create for this event id dies with an unchecked error before any payout exists. */
+        volatile String crashPayoutForEvent = null;
+        /** Payouts created per metadata.event_id, so a sweep test counts only its own events. */
+        final java.util.Map<String, AtomicInteger> payoutsByEvent = new java.util.concurrent.ConcurrentHashMap<>();
+        /** Payouts Stripe holds, as its list returns them; not deduped by key, as after Stripe's 24 h window. */
+        final List<java.util.Map<String, Object>> ledger = new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** Every payout create request that reached the fake, answered or not. */
+        final AtomicInteger createCalls = new AtomicInteger(0);
+        /** When set, Stripe creates this event's payout and then the caller dies before reading the answer. */
+        volatile String ackThenCrashForEvent = null;
+        /** When set, the create is refused as an idempotency key reused with other params. */
+        volatile boolean failIdempotency = false;
+        /** When set, the create answers 409: another request with this key is still in flight. */
+        volatile boolean fail409 = false;
+        /** When set, listing the account's payouts fails at the transport level. */
+        volatile boolean failPayoutList = false;
+        /** The getter the fake services use, so list pages can auto-page through it. */
+        volatile StripeResponseGetter rg;
 
         void reset() {
             availableMinor.set(0L);
@@ -150,6 +176,51 @@ class PostEventPayoutServiceTest {
             paymentIntentReads.clear();
             transferCurrency = "eur";
             onBalanceRead = null;
+            crashPayoutForEvent = null;
+            payoutsByEvent.clear();
+            ledger.clear();
+            createCalls.set(0);
+            ackThenCrashForEvent = null;
+            failIdempotency = false;
+            fail409 = false;
+            failPayoutList = false;
+        }
+
+        /** A payout Stripe holds for {@code eventId}, as if created by an earlier request. */
+        String ledgerAdd(UUID eventId, long amount) {
+            return ledgerAdd(eventId, amount, "eur");
+        }
+
+        String ledgerAdd(UUID eventId, long amount, String currency) {
+            String id = payoutPrefix + "l" + (ledger.size() + 1);
+            ledger.add(new java.util.LinkedHashMap<>(java.util.Map.of("object", "payout", "id", id,
+                    "amount", amount, "currency", currency, "status", "pending",
+                    "created", Instant.now().getEpochSecond(), "metadata", java.util.Map.of("event_id", eventId.toString()))));
+            return id;
+        }
+
+        /** One page of the ledger after {@code starting_after}, from {@code created[gte]}, wired for auto-paging. */
+        private Object payoutPage(String path, ApiRequest req) {
+            java.util.Map<String, Object> params = req.getParams() == null ? java.util.Map.of() : req.getParams();
+            long gte = params.get("created") instanceof java.util.Map<?, ?> c && c.get("gte") instanceof Number n
+                    ? n.longValue() : Long.MIN_VALUE;
+            List<java.util.Map<String, Object>> rows = ledger.stream()
+                    .filter(p -> ((Number) p.get("created")).longValue() >= gte).toList();
+            int limit = params.get("limit") == null ? 10 : ((Number) params.get("limit")).intValue();
+            int from = 0;
+            Object after = params.get("starting_after");
+            for (int i = 0; after != null && i < rows.size(); i++) {
+                if (after.equals(rows.get(i).get("id"))) from = i + 1;
+            }
+            int to = Math.min(rows.size(), from + limit);
+            String json = new com.google.gson.Gson().toJson(java.util.Map.of("object", "list", "url", path,
+                    "has_more", to < rows.size(), "data", rows.subList(from, to)));
+            com.stripe.model.StripeCollection<Payout> page = ApiResource.GSON.fromJson(json,
+                    new com.google.gson.reflect.TypeToken<com.stripe.model.StripeCollection<Payout>>() {}.getType());
+            page.setResponseGetter(rg);
+            page.setRequestParams(params);
+            page.setRequestOptions(req.getOptions());
+            return page;
         }
 
         @SuppressWarnings("unchecked")
@@ -183,11 +254,29 @@ class PostEventPayoutServiceTest {
                         retrievedFailureCode == null ? "null" : "\"" + retrievedFailureCode + "\"");
                 return (T) ApiResource.GSON.fromJson(json, Payout.class);
             }
+            if ("/v1/payouts".equals(path) && req.getMethod() == ApiResource.RequestMethod.GET) {
+                if (failPayoutList) throw new ApiConnectionException("IOException during API request: read timed out");
+                return (T) payoutPage(path, req);
+            }
             if (path != null && path.startsWith("/v1/payouts")) {
+                createCalls.incrementAndGet();
                 if (req.getOptions() != null) {
                     lastIdempotencyKey.set(req.getOptions().getIdempotencyKey());
                 }
                 lastPayoutDescription.set(req.getParams() == null ? null : (String) req.getParams().get("description"));
+                Object meta = req.getParams() == null ? null : req.getParams().get("metadata");
+                if (crashPayoutForEvent != null && meta instanceof java.util.Map<?, ?> m
+                        && crashPayoutForEvent.equals(m.get("event_id"))) {
+                    throw new IllegalStateException("simulated crash inside the payout create");
+                }
+                if (failIdempotency) {
+                    throw new IdempotencyException("Keys for idempotent requests can only be used with the same "
+                            + "parameters they were first used with.", null, "idempotency_error", 400);
+                }
+                if (fail409) {
+                    throw new ApiException("There is currently another in-progress request using this "
+                            + "Stripe-Idempotency-Key.", null, "idempotency_key_in_use", 409, null);
+                }
                 if (failApiConnection) {
                     // The read timed out. Stripe MAY have created the payout — we never saw
                     // the response. ApiConnectionException extends StripeException, so the
@@ -204,6 +293,15 @@ class PostEventPayoutServiceTest {
                 Object amt = params == null ? null : params.get("amount");
                 long amount = amt == null ? 0L : ((Number) amt).longValue();
                 String poId = payoutPrefix + payoutCount.incrementAndGet();
+                if (meta instanceof java.util.Map<?, ?> m && m.get("event_id") instanceof String id) {
+                    payoutsByEvent.computeIfAbsent(id, k -> new AtomicInteger()).incrementAndGet();
+                    ledger.add(new java.util.LinkedHashMap<>(java.util.Map.of("object", "payout", "id", poId,
+                            "amount", amount, "currency", "eur", "status", "pending",
+                            "created", Instant.now().getEpochSecond(), "metadata", java.util.Map.of("event_id", id))));
+                    if (id.equals(ackThenCrashForEvent)) {
+                        throw new IllegalStateException("simulated crash after Stripe accepted the payout");
+                    }
+                }
                 lastPayoutAmount.set(amount);
                 lastPayoutId.set(poId);
                 lastPayoutDescription.set(params == null ? null : (String) params.get("description"));
@@ -291,9 +389,13 @@ class PostEventPayoutServiceTest {
     @Autowired StripeClient stripeClient;
     @Autowired PropertyFlips flips;
     @Autowired JdbcTemplate jdbc;
+    @Autowired RecordingEmailService email;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
 
     private final FakeStripe fake = new FakeStripe();
     private Organization org;
+    /** Orgs a test creates beyond {@link #org}; deleted with it. */
+    private final List<UUID> extraOrgIds = new java.util.ArrayList<>();
     /** Suffix for ids that land in uniquely indexed columns of the shared database. */
     private final String run = UUID.randomUUID().toString().substring(0, 8);
 
@@ -308,6 +410,7 @@ class PostEventPayoutServiceTest {
         flips.set(props, "secretKey", "sk_live_dummy");
 
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
+        fake.rg = rg;
         try {
             // The fluent services route through the default request(ApiRequest, Type)
             // overload, so stub THAT (not the 7-arg abstract one) and read path/params
@@ -329,7 +432,9 @@ class PostEventPayoutServiceTest {
 
     @AfterEach
     void tearDown() {
-        OrgRows.delete(jdbc, List.of(org.getId()));
+        List<UUID> ids = new java.util.ArrayList<>(extraOrgIds);
+        ids.add(org.getId());
+        OrgRows.delete(jdbc, ids);
     }
 
     // ── (e) FEE EXCLUDED — payout == net, not gross ────────────────────────────────
@@ -367,27 +472,6 @@ class PostEventPayoutServiceTest {
         assertThat(fake.lastPayoutDescription.get())
                 .startsWith("imin payout · NNN").hasSizeLessThanOrEqualTo(250).endsWith("…")
                 .doesNotContain(e.getId().toString());
-    }
-
-    @Test
-    void a_replayed_payout_keeps_its_description_when_the_event_is_renamed() {
-        Event e = newEndedEvent(org);
-        e.setName("Old Name");
-        events.save(e);
-        order(e, 10_000, 1_000);
-        fake.availableMinor.set(50_000L);
-        fake.failApiConnection = true;
-        service.payOneEvent(e.getId());
-        assertThat(fake.lastPayoutDescription.get()).isEqualTo("imin payout · Old Name");
-
-        e.setName("Renamed");
-        events.save(e);
-        fake.failApiConnection = false;
-        service.payOneEvent(e.getId());
-
-        assertThat(fake.lastPayoutDescription.get())
-                .as("same idempotency key must carry identical params or Stripe rejects the replay")
-                .isEqualTo("imin payout · Old Name");
     }
 
     @Test
@@ -721,48 +805,33 @@ class PostEventPayoutServiceTest {
                 .isEqualTo(2);
         assertThat(submitted.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:2");
     }
-
-    // ── stripe-2 — a TRANSPORT failure must NOT bump the attempt (double-pay) ──────
     @Test
-    void transport_failure_parks_run_retrying_and_replays_the_same_idempotency_key() {
+    void a_transport_failure_is_resolved_from_stripe_next_tick() {
         Event e = newEndedEvent(org);
         order(e, 10_000, 1_000);            // net 9_000
         fake.availableMinor.set(50_000L);
-        fake.failApiConnection = true;
+        fake.failApiConnection = true;      // the request never reached Stripe
 
-        // ── tick 1: Stripe accepted and minted po_A for 9_000, but the read timed out.
         service.payOneEvent(e.getId());
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.RETRYING);
 
-        List<PayoutRun> afterTick1 = payoutRuns.findByEventId(e.getId());
-        assertThat(afterTick1).hasSize(1);
-        PayoutRun parked = afterTick1.get(0);
-        assertThat(parked.getStatus())
-                .as("a timeout is NOT a rejection — the outcome is unknown, so the run parks RETRYING")
-                .isEqualTo(PayoutRunStatus.RETRYING);
-        assertThat(parked.getAttempt()).isEqualTo(1);
-        assertThat(parked.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:1");
-        assertThat(parked.getAmountMinor()).isEqualTo(9_000L);
-
-        // ── tick 2: the event re-candidates. It must REPLAY key attempt:1, which Stripe
-        // answers with the original po_ — NOT mint attempt:2 and a second 9_000 payout.
         fake.failApiConnection = false;
-        service.payOneEvent(e.getId());
+        tick();
 
-        assertThat(fake.payoutCount.get())
-                .as("exactly ONE payout request reached Stripe with a fresh key")
-                .isEqualTo(1);
-        assertThat(fake.lastIdempotencyKey.get())
-                .as("the replay reuses attempt:1's key so Stripe returns the ORIGINAL po_ "
-                        + "(a bumped attempt would be 18_000 out the door on 9_000 of net)")
-                .isEqualTo("evt:" + e.getId() + ":attempt:1");
-        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
-
-        List<PayoutRun> afterTick2 = payoutRuns.findByEventId(e.getId());
-        assertThat(afterTick2)
-                .as("one event, one payout unit — no attempt:2 row")
-                .hasSize(1);
-        assertThat(afterTick2.get(0).getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
-        assertThat(afterTick2.get(0).getAttempt()).isEqualTo(1);
+        List<PayoutRun> runs = payoutRuns.findByEventId(e.getId());
+        assertThat(runs).filteredOn(r -> r.getAttempt() == 1).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                    assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                });
+        assertThat(runs).filteredOn(r -> r.getAttempt() == 2).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                    assertThat(r.getAmountMinor()).isEqualTo(9_000L);
+                });
+        assertThat(fake.payoutsByEvent.get(e.getId().toString()))
+                .as("Stripe's list showed no payout, so exactly one goes out, on a fresh key").hasValue(1);
     }
 
     @Test
@@ -1422,9 +1491,8 @@ class PostEventPayoutServiceTest {
         assertThat(fake.payoutCount.get()).isEqualTo(1);
         assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
     }
-
     @Test
-    void an_open_refund_does_not_delay_replaying_a_retrying_run() {
+    void a_retrying_run_with_no_payout_at_stripe_waits_for_the_open_refund() {
         Event e = newEndedEvent(org);
         Order o = order(e, 10_000, 1_000);
         fake.availableMinor.set(50_000L);
@@ -1433,12 +1501,15 @@ class PostEventPayoutServiceTest {
         fake.failApiConnection = false;
         refund(o, 4_000, 400, RefundStatus.PENDING, Instant.now());
 
-        service.payOneEvent(e.getId());
+        tick();
 
-        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:1");
-        assertThat(fake.payoutCount.get()).as("the replay of the parked key still goes out").isEqualTo(1);
         assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
-                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.SUBMITTED);
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                    assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                });
+        assertThat(fake.createCalls.get()).as("the fresh attempt meets the open-refund hold").isEqualTo(1);
+        assertThat(fake.payoutsByEvent).doesNotContainKey(e.getId().toString());
     }
 
     /** Skipped events write no row and keep their place, so a fixed first page would starve everything behind it. */
@@ -1531,26 +1602,31 @@ class PostEventPayoutServiceTest {
         assertThat(fake.payoutCount.get()).isZero();
         assertThat(payoutRuns.findByEventId(e.getId())).as("nothing written").isEmpty();
     }
-
-    @Test
-    void a_timed_out_payout_of_a_since_cancelled_event_is_still_replayed_with_its_key() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void a_cancelled_event_s_unknown_run_is_adopted_if_paid_and_held_otherwise(boolean paidAtStripe) {
         Event e = newEndedEvent(org);
         order(e, 10_000, 1_000);            // net 9_000
         fake.availableMinor.set(50_000L);
         fake.failApiConnection = true;
         service.payOneEvent(e.getId());      // outcome unknown: run parked RETRYING at 9_000
         fake.failApiConnection = false;
+        String po = paidAtStripe ? fake.ledgerAdd(e.getId(), 9_000L) : null;
         setStatusElsewhere(e.getId(), EventStatus.CANCELLED);
 
-        service.payOneEvent(e.getId());
+        tick();
 
-        assertThat(fake.payoutCount.get()).as("the replay resolves the unknown payout").isEqualTo(1);
-        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:1");
-        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+        assertThat(fake.createCalls.get()).as("nothing is sent again for a cancelled event").isEqualTo(1);
         assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
                 .satisfies(r -> {
-                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
                     assertThat(r.getAttempt()).isEqualTo(1);
+                    if (paidAtStripe) {
+                        assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                        assertThat(r.getStripePayoutId()).isEqualTo(po);
+                    } else {
+                        assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                        assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                    }
                 });
     }
 
@@ -1581,6 +1657,272 @@ class PostEventPayoutServiceTest {
             throw new IllegalStateException(ex);
         }
         assertThat(t.isAlive()).as("status update finished").isFalse();
+    }
+
+    // ── the payout transaction: notices after commit, rollback on a crash, the ledger row before the money ──
+    @Test
+    void a_parked_payout_reaches_the_organizer_after_the_payout_commits() {
+        org.setContactEmail("payouts-" + run + "@test.example");
+        orgs.save(org);
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.hasBank = false;
+
+        service.payOneEvent(e.getId());
+        AsyncDrain.drain(ticketEmailExecutor);
+
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.BLOCKED);
+        assertThat(jdbc.queryForObject("select count(*) from notifications where user_id = ?",
+                        Integer.class, e.getCreatedBy()))
+                .as("the in-app notice is written only once the park has committed")
+                .isEqualTo(1);
+        assertThat(email.sent()).filteredOn(m -> m.to().equals(org.getContactEmail()))
+                .as("the organizer is emailed about the parked payout")
+                .hasSize(1);
+    }
+    @Test
+    void a_crash_before_the_payout_request_keeps_its_run_and_pays_once_next_tick() {
+        Event a = newEndedEvent(org);
+        a.setEndsAt(Instant.now().minus(11, ChronoUnit.DAYS));   // swept before b
+        events.save(a);
+        order(a, 10_000, 1_000);
+        Organization other = newEligibleOrg();
+        extraOrgIds.add(other.getId());
+        Event b = newEndedEvent(other);
+        order(b, 8_000, 800);
+        fake.availableMinor.set(50_000L);
+        fake.crashPayoutForEvent = a.getId().toString();
+
+        tick();
+
+        assertThat(payoutRuns.findByEventId(a.getId()))
+                .as("the crashed attempt keeps its committed ledger row")
+                .singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.PLANNED);
+                    assertThat(r.getAttempt()).isEqualTo(1);
+                });
+        assertThat(payoutRuns.findByEventId(b.getId())).singleElement()
+                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.SUBMITTED);
+
+        fake.crashPayoutForEvent = null;
+        tick();
+
+        List<PayoutRun> runs = payoutRuns.findByEventId(a.getId());
+        assertThat(runs).filteredOn(r -> r.getAttempt() == 1).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                    assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                });
+        assertThat(runs).filteredOn(r -> r.getAttempt() == 2).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                    assertThat(r.getIdempotencyKey()).isEqualTo("evt:" + a.getId() + ":attempt:2");
+                });
+        assertThat(fake.payoutsByEvent.get(a.getId().toString()))
+                .as("the crashed event is paid once, on the tick after the crash")
+                .hasValue(1);
+        assertThat(fake.payoutsByEvent.get(b.getId().toString()))
+                .as("the other org is paid once, on the crash tick, and not again")
+                .hasValue(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {0L, 4_000L})
+    void a_payout_stripe_accepted_before_a_crash_is_adopted_and_never_sent_twice(long balanceAfter) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        fake.ackThenCrashForEvent = e.getId().toString();
+
+        tick();
+
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .extracting(PayoutRun::getStatus).isEqualTo(PayoutRunStatus.PLANNED);
+        assertThat(fake.ledger).hasSize(1);
+
+        fake.ackThenCrashForEvent = null;
+        fake.availableMinor.set(balanceAfter);   // the accepted payout drained or shrank the balance
+        tick();
+
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                    assertThat(r.getStripePayoutId()).isEqualTo(fake.ledger.get(0).get("id"));
+                    assertThat(r.getAmountMinor()).isEqualTo(9_000L);
+                    assertThat(r.getAttempt()).isEqualTo(1);
+                });
+        assertThat(fake.createCalls.get()).as("the accepted payout is adopted, never sent again").isEqualTo(1);
+    }
+
+    @Test
+    void an_idempotency_mismatch_parks_the_payout_for_a_human_and_never_tries_again() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.failIdempotency = true;
+
+        service.payOneEvent(e.getId());
+
+        PayoutRun parked = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.BLOCKED);
+                    assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.IDEMPOTENCY_MISMATCH);
+                });
+        assertThat(published.stream(PayoutBlockedEvent.class).map(PayoutBlockedEvent::runId).toList())
+                .as("no 'fix your bank' notice: the organizer cannot settle this")
+                .doesNotContain(parked.getId());
+
+        fake.failIdempotency = false;
+        tick();
+
+        assertThat(fake.createCalls.get()).as("no attempt 2 that could pay a second time").isEqualTo(1);
+        assertThat(payoutRuns.maxAttemptByEventId(e.getId())).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"transport", "409"})
+    void an_unknown_create_outcome_parks_retrying_not_failed(String failure) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        if (failure.equals("409")) fake.fail409 = true; else fake.failApiConnection = true;
+
+        service.payOneEvent(e.getId());
+
+        assertThat(payoutRuns.findByEventId(e.getId()))
+                .as("Stripe may hold this payout, so the next attempt must not be minted")
+                .singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.RETRYING);
+                    assertThat(r.getAttempt()).isEqualTo(1);
+                });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {PayoutBlockReason.OUTCOME_UNKNOWN, PayoutBlockReason.AMBIGUOUS_MATCH})
+    void an_undecidable_run_is_held_for_a_human_without_paying(String reason) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        PayoutRun run = plannedRun(e, 9_000L);
+        if (reason.equals(PayoutBlockReason.OUTCOME_UNKNOWN)) {
+            fake.failPayoutList = true;
+            jdbc.update("update payout_runs set created_at = ? where id = ?",
+                    java.sql.Timestamp.from(Instant.now().minus(8, ChronoUnit.DAYS)), run.getId());
+        } else {
+            fake.ledgerAdd(e.getId(), 9_000L);
+            fake.ledgerAdd(e.getId(), 9_000L);
+        }
+
+        tick();
+
+        assertThat(payoutRuns.findById(run.getId())).get()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.BLOCKED);
+                    assertThat(r.getFailureReason()).isEqualTo(reason);
+                });
+        assertThat(fake.createCalls.get()).as("no payout is guessed").isZero();
+    }
+
+    @Test
+    void a_payout_run_that_cannot_be_written_sends_no_money() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+
+        try (PgFaults.Fault ignored = PgFaults.failWrites(jdbc, "payout_runs", "event_id", e.getId())) {
+            assertThatThrownBy(() -> service.payOneEvent(e.getId())).isInstanceOf(RuntimeException.class);
+        }
+
+        assertThat(fake.payoutCount.get())
+                .as("no bank payout may leave before its payout_runs row is written")
+                .isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).isEmpty();
+    }
+
+    /** Rows: a sibling event's payout, another amount, another currency, a po_ another run already recorded. */
+    @ParameterizedTest
+    @ValueSource(strings = {"sibling event", "other amount", "other currency", "already recorded"})
+    void a_stripe_payout_that_is_not_this_runs_is_never_adopted(String mismatch) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        PayoutRun run = plannedRun(e, 9_000L);
+        switch (mismatch) {
+            case "sibling event" -> fake.ledgerAdd(newEndedEvent(org).getId(), 9_000L);
+            case "other amount" -> fake.ledgerAdd(e.getId(), 8_999L);
+            case "other currency" -> fake.ledgerAdd(e.getId(), 9_000L, "usd");
+            default -> {
+                Event sibling = newEndedEvent(org);
+                PayoutRun owner = unresolvedRun(sibling, 9_000L, PayoutRunStatus.PAID);
+                owner.setStripePayoutId(fake.ledgerAdd(e.getId(), 9_000L));
+                payoutRuns.save(owner);
+            }
+        }
+
+        tick();
+
+        assertThat(payoutRuns.findById(run.getId())).get()
+                .as("no payout of this run exists at Stripe, so it was never created")
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                    assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                    assertThat(r.getStripePayoutId()).isNull();
+                });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PayoutRunStatus.class, names = {"PLANNED", "RETRYING"})
+    void an_unreadable_payout_list_leaves_a_young_run_unresolved_and_sends_nothing(PayoutRunStatus status) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        PayoutRun run = unresolvedRun(e, 9_000L, status);
+        fake.failPayoutList = true;
+
+        tick();
+
+        assertThat(payoutRuns.findById(run.getId())).get()
+                .as("a week-young run waits for a readable list; nothing is written")
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(status);
+                    assertThat(r.getFailureReason()).isNull();
+                });
+        assertThat(fake.createCalls.get()).isZero();
+    }
+
+    /** One sweep tick, with the ShedLock row expired so the call is never a no-op. */
+    private void tick() {
+        expireSweepLock();
+        sweeper.sweep();
+    }
+
+    /** A live PLANNED attempt-1 run whose create answer was never recorded. */
+    private PayoutRun plannedRun(Event e, long amountMinor) {
+        return unresolvedRun(e, amountMinor, PayoutRunStatus.PLANNED);
+    }
+
+    /** A live attempt-1 run in {@code status} (PLANNED or RETRYING) whose create answer was never recorded. */
+    private PayoutRun unresolvedRun(Event e, long amountMinor, PayoutRunStatus status) {
+        PayoutRun r = new PayoutRun();
+        r.setOrgId(e.getOrgId());
+        r.setEventId(e.getId());
+        r.setStripeAccountId(org.getStripeAccountId());
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("eur");
+        r.setStatus(status);
+        r.setAttempt(1);
+        r.setIdempotencyKey("evt:" + e.getId() + ":attempt:1");
+        return payoutRuns.save(r);
+    }
+
+    private void expireSweepLock() {
+        java.sql.Timestamp rewound = java.sql.Timestamp.from(Instant.parse("2020-01-01T00:00:00Z"));
+        jdbc.update("update shedlock set lock_until = ?, locked_at = ? where name = ?",
+                rewound, rewound, "PostEventPayoutSweeper.sweep");
     }
 
     private java.time.Duration bufferDays() {

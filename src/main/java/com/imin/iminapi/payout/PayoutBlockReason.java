@@ -16,5 +16,17 @@ public final class PayoutBlockReason {
     /** Attempt cap reached and the last attempt reported no Stripe code. Needs a human. */
     public static final String ATTEMPT_LIMIT = "PAYOUT_ATTEMPT_LIMIT";
 
+    /** Stripe refused the key as reused with other params: a payout may exist. Needs a human, no organizer notice. */
+    public static final String IDEMPOTENCY_MISMATCH = "PAYOUT_IDEMPOTENCY_MISMATCH";
+
+    /** Stripe's payout list could not be read for over a week, so the outcome stays unknown. Needs a human. */
+    public static final String OUTCOME_UNKNOWN = "PAYOUT_OUTCOME_UNKNOWN";
+
+    /** Two or more unrecorded Stripe payouts match the run, so which one it made cannot be told. Needs a human. */
+    public static final String AMBIGUOUS_MATCH = "PAYOUT_AMBIGUOUS_MATCH";
+
+    /** FAILED reason when Stripe's payout list shows the run never created a payout; the next attempt is fresh. */
+    public static final String NOT_CREATED = "not_created";
+
     private PayoutBlockReason() {}
 }

@@ -1,6 +1,7 @@
 package com.imin.iminapi.payout;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
@@ -53,17 +54,38 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
                                                                     Collection<PayoutRunStatus> statuses,
                                                                     String currency);
 
+    /** True while the event has a run of this Stripe mode in {@code statuses}, e.g. one whose outcome is unknown. */
+    boolean existsByEventIdAndStatusInAndTestMode(UUID eventId, Collection<PayoutRunStatus> statuses, boolean testMode);
+
+    /** A Stripe payout already recorded on some run, so the resolver never adopts it twice. */
+    boolean existsByStripePayoutId(String stripePayoutId);
+
+    /** Runs in {@code statuses} of one Stripe mode: the resolver's unknown-outcome work list. */
+    List<PayoutRun> findByStatusInAndTestMode(Collection<PayoutRunStatus> statuses, boolean testMode);
+
+    /** Conditional SUBMITTED write: 0 rows when the run already left {@code from}. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update PayoutRun r
+               set r.status = :to, r.stripePayoutId = :poId, r.submittedAt = :submittedAt, r.updatedAt = :now
+             where r.id = :id and r.status in :from
+            """)
+    int markSubmitted(@Param("id") UUID id, @Param("from") Collection<PayoutRunStatus> from,
+                      @Param("to") PayoutRunStatus to, @Param("poId") String poId,
+                      @Param("submittedAt") Instant submittedAt, @Param("now") Instant now);
+
+    /** Conditional outcome write (RETRYING, FAILED, BLOCKED): 0 rows when the run already left {@code from}. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update PayoutRun r
+               set r.status = :to, r.failureReason = :reason, r.updatedAt = :now
+             where r.id = :id and r.status in :from
+            """)
+    int markOutcome(@Param("id") UUID id, @Param("from") Collection<PayoutRunStatus> from,
+                    @Param("to") PayoutRunStatus to, @Param("reason") String reason, @Param("now") Instant now);
+
     /** Runs for an event, e.g. to compute the next {@code attempt} after a FAILED run. */
     List<PayoutRun> findByEventId(UUID eventId);
-
-    /**
-     * The unresolved run to REPLAY for an event, if any. A {@code RETRYING} run is one
-     * whose {@code Payout.create} failed at the transport level (timeout / rate limit /
-     * 5xx), so Stripe MAY already hold a {@code po_} for its idempotency key. The next
-     * tick must reuse that row's {@code attempt} — and therefore its key — so the replay
-     * converges on the original payout instead of minting a second one.
-     */
-    Optional<PayoutRun> findFirstByEventIdAndStatusOrderByAttemptDesc(UUID eventId, PayoutRunStatus status);
 
     /**
      * Highest {@code attempt} recorded for an event, or {@code 0} when there are no runs.
@@ -115,7 +137,7 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
     /**
      * The event's most recent run — the one the attempt cap parks {@code BLOCKED}, carrying
      * the last failure reason. Highest {@code attempt} is the newest: attempts only ever
-     * increase, and a RETRYING run reuses its own.
+     * increase.
      */
     Optional<PayoutRun> findFirstByEventIdOrderByAttemptDesc(UUID eventId);
 
@@ -132,17 +154,17 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      * ({@link PayoutBlockReason#NO_BANK_ACCOUNT}). Such an event must never re-candidate: the
      * attempt cap exists precisely so a doomed payout stops being retried nightly.
      *
-     * <p>LIVE-mode runs only (V130). The cutover script parks every non-terminal test-era run
-     * {@code blocked}, and an event that mixes test-era orders with live sales would otherwise
-     * be excluded from live payouts forever by a run that never moved a real cent.
+     * <p>Runs of the running key's mode only (V130). Under the live key, the test-era runs the cutover
+     * script parks {@code blocked} never exclude a live event; under a test key a sandbox park holds too.
      */
     @Query("""
             select count(r) > 0 from PayoutRun r
              where r.eventId = :eventId
                and r.status = com.imin.iminapi.payout.PayoutRunStatus.BLOCKED
-               and r.testMode = false
+               and r.testMode = :testMode
                and (r.failureReason is null or r.failureReason <> :selfHealingReason)
             """)
     boolean existsBlockedNeedingAHuman(@Param("eventId") UUID eventId,
-                                       @Param("selfHealingReason") String selfHealingReason);
+                                       @Param("selfHealingReason") String selfHealingReason,
+                                       @Param("testMode") boolean testMode);
 }

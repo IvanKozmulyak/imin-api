@@ -228,6 +228,14 @@ public class OrganizerPayoutNotifier {
                     "До вашого акаунта Stripe не прив'язано банківський рахунок, тож надсилати гроші нікуди.");
         }
         int attempts = c.run.getAttempt();
+        // The last attempt never reached Stripe, so no bank refused anything.
+        if (PayoutBlockReason.NOT_CREATED.equals(c.run.getFailureReason())) {
+            return EmailLocale.choose(c.locale,
+                    "We tried to send this payout " + attempts + " times and could not complete it.",
+                    "Intentamos enviar este pago " + attempts + " veces y no pudimos completarlo.",
+                    "Nous avons tenté ce versement " + attempts + " fois sans pouvoir le finaliser.",
+                    "Ми намагалися надіслати цю виплату " + attempts + " раз(и), але не змогли її завершити.");
+        }
         return EmailLocale.choose(c.locale,
                 "We tried to send this payout " + attempts + " times and the bank did not accept it.",
                 "Intentamos enviar este pago " + attempts + " veces y el banco no lo aceptó.",
@@ -253,6 +261,7 @@ public class OrganizerPayoutNotifier {
     /** The Stripe failure code we last saw, for the in-app row; never a fabricated one. */
     private static String reasonDetail(PayoutRun run) {
         String reason = run.getFailureReason();
+        if (PayoutBlockReason.NOT_CREATED.equals(reason)) return "we could not complete the payout";
         return (reason == null || reason.isBlank()) ? "none reported by Stripe" : reason;
     }
 

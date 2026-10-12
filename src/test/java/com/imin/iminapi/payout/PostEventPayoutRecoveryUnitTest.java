@@ -40,7 +40,7 @@ class PostEventPayoutRecoveryUnitTest {
         PostEventPayoutService service = new PostEventPayoutService(stripe, props, mock(EventRepository.class), orgs,
                 mock(PayoutRunRepository.class), orders, refunds, disputes,
                 mock(DisputeWithholding.class), recoveryMarker, mock(DisputeRecoveryMarker.class),
-                stamper, mock(ApplicationEventPublisher.class));
+                stamper, mock(ApplicationEventPublisher.class), mock(PayoutRunStore.class));
 
         Organization org = new Organization();
         org.setId(UUID.randomUUID());
@@ -71,7 +71,8 @@ class PostEventPayoutRecoveryUnitTest {
         PostEventPayoutService service = new PostEventPayoutService(stripe, props, mock(EventRepository.class), orgs,
                 mock(PayoutRunRepository.class), orders, refunds, mock(DisputeRepository.class),
                 mock(DisputeWithholding.class), recoveryMarker, mock(DisputeRecoveryMarker.class),
-                mock(OrderSettlementStamper.class), mock(ApplicationEventPublisher.class));
+                mock(OrderSettlementStamper.class), mock(ApplicationEventPublisher.class),
+                mock(PayoutRunStore.class));
 
         Organization org = new Organization();
         org.setId(UUID.randomUUID());

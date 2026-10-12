@@ -85,6 +85,10 @@ public class PostEventPayoutSweeper {
     public void sweep() {
         if (!props.isPayoutScheduleManual()) return;   // master kill-switch — inert when off
 
+        // ── step A0 — settle runs whose create answer was never recorded, from Stripe's payout list ──
+        // First, so an adopted payout counts as triggered and a run Stripe never saw frees its event this tick.
+        resolveUnknownOutcomes();
+
         // ── step A — reconcile stale SUBMITTED runs BEFORE looking for candidates ──
         // A SUBMITTED run blocks every event for its org (the org-level in-flight guard) and
         // its only other exit is a connected-account payout.* webhook, which is dark whenever
@@ -176,6 +180,25 @@ public class PostEventPayoutSweeper {
             } catch (Exception ex) {
                 log.error("[payout-sweep] recovery failed for org {} — {}",
                         orgId, ex.getMessage(), ex);
+            }
+        }
+    }
+
+    /**
+     * {@link PostEventPayoutService#resolveUnknownRun} for every PLANNED/RETRYING run of the running key's
+     * mode, each in its own {@code REQUIRES_NEW} transaction through the service proxy.
+     */
+    private void resolveUnknownOutcomes() {
+        List<PayoutRun> open = payoutRuns.findByStatusInAndTestMode(PostEventPayoutService.UNRESOLVED,
+                !props.isLiveKey());
+        if (open.isEmpty()) return;
+
+        log.info("[payout-resolve] resolving {} run(s) with no recorded Stripe outcome", open.size());
+        for (PayoutRun r : open) {
+            try {
+                payoutService.resolveUnknownRun(r.getId());
+            } catch (Exception ex) {
+                log.error("[payout-resolve] resolve failed for run {} — {}", r.getId(), ex.getMessage(), ex);
             }
         }
     }

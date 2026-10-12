@@ -16,6 +16,7 @@ import com.imin.iminapi.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 
@@ -130,6 +131,33 @@ class OrganizerPayoutNotifierTest {
         assertThat(subject.getValue())
                 .isEqualTo("Action needed: we could not send your Warehouse 7 payout");
         assertThat(html.getValue()).contains("3 times").doesNotContain("{{");
+    }
+
+    /** A last attempt that never reached Stripe is not a bank refusal, in any locale. */
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "en | could not complete it",
+            "es | no pudimos completarlo",
+            "fr | sans pouvoir le finaliser",
+            "uk | не змогли її завершити"})
+    void anAttemptCapAfterAPayoutStripeNeverCreatedBlamesNoBank(String locale, String neutral) {
+        when(payoutRuns.findById(RUN_ID)).thenReturn(Optional.of(run(PayoutBlockReason.NOT_CREATED, 3)));
+        when(users.findById(USER_ID)).thenReturn(Optional.of(user(locale)));
+
+        notifier.notifyBlocked(RUN_ID);
+
+        ArgumentCaptor<Notification> n = ArgumentCaptor.forClass(Notification.class);
+        verify(notifications).save(n.capture());
+        assertThat(n.getValue().getBody())
+                .contains("we could not complete the payout")
+                .doesNotContain(PayoutBlockReason.NOT_CREATED);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(email).send(anyString(), anyString(), html.capture(), text.capture());
+        assertThat(text.getValue())
+                .contains(neutral)
+                .doesNotContain("bank did not accept", "banco no lo aceptó", "banque ne l'a pas accepté",
+                        "банк її не прийняв");
     }
 
     @Test
