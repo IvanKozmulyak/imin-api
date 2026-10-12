@@ -19,7 +19,7 @@ universal_rules:
   # Instructional (not diffusion negative tokens): this is fed to an instruction-following LLM, where
   # tokens like "deformed faces" read as "avoid faces" and produce subject-less plates. Keep it as a
   # plain imperative the art-director model can honor.
-  negative_prompt: "No watermarks, logos, signatures, stock-template flyer layouts, or invented words."
+  negative_prompt: "No watermarks, logos, signatures, stock-template flyer layouts, invented words, or nudity — every person is fully clothed."
   ip_rule: "Never use 'in the style of <real artist / label / club>'; never reference real venues, brands, or copyrighted characters. Keep all descriptions generic and original."
 
 vibes:
@@ -29,7 +29,7 @@ vibes:
     visual_style: "raw exposed concrete, industrial warehouse, harsh single-source lighting, heavy film grain, high-contrast photography, oversized negative space, stark and severe"
     palette: ["#0A0A0A", "#1C1C1C", "#E8E8E8", "#FF2D00"]
     typography: "oversized condensed grotesk, all caps, tight tracking, brutalist grid"
-    composition: "giant centered or top-aligned headline, lots of empty space, single dominant texture"
+    composition: "giant centered or top-aligned lettering, lots of empty space, single dominant texture"
     mood_tags: [raw, severe, monolithic, cold, dark]
     avoid: [soft lighting, decoration, warmth, generic flyer tropes]
     subject: "Raw monochrome brutalism: a worm's-eye concrete tower or a blown-out high-contrast human face, shot on grainy black-and-white, drowned in matte-black negative space with one acid accent color and machine-stamped type. Some sheets swap the hero for an industrial object or a stippled scientific specimen."
@@ -106,7 +106,7 @@ vibes:
     genres: [industrial techno, ebm, hard groove, schranz]
     visual_style: "distressed metal, riveted steel, hazard tape, scratched surfaces, photocopied grit, militant utilitarian, oil-stained textures"
     palette: ["#0D0D0D", "#1F1F1F", "#FFD400", "#8A8A8A"]
-    typography: "stencil or industrial sans, distressed, warning-label style"
+    typography: "stencil or industrial sans, distressed, warning-sign style"
     composition: "hazard-stripe framing, gritty full-bleed texture, aggressive"
     mood_tags: [militant, gritty, aggressive, mechanical, dystopian]
     avoid: [clean surfaces, softness, organic shapes, generic flyer tropes]
@@ -150,7 +150,7 @@ vibes:
     composition: "chaotic layered collage, off-grid, overwhelming, digital"
     mood_tags: [chaotic, saturated, online, fast, fun]
     avoid: [minimalism, vintage, calm, generic flyer tropes]
-    subject: "A flash-lit club-goer shot up close in a dark venue — face, drink, or hands toward the camera — with oversized display type colliding over the photo. The hero is a real partygoer; the energy is harsh on-camera flash, motion blur, and neon scrawl."
+    subject: "A flash-lit club-goer shot up close in a dark club — face, drink, or hands toward the camera — with oversized display type colliding over the photo. The hero is a real partygoer; the energy is harsh on-camera flash, motion blur, and neon scrawl."
     style_mode: curated_substyle
     substyle: hard_flash
     model_route: recraft

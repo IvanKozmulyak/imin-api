@@ -26,10 +26,10 @@ compositions:
   - 'centred vertical hero (face or speaker stack) filling the frame with type stacked top and bottom'
   - 'low-angle hero subject looking/rising upward, light beams radiating from a single point behind the head'
   - 'full-bleed dark field with a high-contrast line-art motif centred and small block type clustered in the corners'
-  - 'giant graffiti title arcing across the top third, hero illustration occupying the middle, crowd silhouette grounding the bottom'
+  - 'giant graffiti lettering arcing across the top third, hero illustration occupying the middle, crowd silhouette grounding the bottom'
   - 'ghosted repeated wordmark tiling the background behind a sharp foreground hero'
-  - 'tropical palm-leaf border framing a dense dancehall flyer with stacked credits down the centre'
-  - 'duotone bust portrait cropped at the shoulders, big condensed title overlapping the chin and neck'
+  - 'tropical palm-leaf border framing a dense dancehall-style collage'
+  - 'duotone bust portrait cropped at the shoulders, big condensed lettering overlapping the chin and neck'
 accents:
   - 'chromatic green light-leak glow bleeding off bright edges'
   - 'long-exposure laser streaks and motion-blur light trails'
@@ -44,10 +44,10 @@ palette_twists:
   - 'monochrome black-and-white line art with a single chartreuse cable accent'
   - 'smoky concrete grey lit by one cold green spotlight'
 type_treatments:
-  - 'bulky graffiti / dancehall bubble lettering with thick outlines as the hero title'
+  - 'bulky graffiti / dancehall bubble lettering with thick outlines'
   - 'tall condensed sans block caps mixed with a flowing cursive script subhead'
   - 'ghosted oversized wordmark repeated and tiled behind the subject'
-  - 'stencil-style block credits stacked in tight left-aligned columns'
+  - 'stencil-style block capitals in tight left-aligned columns'
 example_prompts:
   - 'Event poster, 4:5 vertical. Flash-photo hero: a young raver''s upturned face lit hard from below, eyes shut in the rush, skin drenched in acid-green club glow while sharp laser beams streak diagonally across the whole frame. Dark concrete club wall behind, chromatic green light-leak bleeding off the bright edges. A ghosted oversized wordmark repeats faintly behind the head. Bold tall condensed block caps reading ''JUNGLE PRESSURE'' span the top, a flowing green cursive subhead ''all night'' underneath, stencil credits and ''11PM TILL LATE'' clustered bottom-left. Palette acid green, hot yellow, near-black. Risograph dot grain and motion-blur light trails throughout, raw sound-system energy.'
   - 'Illustrated event poster, 4:5 vertical. A towering stacked sound-system speaker wall dominates the centre, dozens of woofer cones glowing under warm stage light, flanked by silhouetted palm trees against a gold sunset radiating halftone rays. A crowd of dark raised-hand silhouettes packs the bottom third. Big hand-lettered graffiti bubble title ''YARD RIDDIM'' arcs across the top in jungle green with thick cream outlines. Stacked stencil credits run down the centre over the speaker. Rasta triad palette — green, gold, blood red — on a warm cream stock with photocopy grain and risograph texture.'

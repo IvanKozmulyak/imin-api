@@ -21,14 +21,14 @@ hero_subjects:
     - 'a lone cymbal and drum kit dissolving into motion blur and film grain'
     - 'concentric fingerprint-like contour swirls in fine white line on a black field, framed by small red brackets'
     - 'a glowing white retail/display vitrine standing alone in a dark grainy hall'
-    - 'a bare drafting grid of pale squares with tiny tick-mark numerals and a single geometric mark'
+    - 'a bare drafting grid of pale squares with tiny tick marks and a single geometric mark'
 compositions:
-  - 'headline locked hard to the top edge in two stacked lines, hero image floating low and small in a vast empty field below'
+  - 'lettering locked hard to the top edge in two stacked lines, hero image floating low and small in a vast empty field below'
   - 'single blurred hero centered in the lower third, enormous black or pale negative space above carrying only tiny marks'
   - 'giant interlocking sans letters overlaid directly across the human figures, type and image fused into one plane'
-  - 'construction-grid fills the upper two-thirds, a dense multi-column footer of tiny text banded across the bottom'
+  - 'construction-grid fills the upper two-thirds, a clean empty band across the bottom'
   - 'vertical stacked-caps word running edge-to-edge up the right margin, hero element anchored bottom-center'
-  - 'asymmetric top-left headline with a tiny isolated year or numeral kicked to the opposite top corner'
+  - 'asymmetric top-left lettering with a vast empty field to its right'
   - 'thin red bracket frames and dashed registration marks pinning small graphic elements into an otherwise bare field'
   - 'everything pushed to the four edges, the geometric center left almost entirely empty'
 accents:
@@ -45,9 +45,9 @@ palette_twists:
   - 'pastel pink ground under a flat screened green duotone figure'
   - 'near-black charcoal with bone-white type and faint warm grain'
 type_treatments:
-  - 'oversized geometric/grotesque sans headline locked tight to an edge, near-flush justified'
+  - 'oversized geometric/grotesque sans locked tight to an edge, near-flush justified'
   - 'stacked all-caps lines filling the column width with minimal leading'
-  - 'tiny precise tracked small-caps footer in clinical multi-column blocks'
+  - 'precise tracked small caps in clinical blocks'
   - 'repeated outlined-only word echoed in a descending stack'
 example_prompts:
   - 'Minimal Berlin-style event poster, 4:5. Pure black field flooded with fine 35mm film grain. A single drummer caught mid-strike, smeared into long-exposure motion blur — only ghosted silver-grey shoulders and a glint of cymbal legible — floating low in the lower-middle, surrounded by vast empty black. Hard top-left, an oversized white geometric grotesque headline in two stacked lines reads "NIGHT FORM". Bottom edge: a tiny tracked white line reads "22.11.2025" with a thin hairline rule and "HALL C, RIVERSIDE" in small caps. No color but one faint red tick mark beside the date. Gallery-like restraint, extreme negative space, cold monochrome, high contrast, grainy analog texture.'

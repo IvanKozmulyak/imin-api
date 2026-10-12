@@ -2,7 +2,6 @@ package com.imin.iminapi.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -12,7 +11,7 @@ public record EventCreatorRequest(
         @NotBlank String tone,
         @NotBlank String genre,
         @NotBlank String city,
-        @NotNull LocalDate date,
+        LocalDate date,                 // null when the organizer gave no date: the poster then carries none
         @NotEmpty List<String> platforms,
         String djName,
         String location,

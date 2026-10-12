@@ -17,6 +17,7 @@ import com.imin.iminapi.service.ai.CreativeDirectionSampler;
 import com.imin.iminapi.service.ai.CreativeDirectionSampler.SampledRun;
 import com.imin.iminapi.service.ai.PromptDistinctness;
 import com.imin.iminapi.service.poster.PosterTextSpecFactory;
+import com.imin.iminapi.service.poster.RenderPrompt;
 import com.imin.iminapi.service.poster.StyleCardLibrary;
 import com.imin.iminapi.service.poster.VibeLibrary;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,8 @@ import java.util.regex.Pattern;
 
 /**
  * Turns an event brief into a {@link PosterConcept} (a chosen vibe + 3 hero-typed variants) via one
- * LLM call. The art director (stage-1 LLM) is given the vibe's visual world + a code-sampled
+ * LLM call. The LLM writes only the visual and a lettering-style clause; the event text is never
+ * left to it — {@link RenderPrompt} puts the code-built text sentence first in every render prompt. The art director (stage-1 LLM) is given the vibe's visual world + a code-sampled
  * {@link CreativeDirection} per variant (drawn from the vibe's style-card pools), so the three
  * variants are concrete, subject-led, and distinct from each other and from run to run.
  *
@@ -65,6 +67,25 @@ public class AiEventDescriptionService {
     private static final String FORCED_ASPECT_RATIO = "4:5";
     /** Three prompts must not be paraphrases: pairwise word-trigram Jaccard must stay below this. */
     private static final double DISTINCTNESS_THRESHOLD = 0.45;
+
+    /** Words for poster text slots: printed literally when the renderer reads them (e.g. "VENUE"). */
+    static final List<String> LAYOUT_LABELS = List.of(
+            "headline", "headlines", "title", "titles", "subtitle", "subtitles", "tagline", "taglines",
+            "caption", "captions", "venue", "venues", "date", "dates", "lineup", "lineups", "line-up",
+            "credit", "credits", "badge", "badges", "label", "labels", "logo", "logos", "kicker", "kickers",
+            "footer", "footers", "qr code", "dj name");
+
+    /**
+     * A quoted span (double or single, straight or curly), or a stray double quote left over. A straight
+     * single quote opens a span only after a non-letter, so apostrophes (worm's-eye, club's) never do,
+     * and never before a decade ('90s).
+     */
+    private static final Pattern QUOTED_SPAN = Pattern.compile(
+            "\"[^\"]*\"|\u201C[^\u201D]*\u201D|\u2018(?!\\d+s\\b)[^\u2019]*\u2019"
+            + "|(?<![\\p{L}\\p{N}])'(?!\\d+s\\b)[^']*'(?![\\p{L}\\p{N}])|[\"\u201C\u201D]");
+    /** The opening of a single-quoted span: a curly opening quote, or a straight one after a non-letter. */
+    private static final Pattern SINGLE_QUOTE_OPEN =
+            Pattern.compile("\u2018(?!\\d+s\\b)|(?<![\\p{L}\\p{N}])'(?=\\S)(?!\\d+s\\b)");
 
     private static final List<HeroType> DJ_PLAN = List.of(HeroType.PEOPLE, HeroType.PEOPLE, HeroType.PEOPLE);
 
@@ -164,7 +185,7 @@ public class AiEventDescriptionService {
                 if (validationError == null) {
                     log.debug("Concept accepted on attempt {}: vibe={}, variants={}",
                             attempt, concept.subStyleTag(), concept.variants().size());
-                    return new GeneratedConcept(forcePortrait(concept), sampled.directions());
+                    return new GeneratedConcept(finish(concept, request), sampled.directions());
                 }
                 lastError = validationError;
             } else {
@@ -179,7 +200,7 @@ public class AiEventDescriptionService {
         // legibility + style validation gates are the real per-image quality backstop.
         if (lastRenderable != null) {
             log.warn("Returning best-effort concept after {} attempts (residual issue: {})", MAX_ATTEMPTS, lastError);
-            return new GeneratedConcept(forcePortrait(lastRenderable), sampled.directions());
+            return new GeneratedConcept(finish(lastRenderable, request), sampled.directions());
         }
         throw new IllegalStateException(
                 "Could not produce a renderable PosterConcept after " + MAX_ATTEMPTS + " attempts: " + lastError);
@@ -279,9 +300,6 @@ public class AiEventDescriptionService {
             if (v.aspectRatio() == null || !VALID_ASPECTS.contains(v.aspectRatio())) {
                 return "variant[" + i + "].aspect_ratio must be one of " + VALID_ASPECTS;
             }
-            if (!"Design".equals(v.styleType())) {
-                return "variant[" + i + "].style_type must be \"Design\"";
-            }
             String p = v.ideogramPrompt();
             if (p == null || p.isBlank()) return "variant[" + i + "].ideogram_prompt is empty";
             int wc = wordCount(p);
@@ -350,21 +368,62 @@ public class AiEventDescriptionService {
         String shapeError = validate(concept, card, djMode);
         if (shapeError != null) return shapeError;
 
+        // Inverted contract: the code writes the poster text, so any text the LLM writes is a second,
+        // competing copy (or a label the renderer prints literally) and is rejected.
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
-        if (textSpec.required().isEmpty()) return null;
-
         List<PosterVariant> variants = concept.variants();
         for (int i = 0; i < variants.size(); i++) {
-            // Case-insensitive: the model often re-cases the title/date in prose (e.g. "7 Jun 2026" vs the
-            // contract's "7 JUN 2026"); the downstream vision legibility gate is the exact-rendering check.
-            String prompt = variants.get(i).ideogramPrompt().toLowerCase(java.util.Locale.ROOT);
-            for (String requiredText : textSpec.required()) {
-                if (!prompt.contains(requiredText.toLowerCase(java.util.Locale.ROOT))) {
-                    return "variant[" + i + "].ideogram_prompt missing required text \"" + requiredText + "\"";
-                }
+            PosterVariant v = variants.get(i);
+            if (v.typeStyle() == null || v.typeStyle().isBlank()) {
+                return "variant[" + i + "].type_style is empty";
             }
+            String hit = posterTextIn(v.ideogramPrompt(), textSpec.allowed());
+            if (hit != null) return "variant[" + i + "].ideogram_prompt writes poster text: \"" + hit + "\"";
+            hit = posterTextIn(v.typeStyle(), textSpec.allowed());
+            if (hit != null) return "variant[" + i + "].type_style writes poster text: \"" + hit + "\"";
         }
         return null;
+    }
+
+    /** The first quote mark, event string or layout label in {@code text}, matched as a whole phrase. */
+    public static String posterTextIn(String text, List<String> eventStrings) {
+        if (text.indexOf('"') >= 0 || text.indexOf('\u201C') >= 0 || text.indexOf('\u201D') >= 0) return "\"";
+        if (SINGLE_QUOTE_OPEN.matcher(text).find()) return "'";
+        for (String s : eventStrings) {
+            if (s == null || s.isBlank()) continue;
+            String e = s.trim();
+            // A multi-word name is printable text anywhere; a one-word one ("Warehouse", "Nice") is an
+            // ordinary visual noun unless written in capitals, which is how printed words are spelled out.
+            boolean hit = e.contains(" ")
+                    ? containsPhrase(text, e, true)
+                    : containsPhrase(text, e.toUpperCase(java.util.Locale.ROOT), false);
+            if (hit) return e;
+        }
+        for (String label : LAYOUT_LABELS) {
+            if (containsPhrase(text, label, true)) return label;
+        }
+        return null;
+    }
+
+    /** Whole phrase; a hyphen counts as part of the word, so "headline-weight" or "logo-like" never match. */
+    private static boolean containsPhrase(String text, String phrase, boolean ignoreCase) {
+        int flags = ignoreCase ? Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE : 0;
+        return Pattern.compile("(?<![\\p{L}\\p{N}-])" + Pattern.quote(phrase) + "(?![\\p{L}\\p{N}-])", flags)
+                .matcher(text).find();
+    }
+
+    /** Quoted spans removed: on the best-effort path they are words the LLM wanted printed. */
+    static String withoutQuotedText(String text) {
+        if (text == null) return null;
+        return QUOTED_SPAN.matcher(text).replaceAll("").replaceAll("\\s{2,}", " ").trim();
+    }
+
+    /**
+     * A style-card or vibe hint as the art director sees it: quoted text dropped. Slot words are kept
+     * out at the source (StyleCardVisualOnlyTest), since rewriting them here produced phrases like "type walls".
+     */
+    public static String visualHint(String hint) {
+        return withoutQuotedText(hint);
     }
 
     int wordCount(String s) {
@@ -373,11 +432,23 @@ public class AiEventDescriptionService {
         return WORDS.split(trimmed).length;
     }
 
+    /** Portrait-forced variants whose render prompt is the text sentence + visual + type clause. */
+    PosterConcept finish(PosterConcept concept, EventCreatorRequest request) {
+        String sentence = posterTextSpecFactory.from(request).textSentence();
+        List<PosterVariant> composed = forcePortrait(concept).variants().stream()
+                .map(v -> new PosterVariant(v.heroType(),
+                        RenderPrompt.compose(sentence, withoutQuotedText(v.ideogramPrompt()),
+                                withoutQuotedText(v.typeStyle())),
+                        v.aspectRatio(), v.typeStyle()))
+                .toList();
+        return new PosterConcept(concept.subStyleTag(), concept.colorPaletteDescription(), composed);
+    }
+
     /** Force every variant to the single {@value #FORCED_ASPECT_RATIO} portrait, preserving everything else. */
     PosterConcept forcePortrait(PosterConcept concept) {
         List<PosterVariant> portrait = concept.variants().stream()
                 .map(v -> new PosterVariant(
-                        v.heroType(), v.ideogramPrompt(), FORCED_ASPECT_RATIO, v.styleType()))
+                        v.heroType(), v.ideogramPrompt(), FORCED_ASPECT_RATIO, v.typeStyle()))
                 .toList();
         return new PosterConcept(concept.subStyleTag(), concept.colorPaletteDescription(), portrait);
     }
@@ -393,23 +464,23 @@ public class AiEventDescriptionService {
     }
 
     String buildPrompt(EventCreatorRequest request, Vibe vibe, SampledRun sampled, String reinforcement, boolean djMode) {
-        PosterTextSpec textSpec = posterTextSpecFactory.from(request);
         List<CreativeDirection> d = sampled.directions();
         HumanStyle humanStyle = styleCardLibrary.get(vibe.id())
                 .map(StyleCard::humanStyle).orElse(null);
-        String example = sampled.examplePrompt();
+        // Style-card example prompts are written in the old text-in-prompt anatomy (quoted strings in
+        // slots); stripped they read as broken sentences, and verbatim the LLM copies their text.
 
         StringBuilder sb = new StringBuilder();
         sb.append("You are an art director creating ONE-OF-A-KIND nightlife event posters. Your output drives ")
-          .append("Recraft image generation with native typography integrated into the artwork. Tonight's three ")
+          .append("Ideogram V3 image generation; the renderer adds the event text itself. Tonight's three ")
           .append("concepts must be visually distinct from each other and from any generic flyer.\n\n");
 
         sb.append("VIBE — every variant stays inside this visual world:\n")
-          .append("    Visual style: ").append(vibe.visualStyle()).append("\n")
-          .append("    Typography: ").append(vibe.typography()).append("\n")
-          .append("    Composition feel: ").append(vibe.composition()).append("\n");
+          .append("    Visual style: ").append(visualHint(vibe.visualStyle())).append("\n")
+          .append("    Typography: ").append(visualHint(vibe.typography())).append("\n")
+          .append("    Composition feel: ").append(visualHint(vibe.composition())).append("\n");
         if (notBlank(vibe.subject())) {
-            sb.append("Hero subject matter for this vibe: ").append(vibe.subject()).append("\n");
+            sb.append("Hero subject matter for this vibe: ").append(visualHint(vibe.subject())).append("\n");
         }
         sb.append("\n");
 
@@ -439,49 +510,44 @@ public class AiEventDescriptionService {
         }
         sb.append("\n");
 
-        if (notBlank(example)) {
-            sb.append("Example of the caliber expected (different event — do NOT copy its content or sentence structure):\n")
-              .append("\"").append(example).append("\"\n\n");
-        }
-
         sb.append("Return a JSON object with exactly these fields:\n")
           .append("- sub_style_tag: must be exactly \"").append(vibe.id()).append("\"\n")
           .append("- color_palette_description: brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - hero_type: one of people | object | typographic | scene | abstract_graphic, matching the variant role above\n")
-          .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 60-180 words, following this exact anatomy in order:\n")
+          .append("    - ideogram_prompt: the VISUAL ONLY, 60-180 words, no quotation marks, no words to print and no ")
+          .append("text slots (never name a headline, title, date, venue, lineup, credit or logo), following this exact anatomy in order:\n")
           .append("      1. hero subject (or type-as-image for typographic) with concrete visual nouns\n")
           .append("      2. medium (photograph / photocopy / collage / illustration — per the treatment)\n")
           .append("      3. layout and crop for a 4:5 vertical poster (taller than wide)\n")
           .append("      4. lighting\n")
           .append("      5. colors\n")
-          .append("      6. typography treatment and where each text element sits\n")
-          .append("      7. the required text, integrated as native poster typography\n")
           .append("    - aspect_ratio: always exactly \"4:5\"\n")
-          .append("    - style_type: always \"Design\"\n\n");
+          .append("    - type_style: at most 20 words describing the lettering style only (weight, width, case, ")
+          .append("texture) — no placement and no words to print\n\n");
 
         sb.append("STRICT RULES for each ideogram_prompt:\n")
           .append("- A finished event poster, not a background plate, not a mockup\n")
-          .append("- An image-led poster where the hero dominates and the required text is integrated as bold native typography\n")
+          .append("- An image-led poster where the hero dominates\n")
           .append("- The three prompts must not share opening words, sentence structure, or layout\n")
           .append("- Never open with \"Create a\", \"Design a\", or \"Craft a\" — start with the visual content itself\n")
           .append(djMode ? DJ_HUMAN_RULE : humanRule(humanStyle)).append("\n")
           .append("- ").append(notBlank(universalNegative()) ? universalNegative()
-                  : "No watermarks, logos, signatures, stock-template flyer layouts, or invented words.").append("\n\n");
+                  : "No watermarks, logos, signatures, stock-template flyer layouts, invented words, or nudity — every person is fully clothed.").append("\n\n");
 
-        sb.append(textSpec.forPrompt()).append("\n");
+        sb.append("The renderer adds the event text itself — do not write it.\n\n");
 
         String ipRule = vibeLibrary.universalRules() == null ? null : vibeLibrary.universalRules().ipRule();
         if (notBlank(ipRule)) {
             sb.append("IP rule: ").append(ipRule).append("\n\n");
         }
 
-        sb.append("Event brief:\n")
+        sb.append("Event brief (context only — never write these words):\n")
           .append("- vibe: ").append(request.vibe()).append("\n")
           .append("- tone: ").append(request.tone()).append("\n")
           .append("- genre: ").append(request.genre()).append("\n")
           .append("- city: ").append(request.city() == null ? "(unspecified)" : request.city()).append("\n")
-          .append("- date: ").append(request.date()).append("\n");
+          .append("- date: ").append(request.date() == null ? "(unspecified)" : request.date()).append("\n");
         if (request.title()    != null) sb.append("- title:    \"").append(request.title()).append("\"\n");
         if (request.djName()   != null) sb.append("- djName:   \"").append(request.djName()).append("\"\n");
         if (request.location() != null) sb.append("- venue:    \"").append(request.location()).append("\"\n");
@@ -501,18 +567,18 @@ public class AiEventDescriptionService {
         b.append("Variant ").append(n).append(" — hero_type \"").append(mode.wire()).append("\":\n");
         if (typographic) {
             b.append("- No pictorial hero: typography IS the image. Texture: ")
-             .append(nv(dir.accent(), "expressive type texture and grain")).append("\n");
+             .append(visualHint(nv(dir.accent(), "expressive type texture and grain"))).append("\n");
         } else {
-            b.append("- Hero subject: ").append(nv(dir.heroSubject(), vibe.subject())).append("\n");
-            b.append("- Treatment: ").append(nv(dir.accent(), "in-keeping texture")).append("\n");
+            b.append("- Hero subject: ").append(visualHint(nv(dir.heroSubject(), vibe.subject()))).append("\n");
+            b.append("- Treatment: ").append(visualHint(nv(dir.accent(), "in-keeping texture"))).append("\n");
         }
-        b.append("- Layout: ").append(nv(dir.composition(), vibe.composition())).append("\n");
+        b.append("- Layout: ").append(visualHint(nv(dir.composition(), vibe.composition()))).append("\n");
         // The sampled palette twist only applies brandless: brand colours (when set) own colour entirely.
         String palette = notBlank(brandAccent)
                 ? "the organizer's brand colours, lead dominant (see BRAND PALETTE above)"
-                : nv(dir.paletteTwist(), "the vibe palette");
+                : visualHint(nv(dir.paletteTwist(), "the vibe palette"));
         b.append("- Palette: ").append(palette).append("; type: ")
-         .append(nv(dir.typeTreatment(), vibe.typography())).append("\n\n");
+         .append(visualHint(nv(dir.typeTreatment(), vibe.typography()))).append("\n\n");
         return b.toString();
     }
 

@@ -23,13 +23,13 @@ hero_subjects:
     - 'a vertical row of paper strips, each carrying a fragment of a photographed hand'
 compositions:
   - 'hero photo floating in the dead-center of a pure-black field, large type stacked top and bottom margins'
-  - 'monstrously large display title bleeding off the top edge, body crop filling the lower two-thirds'
+  - 'monstrously large display lettering bleeding off the top edge, body crop filling the lower two-thirds'
   - 'vertical text column running down one side while the distorted figure occupies the center'
-  - 'subject sliced into even vertical strips that interleave with the background, title set in the gaps'
+  - 'subject sliced into even vertical strips that interleave with the background, lettering set in the gaps'
   - 'duotone face cropped tight, head bleeding off both side edges, single word straddling the eyes'
-  - 'small caption clusters and a dictionary-style definition anchored bottom-left under a centered hero'
+  - 'centered hero with a calm empty margin at the bottom-left'
   - 'huge letterform stacked one-glyph-per-line down the right margin beside a dark photo'
-  - 'hairline orbit lines and tiny annotation labels scattered around a centered figure on light grain'
+  - 'hairline orbit lines scattered around a centered figure on light grain'
 accents:
   - 'heavy film grain and photocopy noise over the whole frame'
   - 'red/cyan chromatic-aberration glitch on the figure edges'
@@ -45,9 +45,9 @@ palette_twists:
   - 'charcoal field with one acid-yellow text accent'
 type_treatments:
   - 'heavy grotesque sans in acid yellow, tightly set, pinned to top and bottom margins'
-  - 'condensed blackletter / gothic display title in oxblood red'
+  - 'condensed blackletter / gothic display lettering in oxblood red'
   - 'outsized light-weight sans set one glyph per line stacked vertically'
-  - 'chunky black slab capitals sliced and interrupted by the image strips, plus tiny mono caption blocks and barcode/edition marks'
+  - 'chunky black slab capitals sliced and interrupted by the image strips'
 example_prompts:
   - 'Event poster, 4:5 vertical, pure black field edge to edge, heavy film grain over everything. Center: a tight crowd of dancers shot on a slow shutter so the bodies melt into one ghostly grey motion-blurred mass, no sharp faces, just smeared light on shoulders and a hand raised mid-air, crushed blacks swallowing the edges. Top margin: bold grotesque sans title in acid yellow reading "NULL STATE" set tight in two lines. Bottom margin: large yellow date "22.11.2025" with a thin rule and small white caption underneath. Cold, cerebral, deconstructed, monochrome with a single yellow accent.'
   - 'Event poster, 4:5 vertical, warm off-white paper with coarse photocopy grain. Hero: a person clutching their own head with both hands, the fingers and arms smeared into red-and-cyan chromatic-aberration ghosts by long exposure, the face dissolving into blur. Title across the top in condensed oxblood-red blackletter display type reading "DISTORTED SIGNAL", broken to two lines. Tiny red annotation labels float beside the head, a hairline orbit curve loops behind the figure, small mono caption block and a barcode pinned bottom corners. Avant-garde, cold, glitch.'

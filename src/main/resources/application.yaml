@@ -62,14 +62,20 @@ replicate:
   image:
     storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
 
-# Native Ideogram V3 render API (sole renderer). QUALITY for the initial generate; TURBO for the
-# corrective remix that only fixes baked text. Exactly one style control: reference images win,
-# style_preset is the no-refs fallback.
+# Native Ideogram V3 render API (sole renderer). TURBO for generate and remix by default. A render
+# missing required text is regenerated with a new seed; one with only extra text is remixed. Exactly
+# one style control: reference images win, style_preset is the no-refs fallback.
 ideogram:
   api-key: ${IDEOGRAM_API_KEY:}
   base-url: ${IDEOGRAM_BASE_URL:https://api.ideogram.ai}
+  # Sent on generate and remix.
   copyright-detection: ${IDEOGRAM_COPYRIGHT_DETECTION:true}
   max-references: ${IDEOGRAM_MAX_REFERENCES:3}
+  # Socket timeouts of the render client; the read timeout bounds one render or download call.
+  connect-timeout-millis: ${IDEOGRAM_CONNECT_TIMEOUT_MILLIS:10000}
+  read-timeout-millis: ${IDEOGRAM_READ_TIMEOUT_MILLIS:90000}
+  # Wait before the single retry of a render or download that answered 429 or 5xx.
+  retry-backoff-millis: ${IDEOGRAM_RETRY_BACKOFF_MILLIS:2000}
   generate:
     # TURBO by default — QUALITY costs 3x and the text gate + corrective remix are the quality net.
     rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:TURBO}
@@ -97,10 +103,13 @@ poster:
     # Committed per-vibe style cards (sampling pools + palette extracted from the reference flyers),
     # loaded by StyleCardLibrary at startup. Authored once via the @Profile("tools") StyleCardGenerator.
     location: ${POSTER_STYLE_CARDS_LOCATION:classpath*:vibes/style-cards/*.yaml}
+    # Read timeout of the offline style-card generator's OpenRouter client (tools profile only).
+    generator-read-timeout-seconds: ${POSTER_STYLE_CARDS_GENERATOR_READ_TIMEOUT_SECONDS:180}
   text-validation:
     # Legibility + invented-text (vision) gate — HARD. Enforced server-side: the gate fails on ANY
     # missing required string or invented/garbled text, regardless of the model's own `accepted` verdict;
-    # a failure triggers a corrective remix (not a blind reseed). Uses a strong vision model because the
+    # missing (or unjudged) text triggers a fresh generate with a new seed, extra text alone a corrective
+    # remix, and the fewest-errors attempt ships best-effort. Uses a strong vision model because the
     # old gpt-4o-mini under-read dense poster type and false-passed hallucinated text. For a cheaper
     # reader set POSTER_TEXT_VALIDATION_MODEL=google/gemini-2.0-flash-001 (strong OCR, low cost).
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
@@ -121,6 +130,8 @@ poster:
     # Unified regeneration budget shared by the legibility + style gates (total per variant; cost/latency
     # control, keep <= 2). POSTER_TEXT_VALIDATION_MAX_REGENERATIONS is kept as a deprecated alias.
     max-regenerations: ${POSTER_VALIDATION_MAX_REGENERATIONS:${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:2}}
+    # Read timeout of the text and style gates' OpenRouter calls.
+    read-timeout-seconds: ${POSTER_VALIDATION_READ_TIMEOUT_SECONDS:60}
   render:
     # Size of the per-concept variant thread pool (itself capped at 3, one thread per variant).
     # Alias keeps the old REPLICATE_MAX_CONCURRENT working.

@@ -117,6 +117,11 @@ class PosterOrchestratorTest {
         return new PosterTextValidationService.ValidationDecision(false, "missing", List.of("TITLE"), List.of("BLRG"));
     }
 
+    /** Nothing missing, one garbled word: the only failure a corrective remix is sent for. */
+    private static PosterTextValidationService.ValidationDecision textExtraOnly() {
+        return new PosterTextValidationService.ValidationDecision(false, "extra", List.of(), List.of("BLRG"));
+    }
+
     private static PosterStyleValidationService.ValidationDecision styleOk() {
         return new PosterStyleValidationService.ValidationDecision(true, null);
     }
@@ -141,16 +146,16 @@ class PosterOrchestratorTest {
     }
 
     @Test
-    void textFails_thenRemixCorrects_remixPromptCarriesMissingText() {
-        // generate yields {1} (text-fail), remix yields {2} (text-pass) — keyed on the image bytes so the
-        // shared mock stays deterministic across the 3 parallel variant threads.
+    void textFails_thenRemixCorrects_remixPromptCarriesExtraText() {
+        // generate yields {1} (extra text only), remix yields {2} (text-pass) — keyed on the image bytes
+        // so the shared mock stays deterministic across the 3 parallel variant threads.
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
         when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
             byte[] img = inv.getArgument(0);
-            return (img.length > 0 && img[0] == 1) ? textFail() : textOk();
+            return (img.length > 0 && img[0] == 1) ? textExtraOnly() : textOk();
         });
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
@@ -161,7 +166,7 @@ class PosterOrchestratorTest {
         verify(ideogram, times(3)).remix(any(), any(), eq(70), anyLong(), any(), any(), any(), any());
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
         verify(ideogram, times(3)).remix(any(), prompt.capture(), anyInt(), anyLong(), any(), any(), any(), any());
-        assertThat(prompt.getValue()).contains("CORRECTION").contains("TITLE");
+        assertThat(prompt.getValue()).contains("CORRECTION").contains("BLRG");
     }
 
     @Test
@@ -175,14 +180,15 @@ class PosterOrchestratorTest {
         PosterOrchestrator.OrchestrationResult r =
                 orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
-        // 2 remixes (maxRegenerations=2) per variant, then best-effort COMPLETE
-        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        // Missing text: 2 fresh regenerates (maxRegenerations=2) per variant, then best-effort COMPLETE
+        verify(ideogram, times(9)).generate(any(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
         verify(repo, atLeastOnce()).save(saved.capture());
         PosterVariantEntity v = saved.getValue().getVariants().get(0);
         assertThat(v.getValidationVerdict()).isEqualTo("BEST_EFFORT");
-        assertThat(v.getValidationAttemptsJson()).contains("remix");
+        assertThat(v.getValidationAttemptsJson()).contains("regenerate");
     }
 
     /**
@@ -202,7 +208,7 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         // 3 attempts x 3 variants rendered, but exactly one stored object per variant.
-        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(9)).generate(any(), anyLong(), any(), any(), any(), any());
         verify(storage, times(3)).writePng(any(), any());
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.rawUrl()).isNotNull());
     }
@@ -246,14 +252,14 @@ class PosterOrchestratorTest {
 
     @Test
     void brandColors_forwardedToIdeogramGenerateAndRemix() {
-        // generate yields {1} (text-fail) so each variant also exercises the remix path.
+        // generate yields {1} (extra text only) so each variant also exercises the remix path.
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
         when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
             byte[] img = inv.getArgument(0);
-            return (img.length > 0 && img[0] == 1) ? textFail() : textOk();
+            return (img.length > 0 && img[0] == 1) ? textExtraOnly() : textOk();
         });
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
@@ -404,14 +410,14 @@ class PosterOrchestratorTest {
 
     @Test
     void djModeCorrectiveRemixCarriesCharacterRef() {
-        // text gate fails once (image {1}) then accepts (image {2})
+        // text gate fails once on extra text only (image {1}) then accepts (image {2})
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
         when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
             byte[] img = inv.getArgument(0);
-            return (img.length > 0 && img[0] == 1) ? textFail() : textOk();
+            return (img.length > 0 && img[0] == 1) ? textExtraOnly() : textOk();
         });
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
@@ -549,5 +555,314 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ, null);
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
+    }
+
+    private static PosterConcept singleVariantConcept() {
+        return new PosterConcept("brutalist_techno", "colors", List.of(
+                new PosterVariant("typographic", "typographic prompt with TITLE", "4:5", "Design")));
+    }
+
+    private static PosterTextValidationService.ValidationDecision textVerdict(
+            List<String> missing, List<String> extra) {
+        return new PosterTextValidationService.ValidationDecision(false, "gate", missing, extra);
+    }
+
+    // Catches: a poster whose date never rendered is "fixed" by a remix that cannot add the missing text.
+    @Test
+    void missingRequiredText_isRetriedWithFreshGenerateAndNewSeed_notRemix() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return img[0] == 1 ? textVerdict(List.of("25 SEP 2026"), List.of()) : textOk();
+        });
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        ArgumentCaptor<Long> seeds = ArgumentCaptor.forClass(Long.class);
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(2)).generate(any(), seeds.capture(), any(), any(), any(), any());
+        assertThat(seeds.getAllValues().get(1)).isNotEqualTo(seeds.getAllValues().get(0));
+    }
+
+    // Guards: garbled/extra text with nothing missing keeps the cheap corrective remix.
+    @Test
+    void extraTextOnly_isStillRetriedWithRemix() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return img[0] == 1 ? textVerdict(List.of(), List.of("WEVIKA")) : textOk();
+        });
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        verify(ideogram, times(1)).remix(any(), any(), eq(70), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(1)).generate(any(), anyLong(), any(), any(), any(), any());
+    }
+
+    // Catches: when every attempt fails the organizer gets the last render, not the one with fewest text errors.
+    @Test
+    void allAttemptsFail_shipsFewestErrorsRender_notTheLast() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{10}, 1L))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{11}, 2L))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{12}, 3L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{11}, 2L))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{12}, 3L));
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return switch (img[0]) {
+                case 10 -> textVerdict(List.of("DATE"), List.of());
+                case 11 -> textVerdict(List.of("DATE", "VENUE"), List.of("X"));
+                default -> textVerdict(List.of("DATE"), List.of("X", "Y"));
+            };
+        });
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        ArgumentCaptor<byte[]> stored = ArgumentCaptor.forClass(byte[].class);
+        verify(storage).writePng(stored.capture(), any());
+        assertThat(stored.getValue()).containsExactly(10);
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getValue().getVariants().get(0).getValidationVerdict()).isEqualTo("BEST_EFFORT");
+    }
+
+    // ── retry routing, best-of and the journal ────────────────────────────────
+
+    private static PosterTextValidationService.ValidationDecision unevaluated() {
+        return new PosterTextValidationService.ValidationDecision(
+                false, "text validation could not be evaluated: timeout", List.of(), List.of(), false);
+    }
+
+    private static List<String> n(int count, String word) {
+        return java.util.Collections.nCopies(count, word);
+    }
+
+    /** Every render (generate or remix) returns bytes {callIndex} and records the seed it was sent. */
+    private List<Long> rendersNumberedInCallOrder() {
+        List<Long> seeds = new java.util.concurrent.CopyOnWriteArrayList<>();
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any())).thenAnswer(inv -> {
+            seeds.add(inv.getArgument(1));
+            return new IdeogramV3Client.IdeogramResult(new byte[]{(byte) (seeds.size() - 1)}, inv.getArgument(1));
+        });
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any())).thenAnswer(inv -> {
+            seeds.add(inv.getArgument(3));
+            return new IdeogramV3Client.IdeogramResult(new byte[]{(byte) (seeds.size() - 1)}, inv.getArgument(3));
+        });
+        return seeds;
+    }
+
+    private PosterVariantEntity savedVariant() {
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        return saved.getValue().getVariants().get(0);
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode journal(PosterVariantEntity v) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readTree(v.getValidationAttemptsJson());
+    }
+
+    private static List<Integer> shippedIndexes(com.fasterxml.jackson.databind.JsonNode journal) {
+        List<Integer> out = new java.util.ArrayList<>();
+        for (int i = 0; i < journal.size(); i++) {
+            if (journal.get(i).path("shipped").asBoolean(false)) out.add(i);
+        }
+        return out;
+    }
+
+    // Catches: a gate outage triggers an empty-correction remix that reproduces the same image.
+    @Test
+    void unevaluatedGate_isRetriedWithFreshGenerate() {
+        rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return img[0] == 0 ? unevaluated() : textOk();
+        });
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(2)).generate(eq("typographic prompt with TITLE"), anyLong(), any(), any(), any(), any());
+        assertThat(savedVariant().getValidationVerdict()).isEqualTo("ACCEPTED");
+    }
+
+    // Catches: a dateless poster ships over one with a stray word, or the stored seed does not match the
+    // shipped image. Each case orders the losing renders so that "ship the last" or "ship the first" fails.
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.MethodSource("bestOfCases")
+    void bestOf_tieOnTotal_prefersFewerMissing_andShipsItsSeed(
+            String name, List<int[]> missingExtraPerAttempt, int expectedWinner) throws Exception {
+        List<Long> seeds = rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            int[] me = missingExtraPerAttempt.get(((byte[]) inv.getArgument(0))[0]);
+            return textVerdict(n(me[0], "25 SEP 2026"), n(me[1], "WEVIKA"));
+        });
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        ArgumentCaptor<byte[]> stored = ArgumentCaptor.forClass(byte[].class);
+        verify(storage).writePng(stored.capture(), any());
+        assertThat(stored.getValue()).containsExactly(expectedWinner);
+        PosterVariantEntity v = savedVariant();
+        assertThat(v.getValidationVerdict()).isEqualTo("BEST_EFFORT");
+        assertThat(v.getSeed()).isEqualTo(seeds.get(expectedWinner));
+        assertThat(shippedIndexes(journal(v))).containsExactly(expectedWinner);
+    }
+
+    static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> bestOfCases() {
+        return java.util.stream.Stream.of(
+                org.junit.jupiter.params.provider.Arguments.of("equal total, fewer missing wins",
+                        List.of(new int[]{1, 0}, new int[]{0, 1}, new int[]{1, 1}), 1),
+                org.junit.jupiter.params.provider.Arguments.of("fully equal, earliest wins",
+                        List.of(new int[]{0, 1}, new int[]{0, 1}, new int[]{0, 2}), 0));
+    }
+
+    // Catches: an unchecked render (0 missing / 0 extra because nothing was read) ships over a checked one.
+    @Test
+    void unevaluatedAttempt_neverBeatsAnEvaluatedFailure() {
+        rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> switch (((byte[]) inv.getArgument(0))[0]) {
+            case 0 -> textVerdict(List.of("25 SEP 2026"), List.of("X"));
+            case 1 -> textVerdict(List.of("25 SEP 2026"), List.of("X", "Y"));
+            default -> unevaluated();
+        });
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        ArgumentCaptor<byte[]> stored = ArgumentCaptor.forClass(byte[].class);
+        verify(storage).writePng(stored.capture(), any());
+        assertThat(stored.getValue()).containsExactly(0);
+    }
+
+    // Catches: a 503 on the last retry throws away two paid renders and fails the variant.
+    @Test
+    void retryRenderThrows_shipsBestSoFar_asBestEffort() throws Exception {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{0}, 1L))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 2L))
+                .thenThrow(new IllegalStateException("ideogram 503"));
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv ->
+                ((byte[]) inv.getArgument(0))[0] == 0
+                        ? textVerdict(List.of("25 SEP 2026"), List.of())
+                        : textVerdict(List.of("25 SEP 2026"), List.of("X")));
+
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        assertThat(r.posters()).singleElement().satisfies(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
+        ArgumentCaptor<byte[]> stored = ArgumentCaptor.forClass(byte[].class);
+        verify(storage).writePng(stored.capture(), any());
+        assertThat(stored.getValue()).containsExactly(0);
+        PosterVariantEntity v = savedVariant();
+        assertThat(v.getValidationVerdict()).isEqualTo("BEST_EFFORT");
+        com.fasterxml.jackson.databind.JsonNode j = journal(v);
+        assertThat(j).hasSize(3);
+        assertThat(j.get(2).path("render").asText()).isEqualTo("failed");
+        assertThat(j.get(2).path("text").path("evaluated").asBoolean(true)).isFalse();
+        assertThat(j.get(2).path("text").path("reason").asText()).contains("ideogram 503");
+        assertThat(shippedIndexes(j)).containsExactly(0);
+    }
+
+    // Catches: a DJ poster loses the DJ's face when missing text is regenerated.
+    @Test
+    void djMode_missingText_regenerateCarriesCharacterRef() {
+        rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv ->
+                ((byte[]) inv.getArgument(0))[0] == 0 ? textVerdict(List.of("25 SEP 2026"), List.of()) : textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 7L, List.of(), null, DJ, null);
+
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(2)).generate(anyString(), anyLong(), anyList(), any(), anyList(),
+                argThat(ref -> ref != null && "dj-photo.jpg".equals(ref.filename())));
+    }
+
+    // Catches: an auditor cannot tell which attempt shipped, or why a retry was a fresh render.
+    @Test
+    void journal_marksShippedEntry_andRecordsRegenerateMode() throws Exception {
+        List<Long> seeds = rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv ->
+                ((byte[]) inv.getArgument(0))[0] == 0 ? textVerdict(List.of("25 SEP 2026"), List.of()) : textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        PosterVariantEntity v = savedVariant();
+        com.fasterxml.jackson.databind.JsonNode j = journal(v);
+        assertThat(j).hasSize(2);
+        assertThat(j.get(0).path("mode").asText()).isEqualTo("generate");
+        assertThat(j.get(0).path("text").path("evaluated").asBoolean(false)).isTrue();
+        assertThat(j.get(0).path("text").path("missing").asInt(-1)).isEqualTo(1);
+        assertThat(j.get(0).path("text").path("extra").asInt(-1)).isEqualTo(0);
+        assertThat(j.get(1).path("mode").asText()).isEqualTo("regenerate");
+        assertThat(j.get(1).path("seed").asLong()).isEqualTo(seeds.get(1));
+        assertThat(shippedIndexes(j)).containsExactly(1);
+        assertThat(v.getSeed()).isEqualTo(seeds.get(1));
+    }
+
+    // Catches: a gate description of unreadable marks quoted into a remix correction, which Ideogram
+    // can render as the literal phrase; such failures get a fresh render instead.
+    @Test
+    void unreadableMarksDescription_isRegenerated_neverQuotedIntoARemix() {
+        rendersNumberedInCallOrder();
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv ->
+                ((byte[]) inv.getArgument(0))[0] == 0
+                        ? textVerdict(List.of(), List.of("[fine print, bottom-left]"))
+                        : textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 1L, List.of(), null, null, null);
+
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(ideogram, times(2)).generate(any(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void correctionPrompt_namesGarbledWords_butNeverQuotesADescription() {
+        String c = PosterOrchestrator.buildCorrectionPrompt("p",
+                textVerdict(List.of(), List.of("WEVIKA", "[fine print, bottom-left]")));
+
+        assertThat(c).contains("\"WEVIKA\"").doesNotContain("fine print");
+    }
+
+    // Catches: the journal or the stored seed pointing at the pre-regrade render when the regraded
+    // one shipped (or the reverse), so the shipped image cannot be traced or reproduced.
+    @org.junit.jupiter.params.ParameterizedTest(name = "regrade kept: {0}")
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void paletteRegrade_marksOnlyTheShippedEntry_andStoresItsSeed(boolean regradeKept) throws Exception {
+        List<Long> seeds = new java.util.concurrent.CopyOnWriteArrayList<>();
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any())).thenAnswer(inv -> {
+            seeds.add(inv.getArgument(1));
+            return new IdeogramV3Client.IdeogramResult(new byte[]{2}, inv.getArgument(1));
+        });
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), isNull())).thenAnswer(inv -> {
+            seeds.add(inv.getArgument(3));
+            return new IdeogramV3Client.IdeogramResult(new byte[]{5}, inv.getArgument(3));
+        });
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv ->
+                ((byte[]) inv.getArgument(0))[0] == 5 && !regradeKept ? textFail() : textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
+        orchestrator().run(UUID.randomUUID(), req(), singleVariantConcept(), 7L, List.of(), brand, DJ, null);
+
+        PosterVariantEntity v = savedVariant();
+        com.fasterxml.jackson.databind.JsonNode j = journal(v);
+        List<Integer> shipped = shippedIndexes(j);
+        assertThat(shipped).hasSize(1);
+        assertThat(j.get(shipped.get(0)).path("mode").asText()).isEqualTo(regradeKept ? "palette-regrade" : "generate");
+        assertThat(v.getSeed()).isEqualTo(seeds.get(regradeKept ? 1 : 0));
     }
 }

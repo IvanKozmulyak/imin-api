@@ -4,7 +4,6 @@ import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.math.BigDecimal;
 import java.util.UUID;
 
 import static jakarta.persistence.EnumType.STRING;
@@ -50,9 +49,6 @@ public class PosterVariantEntity {
     @Enumerated(STRING)
     @Column(nullable = false, length = 20)
     private PosterVariantStatus status;
-
-    @Column(name = "ideogram_cost_eur", precision = 10, scale = 4)
-    private BigDecimal ideogramCostEur;
 
     @Column(name = "failure_reason", columnDefinition = "TEXT")
     private String failureReason;

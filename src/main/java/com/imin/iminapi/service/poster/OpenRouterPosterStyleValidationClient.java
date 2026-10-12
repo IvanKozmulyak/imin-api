@@ -38,11 +38,12 @@ public class OpenRouterPosterStyleValidationClient implements PosterStyleValidat
     public OpenRouterPosterStyleValidationClient(
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
-            @Value("${poster.style-validation.model:openai/gpt-4o-mini}") String model) {
+            @Value("${poster.style-validation.model:openai/gpt-4o-mini}") String model,
+            @Value("${poster.validation.read-timeout-seconds:60}") long readTimeoutSeconds) {
         this.objectMapper = new ObjectMapper();
         this.model = model;
         this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
-                baseUrl, apiKey, "enabling poster style validation");
+                baseUrl, apiKey, "enabling poster style validation", java.time.Duration.ofSeconds(readTimeoutSeconds));
     }
 
     @Override

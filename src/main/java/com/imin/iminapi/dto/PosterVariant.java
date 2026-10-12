@@ -11,5 +11,5 @@ public record PosterVariant(
         @JsonProperty("hero_type")       String heroType,         // people | object | typographic
         @JsonProperty("ideogram_prompt") String ideogramPrompt,
         @JsonProperty("aspect_ratio")    String aspectRatio,      // always "4:5" (portrait poster)
-        @JsonProperty("style_type")      String styleType         // always "Design"
+        @JsonProperty("type_style")      String typeStyle         // short lettering-style clause
 ) {}

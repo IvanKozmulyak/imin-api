@@ -43,7 +43,7 @@ public class PosterTextValidationService {
             log.warn("Text gate could not be evaluated; treating as not-accepted: {}", e.toString());
             return new ValidationDecision(false,
                     "text validation could not be evaluated: " + e.getMessage(),
-                    List.of(), List.of());
+                    List.of(), List.of(), false);
         }
         List<String> missing = result.missingRequired() == null ? List.of() : result.missingRequired();
         List<String> extra = result.extraText() == null ? List.of() : result.extraText();
@@ -60,9 +60,16 @@ public class PosterTextValidationService {
                 missing, extra);
     }
 
+    /** {@code evaluated} is false when the gate could not judge the image (no verdict at all). */
     public record ValidationDecision(
             boolean accepted, String reason,
-            java.util.List<String> missingRequired, java.util.List<String> extraText) {
+            java.util.List<String> missingRequired, java.util.List<String> extraText,
+            boolean evaluated) {
+        public ValidationDecision(boolean accepted, String reason,
+                                  java.util.List<String> missingRequired, java.util.List<String> extraText) {
+            this(accepted, reason, missingRequired, extraText, true);
+        }
+
         public static ValidationDecision pass() {
             return new ValidationDecision(true, null, java.util.List.of(), java.util.List.of());
         }

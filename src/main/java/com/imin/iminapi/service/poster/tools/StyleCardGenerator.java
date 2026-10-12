@@ -105,13 +105,14 @@ public class StyleCardGenerator implements CommandLineRunner {
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
             @Value("${poster.style-cards.generator-model:${openrouter.model:openai/gpt-4o-mini}}") String model,
-            @Value("${poster.style-cards.generator-out-dir:./target/style-cards}") String outDir) {
+            @Value("${poster.style-cards.generator-out-dir:./target/style-cards}") String outDir,
+            @Value("${poster.style-cards.generator-read-timeout-seconds:180}") long readTimeoutSeconds) {
         this.vibeLibrary = vibeLibrary;
         this.referenceLibrary = referenceLibrary;
         this.model = model;
         this.outDir = Path.of(outDir);
         this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
-                baseUrl, apiKey, "running the style-card generator");
+                baseUrl, apiKey, "running the style-card generator", java.time.Duration.ofSeconds(readTimeoutSeconds));
     }
 
     @Override

@@ -40,11 +40,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Renders the art director's 3 concept variants via the native Ideogram V3 API, validates each
  * with the vision gates, and persists the result.
  *
- * <p>Per variant: generate once; run the HARD text gate; on failure feed the failing image back to
- * Ideogram's remix endpoint with a correction prompt built from the gate's missing/extra text, up to
- * {@code poster.validation.max-regenerations} times, then accept best-effort. The SOFT style gate is
- * advisory — a style-only failure is accepted best-effort without another render. Text is fully baked
- * by the model; there is no QR/address/Satori overlay.
+ * <p>Per variant: generate once; run the HARD text gate; on failure retry up to
+ * {@code poster.validation.max-regenerations} times. A render missing required text (or one the gate
+ * could not judge) is regenerated from the original prompt with a new seed, because a remix keeps the
+ * layout that dropped the text; a render with only extra/garbled text is remixed with a correction
+ * prompt. When every attempt fails, the attempt with the fewest text errors ships best-effort, and a
+ * retry render that throws ships the best attempt so far. The SOFT style gate is advisory — a
+ * style-only failure is accepted best-effort without another render. Text is fully baked by the
+ * model; there is no QR/address/Satori overlay.
  */
 @Service
 public class PosterOrchestrator {
@@ -55,6 +58,9 @@ public class PosterOrchestrator {
     private static final long MAX_REF_TOTAL_BYTES = 10L * 1024 * 1024; // Ideogram cap
     private static final String VERDICT_ACCEPTED = "ACCEPTED";
     private static final String VERDICT_BEST_EFFORT = "BEST_EFFORT";
+    private static final String MODE_GENERATE = "generate";
+    private static final String MODE_REGENERATE = "regenerate";
+    private static final String MODE_REMIX = "remix";
     private static final AtomicInteger POOL_THREAD_SEQ = new AtomicInteger();
 
     private final IdeogramV3Client ideogramClient;
@@ -233,7 +239,49 @@ public class PosterOrchestrator {
         }
     }
 
-    /** Generate → text gate (hard, corrective remix) → style gate (soft). */
+    /**
+     * A failed attempt kept as a best-effort fallback. A class, not a record: it carries the render
+     * bytes, and records compare arrays by reference.
+     */
+    static final class Candidate {
+        final byte[] bytes;
+        final long seed;
+        final int journalIndex;
+        final int missing;
+        final int extra;
+        final boolean evaluated;
+        final int attempt;
+
+        Candidate(byte[] bytes, long seed, int journalIndex, int missing, int extra, boolean evaluated, int attempt) {
+            this.bytes = bytes;
+            this.seed = seed;
+            this.journalIndex = journalIndex;
+            this.missing = missing;
+            this.extra = extra;
+            this.evaluated = evaluated;
+            this.attempt = attempt;
+        }
+    }
+
+    /**
+     * Whether {@code challenger} should replace {@code incumbent} as the best-effort render: an
+     * evaluated attempt beats an unevaluated one, then fewer text errors, then fewer missing
+     * required strings (a stray word hurts less than a missing date), then the earlier attempt.
+     */
+    static boolean isBetter(Candidate challenger, Candidate incumbent) {
+        if (incumbent == null) return true;
+        if (challenger.evaluated != incumbent.evaluated) return challenger.evaluated;
+        int byTotal = Integer.compare(challenger.missing + challenger.extra, incumbent.missing + incumbent.extra);
+        if (byTotal != 0) return byTotal < 0;
+        int byMissing = Integer.compare(challenger.missing, incumbent.missing);
+        if (byMissing != 0) return byMissing < 0;
+        return challenger.attempt < incumbent.attempt;
+    }
+
+    /**
+     * Generate → text gate (hard: regenerate on missing/unjudged text, remix on extra text only,
+     * best-of on exhaustion) → style gate (soft).
+     */
     private GeneratedPoster renderWithValidation(
             PosterVariantEntity entity, PosterVariant variant, long baseSeed,
             EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand,
@@ -247,18 +295,29 @@ public class PosterOrchestrator {
         long seed = baseSeed;
         byte[] image = null;
         String correction = null;
+        String mode = MODE_GENERATE;
+        Candidate best = null;
 
         for (int attempt = 0; attempt <= maxRegenerations; attempt++) {
             boolean last = attempt == maxRegenerations;
             entity.setSeed(seed);
 
             log.info("[ideogram call] path={} hero_type={} attempt={}/{} seed={}",
-                    attempt == 0 ? "generate" : "remix", variant.heroType(), attempt, maxRegenerations, seed);
-            IdeogramV3Client.IdeogramResult render = (attempt == 0)
-                    ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
-                            brandPalette, characterRef)
-                    : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
-                            brandPalette, characterRef);
+                    mode, variant.heroType(), attempt, maxRegenerations, seed);
+            IdeogramV3Client.IdeogramResult render;
+            try {
+                render = MODE_REMIX.equals(mode)
+                        ? ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(),
+                                style.preset(), brandPalette, characterRef)
+                        : ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
+                                brandPalette, characterRef);
+            } catch (RuntimeException e) {
+                if (attempt == 0 || best == null) throw e;
+                attempts.add(failedRenderJson(attempt, seed, mode, e));
+                log.warn("Retry render failed on attempt {}; shipping the best attempt so far: {}",
+                        attempt, e.getMessage());
+                return acceptBest(entity, best, attempts, brand);
+            }
             image = render.imageBytes();
             // Deliberately NOT stored yet: every superseded retry render used to leave an
             // unreferenced, immutable R2 object that nothing ever reclaimed. accept() performs the
@@ -267,13 +326,21 @@ public class PosterOrchestrator {
 
             PosterTextValidationService.ValidationDecision text = textValidation.validateOrExplain(image, spec);
             if (!text.accepted()) {
-                attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, null));
+                int missing = sizeOf(text.missingRequired());
+                attempts.add(attemptJson(attempt, seed, mode, text, null));
+                Candidate candidate = new Candidate(image, seed, attempts.size() - 1, missing,
+                        sizeOf(text.extraText()), text.evaluated(), attempt);
+                if (isBetter(candidate, best)) best = candidate;
                 if (last) {
-                    log.warn("Text gate still failing after {} regenerations; accepting best-effort: {}",
-                            maxRegenerations, text.reason());
-                    return accept(entity, image, VERDICT_BEST_EFFORT, attempts, brand);
+                    log.warn("Text gate still failing after {} regenerations; shipping the best attempt ({}): {}",
+                            maxRegenerations, best.attempt, text.reason());
+                    return acceptBest(entity, best, attempts, brand);
                 }
-                correction = buildCorrectionPrompt(variant.ideogramPrompt(), text);
+                // A remix keeps the layout that dropped the text, so missing text needs a fresh render;
+                // unreadable marks have no words a correction could name, so they get one too.
+                mode = (!text.evaluated() || missing > 0 || describesUnreadableText(text.extraText()))
+                        ? MODE_REGENERATE : MODE_REMIX;
+                correction = MODE_REMIX.equals(mode) ? buildCorrectionPrompt(variant.ideogramPrompt(), text) : null;
                 seed = nextSeed(seed);
                 continue;
             }
@@ -281,13 +348,21 @@ public class PosterOrchestrator {
             // DJ mode: the char-ref render couldn't carry color_palette (Ideogram rejects the
             // combination), so apply the brand palette in a separate regrade pass BEFORE the
             // style gate, so the gate judges the colours that actually ship.
+            boolean regradeShipped = false;
             if (characterRef != null && paletteRegradeEnabled && !brandPalette.isEmpty()) {
-                image = paletteRegrade(image, seed, brandPalette, spec, attempts);
+                long regradeSeed = nextSeed(seed);
+                byte[] graded = paletteRegrade(image, regradeSeed, brandPalette, spec, attempts);
+                // paletteRegrade hands back the very same array when it falls back to the pre-regrade render.
+                regradeShipped = graded != image;
+                image = graded;
+                if (regradeShipped) entity.setSeed(regradeSeed);
             }
 
             PosterStyleValidationService.ValidationDecision styleDecision =
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
-            attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
+            Map<String, Object> entry = attemptJson(attempt, seed, mode, text, styleDecision);
+            attempts.add(entry);
+            if (!regradeShipped) entry.put("shipped", true);
             if (styleDecision.accepted()) {
                 return accept(entity, image, VERDICT_ACCEPTED, attempts, brand);
             }
@@ -298,6 +373,18 @@ public class PosterOrchestrator {
         throw new IllegalStateException("render-with-validation loop exhausted");
     }
 
+    /** Ships the best failed attempt: its bytes, its seed, and the journal marker on its entry. */
+    private GeneratedPoster acceptBest(PosterVariantEntity entity, Candidate best,
+                                       List<Map<String, Object>> attempts, BrandSnapshot brand) {
+        entity.setSeed(best.seed);
+        attempts.get(best.journalIndex).put("shipped", true);
+        return accept(entity, best.bytes, VERDICT_BEST_EFFORT, attempts, brand);
+    }
+
+    private static int sizeOf(List<String> items) {
+        return items == null ? 0 : items.size();
+    }
+
     /**
      * DJ-mode palette pass: re-grade the text-accepted render in one extra TURBO remix WITHOUT
      * the character reference but WITH the structural {@code color_palette} — the combination the
@@ -306,17 +393,18 @@ public class PosterOrchestrator {
      * the regrade; if the colours came at the cost of the typography (or the call fails), the
      * pre-regrade render ships instead — this pass can improve colour, never lose a poster.
      */
-    private byte[] paletteRegrade(byte[] image, long seed, List<String> brandPalette,
+    private byte[] paletteRegrade(byte[] image, long regradeSeed, List<String> brandPalette,
                                   PosterTextSpec spec, List<Map<String, Object>> attempts) {
-        long regradeSeed = nextSeed(seed);
         try {
             IdeogramV3Client.IdeogramResult regraded = ideogramClient.remix(
                     image, buildPaletteRegradePrompt(brandPalette), paletteRegradeWeight, regradeSeed,
                     List.of(), null, brandPalette, null);
             PosterTextValidationService.ValidationDecision text =
                     textValidation.validateOrExplain(regraded.imageBytes(), spec);
-            attempts.add(attemptJson(attempts.size(), regradeSeed, "palette-regrade", text, null));
+            Map<String, Object> entry = attemptJson(attempts.size(), regradeSeed, "palette-regrade", text, null);
+            attempts.add(entry);
             if (text.accepted()) {
+                entry.put("shipped", true);
                 return regraded.imageBytes();
             }
             log.warn("Palette regrade broke the text; shipping the pre-regrade render: {}", text.reason());
@@ -392,12 +480,24 @@ public class PosterOrchestrator {
             c.append("Render these exact strings, correctly spelled and clearly legible: ")
              .append(quoteJoin(text.missingRequired())).append(". ");
         }
-        if (text.extraText() != null && !text.extraText().isEmpty()) {
+        List<String> words = text.extraText() == null ? List.of()
+                : text.extraText().stream().filter(s -> !isDescription(s)).toList();
+        if (!words.isEmpty()) {
             c.append("Remove these invented or garbled words: ")
-             .append(quoteJoin(text.extraText())).append(". ");
+             .append(quoteJoin(words)).append(". ");
         }
         c.append("Keep the composition, hero, colors, and layout identical — only fix the text.");
         return c.toString();
+    }
+
+    /** The text gate reports unreadable marks as a bracketed description, e.g. "[fine print, bottom-left]". */
+    static boolean isDescription(String extra) {
+        String s = extra == null ? "" : extra.trim();
+        return s.length() >= 2 && s.startsWith("[") && s.endsWith("]");
+    }
+
+    private static boolean describesUnreadableText(List<String> extra) {
+        return extra != null && extra.stream().anyMatch(PosterOrchestrator::isDescription);
     }
 
     private static String quoteJoin(List<String> items) {
@@ -414,6 +514,9 @@ public class PosterOrchestrator {
         Map<String, Object> t = new LinkedHashMap<>();
         t.put("accepted", text.accepted());
         t.put("reason", text.reason() == null ? "" : text.reason());
+        t.put("evaluated", text.evaluated());
+        t.put("missing", sizeOf(text.missingRequired()));
+        t.put("extra", sizeOf(text.extraText()));
         m.put("text", t);
         Map<String, Object> s = new LinkedHashMap<>();
         if (style == null) {
@@ -423,6 +526,20 @@ public class PosterOrchestrator {
             s.put("reason", style.reason() == null ? "" : style.reason());
         }
         m.put("style", s);
+        return m;
+    }
+
+    private static Map<String, Object> failedRenderJson(int attempt, long seed, String mode, RuntimeException e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("attempt", attempt);
+        m.put("seed", seed);
+        m.put("mode", mode);
+        m.put("render", "failed");
+        Map<String, Object> t = new LinkedHashMap<>();
+        t.put("accepted", false);
+        t.put("evaluated", false);
+        t.put("reason", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        m.put("text", t);
         return m;
     }
 

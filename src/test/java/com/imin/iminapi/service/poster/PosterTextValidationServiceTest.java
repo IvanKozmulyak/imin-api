@@ -156,6 +156,7 @@ class PosterTextValidationServiceTest {
         assertThat(decision.reason()).contains("could not be evaluated");
         assertThat(decision.missingRequired()).isEmpty();
         assertThat(decision.extraText()).isEmpty();
+        assertThat(decision.evaluated()).isFalse();
     }
 
     @Test

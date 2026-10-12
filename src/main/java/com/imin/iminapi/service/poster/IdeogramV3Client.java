@@ -7,11 +7,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.net.URI;
 import java.time.Duration;
@@ -20,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
@@ -42,6 +45,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * <p>When a non-null {@code characterRef} is supplied (DJ mode), the character reference image is
  * attached; {@code color_palette} is then NEVER sent (the API rejects the combination), while seed
  * and style control are emitted only when their probe flag is {@code true} (defaults: false).
+ *
+ * <p>The render POST and the image download are each retried once, after
+ * {@code ideogram.retry-backoff-millis}, on a 429 or 5xx answer; other 4xx and transport errors
+ * (including timeouts) are not retried.
  */
 @Component
 public class IdeogramV3Client {
@@ -71,6 +78,7 @@ public class IdeogramV3Client {
     private final boolean copyrightDetection;
     private final boolean characterSeed;
     private final boolean characterStyleControl;
+    private final long retryBackoffMillis;
 
     public IdeogramV3Client(
             RestClient ideogramRestClient,
@@ -78,13 +86,15 @@ public class IdeogramV3Client {
             @Value("${ideogram.remix.rendering-speed:TURBO}") String remixSpeed,
             @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection,
             @Value("${ideogram.character.seed:false}") boolean characterSeed,
-            @Value("${ideogram.character.style-control:false}") boolean characterStyleControl) {
+            @Value("${ideogram.character.style-control:false}") boolean characterStyleControl,
+            @Value("${ideogram.retry-backoff-millis:2000}") long retryBackoffMillis) {
         this.ideogramRestClient = ideogramRestClient;
         this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "TURBO" : generateSpeed;
         this.remixSpeed = (remixSpeed == null || remixSpeed.isBlank()) ? "TURBO" : remixSpeed;
         this.copyrightDetection = copyrightDetection;
         this.characterSeed = characterSeed;
         this.characterStyleControl = characterStyleControl;
+        this.retryBackoffMillis = Math.max(0, retryBackoffMillis);
     }
 
     public record IdeogramResult(byte[] imageBytes, long seed) {}
@@ -136,6 +146,8 @@ public class IdeogramV3Client {
         parts.add("aspect_ratio", ASPECT_RATIO);
         parts.add("rendering_speed", remixSpeed);
         parts.add("magic_prompt", MAGIC_PROMPT);
+        // Accepted on remix too: probed against the live API on 2026-10-12 (200).
+        parts.add("enable_copyright_detection", String.valueOf(copyrightDetection));
         applyConditional(parts, seed, styleRefs, stylePreset, paletteHexes, characterRef);
         return parts;
     }
@@ -229,23 +241,46 @@ public class IdeogramV3Client {
     /** POST the multipart body, then download the returned image URL (it expires quickly). */
     private byte[] post(String path, MultiValueMap<String, Object> parts) {
         Instant start = Instant.now();
-        GenerateResponse resp = ideogramRestClient.post()
+        GenerateResponse resp = withOneRetry(path, () -> ideogramRestClient.post()
                 .uri(path)
                 .contentType(MediaType.MULTIPART_FORM_DATA)
                 .body(parts)
                 .retrieve()
-                .body(GenerateResponse.class);
+                .body(GenerateResponse.class));
         String url = resp == null || resp.data() == null || resp.data().isEmpty() ? null : resp.data().get(0).url();
         if (url == null || url.isBlank()) {
             throw new IllegalStateException("Ideogram returned no image URL");
         }
-        byte[] bytes = ideogramRestClient.get().uri(URI.create(url)).retrieve().body(byte[].class);
+        byte[] bytes = withOneRetry("image download",
+                () -> ideogramRestClient.get().uri(URI.create(url)).retrieve().body(byte[].class));
         if (bytes == null || bytes.length == 0) {
             throw new IllegalStateException("Ideogram image download was empty: " + url);
         }
         log.info("[ideogram v3] {} -> {} KB in {} ms", path, bytes.length / 1024,
                 Duration.between(start, Instant.now()).toMillis());
         return bytes;
+    }
+
+    /** One retry on 429/5xx. A 5xx after the render may bill twice; bounded to one extra call. */
+    private <T> T withOneRetry(String what, Supplier<T> call) {
+        try {
+            return call.get();
+        } catch (RestClientResponseException e) {
+            if (!isRetryable(e.getStatusCode())) throw e;
+            log.warn("[ideogram v3] {} answered {}; retrying once in {} ms",
+                    what, e.getStatusCode().value(), retryBackoffMillis);
+            try {
+                Thread.sleep(retryBackoffMillis);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw e;
+            }
+            return call.get();
+        }
+    }
+
+    private static boolean isRetryable(HttpStatusCode status) {
+        return status.value() == 429 || status.is5xxServerError();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

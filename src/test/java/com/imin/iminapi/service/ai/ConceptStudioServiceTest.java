@@ -544,4 +544,69 @@ class ConceptStudioServiceTest {
         // response reflects DJ photo was used
         assertThat(r.djPhotoUsed()).isTrue();
     }
+
+    // ── overview failure after a paid render ──────────────────────────────────
+
+    // Catches: a naming-LLM outage after a paid render ends in a 502/500 and the organizer loses the
+    // posters; the fallback carries only the organizer's own title and capacity, never invented values.
+    @org.junit.jupiter.params.ParameterizedTest(name = "overview {0}, title+capacity given: {1}")
+    @org.junit.jupiter.params.provider.CsvSource({"throws, true", "throws, false", "null, true", "null, false"})
+    void overviewFailsAfterRender_returnsPostersWithRequestDerivedFallback(String failure, boolean withRequestFacts) {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        if (failure.equals("throws")) {
+            when(overviewLlm.generate(any(), any())).thenThrow(new IllegalStateException("overview LLM 503"));
+        } else {
+            when(overviewLlm.generate(any(), any())).thenReturn(null);
+        }
+
+        ConceptResponse r = sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", withRequestFacts ? 300 : null, null,
+                withRequestFacts ? "  ANTRUM VII " : null, null, null, null, null, null, null, null));
+
+        assertThat(r.posters()).extracting("url").containsExactly("u1");
+        assertThat(r.name()).isEqualTo(withRequestFacts ? "ANTRUM VII" : null);
+        assertThat(r.description()).isNull();
+        assertThat(r.palette()).isEmpty();
+        assertThat(r.suggestedCapacity()).isEqualTo(withRequestFacts ? 300 : null);
+        assertThat(r.confidencePct()).isNull();
+        ArgumentCaptor<GeneratedEvent> saved = ArgumentCaptor.forClass(GeneratedEvent.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getValue().getStatus()).isEqualTo(GeneratedEventStatus.COMPLETE);
+    }
+
+    // Catches: the overview fallback swallowing a real render failure, so the organizer is told it worked.
+    @Test
+    void renderFailure_stillReturns502() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("All 3 poster variants failed"));
+
+        assertThatThrownBy(() -> sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null, null)))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.status().value()).isEqualTo(502));
+        verify(overviewLlm, never()).generate(any(), any());
+    }
+
+    // Catches: a fabricated default date printed large on the organizer's poster when they gave none.
+    @Test
+    void create_withoutEventDate_postersCarryNoDate() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                "ANTRUM VII", null, "Void Club", null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(orchestrator).run(any(), cap.capture(), any(), anyLong(), any(), any(), any(), any());
+        com.imin.iminapi.dto.PosterTextSpec spec =
+                new com.imin.iminapi.service.poster.PosterTextSpecFactory().from(cap.getValue());
+        assertThat(spec.required()).containsExactly("ANTRUM VII", "Void Club");
+        assertThat(spec.textSentence()).isEqualTo("A finished event poster whose only text is \"ANTRUM VII\" "
+                + "as the huge headline and the venue \"Void Club\" in smaller type below the title.");
+    }
 }

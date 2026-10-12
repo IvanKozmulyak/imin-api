@@ -15,11 +15,17 @@ public class PosterTextSpecFactory {
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
 
     public PosterTextSpec from(EventCreatorRequest r) {
-        List<String> required = new ArrayList<>();
-        if (has(r.title())) required.add(r.title().trim());
-        if (r.date() != null) required.add(r.date().format(DATE).toUpperCase(Locale.ENGLISH));
-        if (has(r.location())) required.add(r.location().trim());
+        String title = has(r.title()) ? r.title().trim() : null;
+        String date = r.date() == null ? null : r.date().format(DATE).toUpperCase(Locale.ENGLISH);
+        String venue = has(r.location()) ? r.location().trim() : null;
 
+        List<String> required = new ArrayList<>();
+        if (title != null) required.add(title);
+        if (date != null) required.add(date);
+        if (venue != null) required.add(venue);
+
+        // DJ names and the city stay allowed for the gate but are never asked for: in DJ mode the
+        // character reference carries the DJ, and extra strings were where invented text crept in.
         List<String> allowed = new ArrayList<>(required);
         if (has(r.city())) allowed.add(r.city().trim().toUpperCase(Locale.ENGLISH));
         if (has(r.djName())) {
@@ -29,27 +35,42 @@ public class PosterTextSpecFactory {
                     .forEach(allowed::add);
         }
 
-        String prompt = """
-                EXACT TEXT CONTRACT:
-                Render the following required text exactly as written, as the visible poster typography:
-                %s
+        return new PosterTextSpec(List.copyOf(required), List.copyOf(allowed), textSentence(title, date, venue));
+    }
 
-                You may also use these optional text elements if they fit the composition:
-                %s
+    /**
+     * The render prompt's first sentence: the renderer drops text it reads late, so every present
+     * element is quoted up front, top to bottom (title, date, venue), and nothing else is named.
+     */
+    static String textSentence(String title, String date, String venue) {
+        List<String> parts = new ArrayList<>();
+        String above = null;
+        if (title != null) {
+            parts.add("\"" + title + "\" as the huge headline");
+            above = "title";
+        }
+        if (date != null) {
+            parts.add(above == null
+                    ? "the date \"" + date + "\" as the huge headline"
+                    : "the date \"" + date + "\" in large bold type directly under the " + above);
+            above = "date";
+        }
+        if (venue != null) {
+            parts.add(above == null
+                    ? "the venue \"" + venue + "\" as the huge headline"
+                    : "the venue \"" + venue + "\" in smaller type below the " + above);
+        }
+        if (parts.isEmpty()) return "A finished event poster with no text at all.";
+        return "A finished event poster whose only text is " + joinWithAnd(parts) + ".";
+    }
 
-                No other words, filler text, lorem ipsum, fake letters, pseudo-text, logos, watermarks, or invented copy.
-                If a text element is too long, reduce font size or change layout. Do not misspell it.
-                """.formatted(quoteLines(required), quoteLines(allowed));
-
-        return new PosterTextSpec(List.copyOf(required), List.copyOf(allowed), prompt);
+    private static String joinWithAnd(List<String> parts) {
+        if (parts.size() == 1) return parts.get(0);
+        if (parts.size() == 2) return parts.get(0) + " and " + parts.get(1);
+        return String.join(", ", parts.subList(0, parts.size() - 1)) + ", and " + parts.get(parts.size() - 1);
     }
 
     private static boolean has(String value) {
         return value != null && !value.isBlank();
-    }
-
-    private static String quoteLines(List<String> values) {
-        if (values.isEmpty()) return "- none";
-        return values.stream().map(v -> "- \"" + v + "\"").reduce((a, b) -> a + "\n" + b).orElse("- none");
     }
 }

@@ -1,6 +1,10 @@
 package com.imin.iminapi.config;
 
+import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
+import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.web.client.RestClient;
+
+import java.time.Duration;
 
 /**
  * The one place a raw OpenRouter {@code RestClient} is built.
@@ -16,18 +20,24 @@ import org.springframework.web.client.RestClient;
  */
 public final class OpenRouterRestClients {
 
+    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
+
     private OpenRouterRestClients() {}
 
     /**
      * A bearer-authenticated client rooted at OpenRouter's {@code /v1}.
      *
-     * @param purpose named in the error thrown when the key is missing, so a misconfigured deploy
-     *                says which feature it just disabled
+     * @param purpose     named in the error thrown when the key is missing, so a misconfigured deploy
+     *                    says which feature it just disabled
+     * @param readTimeout how long one call may wait for the answer; the static builder bypasses Boot's
+     *                    HTTP client settings, so without it a hung socket blocks the caller forever
      */
-    public static RestClient v1(String baseUrl, String apiKey, String purpose) {
+    public static RestClient v1(String baseUrl, String apiKey, String purpose, Duration readTimeout) {
         String normalized = v1BaseUrl(baseUrl);
         return RestClient.builder()
                 .baseUrl(normalized)
+                .requestFactory(ClientHttpRequestFactoryBuilder.detect()
+                        .build(HttpClientSettings.defaults().withTimeouts(CONNECT_TIMEOUT, readTimeout)))
                 .requestInterceptor((request, body, execution) -> {
                     if (apiKey == null || apiKey.isBlank()) {
                         throw new IllegalStateException(

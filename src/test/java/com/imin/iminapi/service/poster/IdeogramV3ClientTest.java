@@ -11,9 +11,11 @@ import org.springframework.web.client.RestClient;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class IdeogramV3ClientTest {
@@ -28,12 +30,12 @@ class IdeogramV3ClientTest {
         RestClient.Builder builder = RestClient.builder().baseUrl("https://api.ideogram.ai");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         IdeogramV3Client client = new IdeogramV3Client(builder.build(), "QUALITY", "TURBO", true,
-                false, false);
+                false, false, 0L);
         return new Harness(client, server);
     }
 
     private IdeogramV3Client clientWithFlags(boolean seed, boolean style) {
-        return new IdeogramV3Client(null, "QUALITY", "TURBO", true, seed, style);
+        return new IdeogramV3Client(null, "QUALITY", "TURBO", true, seed, style, 0L);
     }
 
     @Test
@@ -155,6 +157,8 @@ class IdeogramV3ClientTest {
                 .andExpect(content().string(Matchers.containsString("CORRECTION")))
                 .andExpect(content().string(Matchers.containsString("name=\"magic_prompt\"")))
                 .andExpect(content().string(Matchers.containsString("OFF")))
+                .andExpect(content().string(Matchers.matchesPattern(
+                        "(?s).*name=\"enable_copyright_detection\"\\r\\n(?:[^\\r\\n]+\\r\\n)*\\r\\ntrue\\r\\n.*")))
                 .andRespond(withSuccess("{\"data\":[{\"url\":\"https://cdn.ideogram.ai/z.png\"}]}",
                         MediaType.APPLICATION_JSON));
         h.server().expect(requestTo("https://cdn.ideogram.ai/z.png"))
@@ -234,6 +238,56 @@ class IdeogramV3ClientTest {
 
         h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"), null);
 
+        h.server().verify();
+    }
+
+    // ── one retry on 429 / 5xx ────────────────────────────────────────────────
+
+    private static final String GENERATE_URL = "https://api.ideogram.ai/v1/ideogram-v3/generate";
+    private static final String OK_BODY = "{\"data\":[{\"url\":\"https://cdn.ideogram.ai/r.png\"}]}";
+
+    // Catches: a transient Ideogram blip (rate limit, 5xx) on the render or the download fails the variant.
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0} on {1}")
+    @org.junit.jupiter.params.provider.CsvSource({
+            "429, render", "500, render", "503, render", "503, download"})
+    void retriesOnceOn429Or5xx_thenSucceeds(int status, String stage) {
+        Harness h = harness();
+        if (stage.equals("render")) {
+            h.server().expect(requestTo(GENERATE_URL)).andRespond(withStatus(org.springframework.http.HttpStatus.valueOf(status)));
+        }
+        h.server().expect(requestTo(GENERATE_URL)).andRespond(withSuccess(OK_BODY, MediaType.APPLICATION_JSON));
+        if (stage.equals("download")) {
+            h.server().expect(requestTo("https://cdn.ideogram.ai/r.png"))
+                    .andRespond(withStatus(org.springframework.http.HttpStatus.valueOf(status)));
+        }
+        h.server().expect(requestTo("https://cdn.ideogram.ai/r.png")).andRespond(withSuccess(new byte[]{4}, MediaType.IMAGE_PNG));
+
+        IdeogramV3Client.IdeogramResult r = h.client().generate("p", 1L, List.of(), null, List.of(), null);
+
+        assertThat(r.imageBytes()).containsExactly(4);
+        h.server().verify();
+    }
+
+    // Catches: an outage turns into an unbounded stream of paid render calls.
+    @Test
+    void secondRetryableFailure_throws_afterExactlyTwoPosts() {
+        Harness h = harness();
+        h.server().expect(requestTo(GENERATE_URL)).andRespond(withStatus(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        h.server().expect(requestTo(GENERATE_URL)).andRespond(withStatus(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> h.client().generate("p", 1L, List.of(), null, List.of(), null))
+                .isInstanceOf(org.springframework.web.client.HttpServerErrorException.class);
+        h.server().verify();
+    }
+
+    // Catches: a deterministic 400 is sent, and maybe billed, twice.
+    @Test
+    void clientError400_isNotRetried() {
+        Harness h = harness();
+        h.server().expect(requestTo(GENERATE_URL)).andRespond(withStatus(org.springframework.http.HttpStatus.BAD_REQUEST));
+
+        assertThatThrownBy(() -> h.client().generate("p", 1L, List.of(), null, List.of(), null))
+                .isInstanceOf(org.springframework.web.client.HttpClientErrorException.class);
         h.server().verify();
     }
 }

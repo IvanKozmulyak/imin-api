@@ -26,6 +26,8 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
 
             STEP 1 — Transcribe: read and list EVERY piece of text visible in the image,
             including small, faint, stylized, rotated, or decorative text. Do not skip anything.
+            Fine print, tiny marginal text, credit lines, vertical text columns and letter-like
+            pseudo-text count as text even if illegible.
 
             STEP 2 — Classify each transcribed string against the lists below:
               - matches a Required line (exactly or near-exactly) -> required
@@ -38,8 +40,9 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
               - missingRequired: every Required line that does NOT appear in the image.
               - extraText: the DISTINCT invented strings you found (most prominent first), deduplicated.
                 Do not repeat the same string, and list at most 25 — once you have captured the clearly
-                invented text, stop. A dense decorative pattern is not text; do not transcribe it letter
-                by letter.
+                invented text, stop. A pattern with no letter-like shapes is not text; a block of
+                letter-like marks is — report it once as one extraText entry describing it, in square
+                brackets (e.g. "[fine print, bottom-left]").
               - accepted: true ONLY IF missingRequired is empty AND extraText is empty.
 
             Ignore QR codes. Be strict: when unsure whether a string is real or invented,
@@ -55,12 +58,13 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
             @Value("${poster.text-validation.model:openai/gpt-4o}") String model,
-            @Value("${poster.text-validation.max-tokens:1500}") int maxTokens) {
+            @Value("${poster.text-validation.max-tokens:1500}") int maxTokens,
+            @Value("${poster.validation.read-timeout-seconds:60}") long readTimeoutSeconds) {
         this.objectMapper = new ObjectMapper();
         this.model = model;
         this.maxTokens = maxTokens;
         this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
-                baseUrl, apiKey, "enabling poster text validation");
+                baseUrl, apiKey, "enabling poster text validation", java.time.Duration.ofSeconds(readTimeoutSeconds));
     }
 
     @Override

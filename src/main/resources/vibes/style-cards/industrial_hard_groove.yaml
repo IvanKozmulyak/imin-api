@@ -23,11 +23,11 @@ hero_subjects:
     - 'a cluster of stacked speaker cabinets and exposed cabling in a raw concrete bunker'
 compositions:
   - 'centered single hero (skull or figure) on the vertical axis, type wrapping top and bottom thirds'
-  - 'full-bleed human hero standing tall with a giant slab headline punched horizontally across the torso'
+  - 'full-bleed human hero standing tall with giant slab lettering punched horizontally across the torso'
   - 'hero floating on a receding tiled-grid floor, geometric color blocks scattered as accents'
   - 'duotone machinery filling the full frame edge-to-edge, large display letter bleeding off the top corner'
-  - 'thin neon line geometry (triangles/diamonds) framing a centered object, small labels parked in corners'
-  - 'tiny utilitarian credits stacked in one column down the right margin beside a QR code'
+  - 'thin neon triangle and diamond line geometry framing a centered object'
+  - 'hero pushed left with a narrow empty column down the right margin'
 accents:
   - 'coarse photocopied halftone grain'
   - 'deep surface scratches and drag marks on metal'
@@ -42,9 +42,9 @@ palette_twists:
   - 'scratched silver-grey brushed steel monochrome'
   - 'teal-and-coral riso clash over a blurred bluish ground'
 type_treatments:
-  - 'ultra-bold black slab/condensed headline punched across the hero, sometimes repeated and ghosted'
-  - 'monospaced utilitarian small caps for dates, venue and credit lists'
-  - 'thin geometric sans tracked out wide for a small kicker line'
+  - 'ultra-bold black slab/condensed caps punched across the hero'
+  - 'monospaced utilitarian small caps'
+  - 'thin geometric sans tracked out wide'
   - 'distorted photocopied display letterforms bleeding off an edge'
 example_prompts:
   - 'Hard industrial groove poster, 4:5. A young man shot from behind mid-jump, fists raised, wearing a safety-orange denim jacket and black cargo pants, worn sneakers lifting off a stark white tiled-grid floor that recedes into the distance. Photoreal, hard flat studio light, slight photocopied grain over everything. A massive ultra-bold black condensed headline reads "GROOVE" punched horizontally across his torso, ghosted and repeated just below it. A small monospaced kicker up top reads "LET THE GROOVE GUIDE YOUR FEET". Scattered safety-orange rectangle and circle blocks as geometric accents. Off-white paper ground, dense black type, one hot orange. Utilitarian, brutal, grid-driven.'

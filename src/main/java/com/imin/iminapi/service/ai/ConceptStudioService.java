@@ -251,7 +251,6 @@ public class ConceptStudioService {
         EventCreatorRequest legacy = toLegacyRequest(req, brand);
         PosterConcept poster;
         OrchestrationResult render;
-        ConceptOverview overview;
         try {
             AiEventDescriptionService.GeneratedConcept generated = descService.generateConcept(legacy, creativeSeed, djPhoto != null);
             // Pin the resolved vibe (legacy.subStyleTag is the selected vibe, or one auto-suggested
@@ -264,7 +263,6 @@ public class ConceptStudioService {
                     ? orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand,
                             djPhoto, p.userId())
                     : null;
-            overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
             try { repo.save(staging); } catch (Exception ignored) {}
@@ -273,6 +271,8 @@ public class ConceptStudioService {
                     com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE,
                     "Poster generation service unavailable");
         }
+        // Outside the try on purpose: once the paid render exists, a naming failure must not discard it.
+        ConceptOverview overview = overviewOrFallback(req, poster);
 
         PricingRecommendation prices = pricing.recommend(
                 req.genre() == null ? "techno" : req.genre(),
@@ -306,6 +306,32 @@ public class ConceptStudioService {
                 overview.suggestedCapacity(),
                 overview.confidencePct(),
                 djPhoto != null);
+    }
+
+    /**
+     * The overview LLM's name/description/palette, or a fallback built only from the organizer's own
+     * request (title, capacity) when the call throws or returns nothing. Nothing is invented.
+     */
+    private ConceptOverview overviewOrFallback(ConceptRequest req, PosterConcept poster) {
+        try {
+            ConceptOverview overview = overviewLlm.generate(req, poster);
+            if (overview != null) return overview;
+            log.warn("Concept overview LLM returned no overview; using the request-derived fallback");
+            Sentry.withScope(scope -> {
+                scope.setLevel(SentryLevel.WARNING);
+                scope.setTag("subsystem", "concept-overview");
+                Sentry.captureMessage("Concept overview LLM returned no overview");
+            });
+        } catch (Exception e) {
+            log.warn("Concept overview LLM failed; using the request-derived fallback: {}", e.getMessage());
+            Sentry.withScope(scope -> {
+                scope.setLevel(SentryLevel.WARNING);
+                scope.setTag("subsystem", "concept-overview");
+                Sentry.captureException(e);
+            });
+        }
+        String title = req.title() == null || req.title().isBlank() ? null : req.title().trim();
+        return new ConceptOverview(title, null, List.of(), req.capacity(), null);
     }
 
     /** Deterministic creative seed from the generation UUID (reproducible per run, varies across runs). */
@@ -355,7 +381,8 @@ public class ConceptStudioService {
                 DEFAULT_TONE,
                 req.genre() == null ? "Techno" : req.genre(),
                 req.city(),
-                req.eventDate() != null ? req.eventDate() : LocalDate.now().plusMonths(2),
+                // No organizer date → no date on the poster; a default here was printed as if real.
+                req.eventDate(),
                 DEFAULT_PLATFORMS,
                 /* djName  */ djName,
                 /* location*/ req.venue(),

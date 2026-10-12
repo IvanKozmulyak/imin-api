@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **REST**: Spring Data REST + `@RestController` for custom endpoints; SpringDoc OpenAPI
 - **Security**: Spring Security (SAML2 deps present but not wired; `/api/**` routes are currently `permitAll`)
 - **AI**: Spring AI `ChatClient` — primary bean points at **OpenRouter** (OpenAI-compatible), not OpenAI directly
-- **Image gen**: native Ideogram V3 API (generate at QUALITY, corrective remix at TURBO)
+- **Image gen**: native Ideogram V3 API (generate and corrective remix both at TURBO by default)
 - **Codegen**: Lombok
 
 ## Commands
@@ -37,7 +37,7 @@ Required env vars for running locally (app will log warnings / fail requests oth
 - `OPENROUTER_API_KEY` — LLM calls (art-director concept generation, reference image analysis, and the vision text/style gates via `openai/gpt-4o-mini`)
 - `IDEOGRAM_API_KEY` — native Ideogram V3 poster rendering (generate + remix). Required for poster generation.
 - `OPENAI_API_KEY` — required by the Spring AI starter even when OpenRouter is `@Primary` (any non-empty value works)
-- Optional: `IDEOGRAM_GENERATE_RENDERING_SPEED` (default `TURBO` — QUALITY costs 3x; the text gate + corrective remix are the quality net), `IDEOGRAM_REMIX_RENDERING_SPEED` (default `TURBO`), `IDEOGRAM_REMIX_IMAGE_WEIGHT` (default `70`), `IDEOGRAM_MAX_REFERENCES` (default `3`), `IDEOGRAM_CHARACTER_SEED` (default `false`), `IDEOGRAM_CHARACTER_STYLE_CONTROL` (default `false`) — whether seed / style controls are sent alongside a DJ character reference (see docs/superpowers/plans/2026-06-12-dj-photo-probe-results.md). `color_palette` is never sent with a character reference — Ideogram 400s on the combination (confirmed in prod 2026-06-12); instead the accepted DJ-mode render gets a palette-regrade remix pass (`POSTER_PALETTE_REGRADE_ENABLED`, default `true`; `POSTER_PALETTE_REGRADE_IMAGE_WEIGHT`, default `85`) — no char ref, WITH `color_palette`, text-gate re-checked with fallback to the pre-regrade render.
+- Optional: `IDEOGRAM_GENERATE_RENDERING_SPEED` (default `TURBO` — QUALITY costs 3x; the text gate + corrective remix are the quality net), `IDEOGRAM_REMIX_RENDERING_SPEED` (default `TURBO`), `IDEOGRAM_REMIX_IMAGE_WEIGHT` (default `70`), `IDEOGRAM_MAX_REFERENCES` (default `3`), `IDEOGRAM_CHARACTER_SEED` (default `false`), `IDEOGRAM_CHARACTER_STYLE_CONTROL` (default `false`) — whether seed / style controls are sent alongside a DJ character reference (see docs/superpowers/plans/2026-06-12-dj-photo-probe-results.md). `color_palette` is never sent with a character reference — Ideogram 400s on the combination (confirmed in prod 2026-06-12); instead the accepted DJ-mode render gets a palette-regrade remix pass (`POSTER_PALETTE_REGRADE_ENABLED`, default `true`; `POSTER_PALETTE_REGRADE_IMAGE_WEIGHT`, default `85`) — no char ref, WITH `color_palette`, text-gate re-checked with fallback to the pre-regrade render. Transport: `IDEOGRAM_CONNECT_TIMEOUT_MILLIS` (default `10000`) and `IDEOGRAM_READ_TIMEOUT_MILLIS` (default `90000`) bound every Ideogram call; a render POST or image download that answers 429 or 5xx is retried once after `IDEOGRAM_RETRY_BACKOFF_MILLIS` (default `2000`), other 4xx and transport errors are not. `IDEOGRAM_COPYRIGHT_DETECTION` (default `true`) sends `enable_copyright_detection` on generate and remix (remix accepted the flag in a live probe 2026-10-12). The text and style gates' OpenRouter calls time out after `POSTER_VALIDATION_READ_TIMEOUT_SECONDS` (default `60`), the tools-profile style-card generator after `POSTER_STYLE_CARDS_GENERATOR_READ_TIMEOUT_SECONDS` (default `180`); connect timeout 10 s. If the overview LLM (name, description, palette) fails or returns nothing after the posters rendered, the concept still returns them with a fallback built only from the request (title, capacity; everything else null or empty), logged and sent to Sentry as a warning (`subsystem=concept-overview`).
 - `RESEND_API_KEY` — Resend API key (required to send any auth email; signup/verify/resend/forgot-password fail without it)
 - `IMIN_EMAIL_FROM_ADDRESS` — sender email address (default `noreply@imin.local` — must be a verified Resend sender in prod)
 - `IMIN_EMAIL_FROM_NAME` — sender display name (default `imin`)
@@ -158,25 +158,36 @@ The core feature is **AI event poster generation**. Entry point: `IminApiApplica
 
 ```
 ConceptController → ConceptStudioService
-  → AiEventDescriptionService     (Sonnet 4.6 via OpenRouter → PosterConcept: 3 hero-typed variants)
-  → PosterOrchestrator            (3 variants in parallel, bounded by Semaphore)
+  → AiEventDescriptionService     (art director, OPENROUTER_MODEL via OpenRouter → PosterConcept:
+                                   3 hero-typed variants)
+  → PosterOrchestrator            (3 variants in parallel on a pool of at most 3 threads)
       per variant:
-        IdeogramV3Client.generate (native API, multipart, QUALITY, 4x5, magic_prompt OFF,
+        IdeogramV3Client.generate (native API, multipart, TURBO by default, 4x5, magic_prompt OFF,
                                    one style control: reference images | style_preset;
                                    plus color_palette from the org brand colours when set —
                                    a separate control that combines with reference images)
-        → text gate (hard)  → on fail: IdeogramV3Client.remix(failing image + correction
-                              prompt, TURBO) up to the regen budget, then best-effort
+        → text gate (hard)  → required text missing, or the gate could not judge the image:
+                              generate again from the original prompt with a new seed (DJ mode
+                              keeps the character ref), and so does a gate entry in square brackets (a
+                              description of unreadable marks, e.g. "[fine print, bottom-left]");
+                              only extra/garbled words: remix(failing
+                              image + correction prompt) — up to the regen budget. If every attempt
+                              fails, the attempt with the fewest text errors ships best-effort
+                              (evaluated beats unevaluated, then fewer errors, then fewer missing,
+                              then earlier); its seed is stored and its journal entry gets
+                              `shipped: true`. A retry render that throws ships the best so far.
         → style gate (soft) → best-effort on fail
       → PosterImageStorage.writePng (R2 when MEDIA_ENABLED, else local disk → /images/{uuid}.png)
 ```
 
 Text is fully baked by the model — there is no QR/address/Satori overlay; the downloaded PNG is final.
+
+The render prompt has four parts, in this order (`RenderPrompt.compose`, applied by `AiEventDescriptionService.finish` on both the accepted and the best-effort concept path): (1) the code-built text sentence from `PosterTextSpecFactory` — `A finished event poster whose only text is "<title>" as the huge headline, the date "<d MMM yyyy>" in large bold type directly under the title, and the venue "<venue>" in smaller type below the date.`, each element only when the request has it (no element → `A finished event poster with no text at all.`; DJ names and the city are never in it, they stay `allowed` for the text gate only); (2) the art director's visual (`ideogram_prompt`, 60–180 words, no quotes, no event text, no text-slot words); (3) `Type: <type_style>.` (the LLM's lettering clause, omitted when blank); (4) `Every person shown is fully clothed.` Concept validation rejects a visual or `type_style` that contains a double quote or a single-quoted span (straight or curly; an apostrophe after a letter, as in "club's", does not count), a multi-word required/allowed string anywhere, a one-word one written in capitals, or a layout label (`AiEventDescriptionService.LAYOUT_LABELS`, singular and plural, plus kicker, footer, label, QR code; matched as a whole word, never inside a hyphenated compound), and a blank `type_style`. A best-effort concept (both attempts rejected) has its quoted spans stripped before composing. The art director never sees style-card `example_prompts` (still sampled, unused); every style-card pool entry and vibe field it does see describes visuals only, enforced by `StyleCardVisualOnlyTest`, and reaches it with quoted text removed. A concept request with no `eventDate` puts no date on the poster (no default date is substituted for the poster text).
 The native Ideogram render flow is specced in `docs/superpowers/specs/2026-06-08-ideogram-v3-native-render-design.md`.
 
 ### Key design decisions (see `docs/decisions/ADR-0001-ideogram-direct.md`)
 
-- **Typography lives inside the generated image**, not in a compositor. Ideogram V3 renders the required event text as actual typography; the art-director prompt writes the exact strings into the render prompt, and the vision **text gate** verifies legibility (re-rendering via remix on failure).
+- **Typography lives inside the generated image**, not in a compositor. Ideogram V3 renders the required event text as actual typography; code writes the exact strings into the first sentence of the render prompt (the art director writes only the visual), and the vision **text gate** verifies legibility (regenerating or remixing on failure). The gate counts fine print, credit lines, vertical text columns and letter-like pseudo-text as text.
 - **Exactly one style control.** Ideogram V3 accepts reference images OR a style preset OR style codes — never combined. This flow attaches the vibe's 1–3 curated reference images (`style_reference_images`, ≤10 MB); the per-vibe `ideogram_style_preset` is the no-refs fallback only.
 - **No post-render overlay.** All text is model-baked, so there is no QR/address band or Satori real-font layer. (`ImageProvider` enum + the Recraft style-training endpoint remain in the tree but are off the render path.)
 - **Object storage (Cloudflare R2) with local-disk fallback.** `PosterImageStorage` is the seam: when `MEDIA_ENABLED=true` it uploads PNGs via the `MediaStorage` bean (`R2MediaStorage`, key `ai-posters/{uuid}.png`) and returns the R2 public URL; otherwise — or if a put fails — it writes to local disk and returns an absolute `/images/{uuid}.png` URL. The R2 `S3Client` is built in `R2Config`, and both it and `R2MediaStorage` are gated on `imin.media.enabled`. See the R2 env vars above.
