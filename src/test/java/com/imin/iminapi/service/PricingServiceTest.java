@@ -87,6 +87,23 @@ class PricingServiceTest {
         assertThat(r.basis().comparableEvents()).isNull();
     }
 
+    /** An org with no country has no market to compare with, even if events with a blank country exist. */
+    @Test
+    void an_org_without_a_country_gets_the_default() {
+        caller.setCountry("");
+        caller = orgs.save(caller);
+        for (int[] p : new int[][]{{1000, 2000}, {1500, 2500}, {2000, 4000}}) {
+            Event e = comparable(p[0], p[1]);
+            e.setVenueCountry("");
+            events.save(e);
+        }
+
+        PricingRecommendation r = pricing.recommend(caller.getId(), genre);
+
+        assertThat(r.basis().source()).isEqualTo("default");
+        assertThat(r.basis().country()).isNull();
+    }
+
     @Test
     void a_blank_genre_uses_the_base_default_without_assuming_one() {
         comparable(1000, 2000);
