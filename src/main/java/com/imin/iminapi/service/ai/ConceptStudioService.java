@@ -274,10 +274,7 @@ public class ConceptStudioService {
         // Outside the try on purpose: once the paid render exists, a naming failure must not discard it.
         ConceptOverview overview = overviewOrFallback(req, poster);
 
-        PricingRecommendation prices = pricing.recommend(
-                req.genre() == null ? "techno" : req.genre(),
-                req.city() == null ? "" : req.city(),
-                LocalDate.now().plusMonths(2));
+        PricingRecommendation prices = pricing.recommend(p.orgId(), req.genre());
 
         List<SuggestedTierDto> tiers = SuggestedTiers.build(prices, overview.suggestedCapacity());
         List<PosterDto> posterDtos = render != null

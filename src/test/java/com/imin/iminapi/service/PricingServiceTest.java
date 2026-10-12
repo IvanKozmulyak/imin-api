@@ -1,96 +1,166 @@
 package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.PricingRecommendation;
-import com.imin.iminapi.model.GeneratedEvent;
-import com.imin.iminapi.repository.GeneratedEventRepository;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.EventVisibility;
+import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.util.List;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.when;
 
-@ExtendWith(MockitoExtension.class)
+/** Suggested prices from other organizers' public listings: only events that match on every predicate count. */
+@IminIntegrationTest
 class PricingServiceTest {
 
-    @Mock
-    private GeneratedEventRepository repository;
+    @Autowired PricingService pricing;
+    @Autowired IminFixtures fx;
+    @Autowired OrganizationRepository orgs;
+    @Autowired EventRepository events;
+    @Autowired TicketTierRepository tiers;
+    @Autowired OrderRepository orders;
+    @Autowired MutableClock clock;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
-    @InjectMocks
-    private PricingService pricingService;
+    private Organization caller;
+    private String genre;
 
-    // date used across all tests
-    private static final LocalDate DATE = LocalDate.of(2026, 6, 14);
-    private static final LocalDate START = DATE.minusDays(30); // 2026-05-15
-    private static final LocalDate END   = DATE.plusDays(30);  // 2026-07-14
-
-    @Test
-    void recommend_withComparableEvents_averagesPrices() {
-        GeneratedEvent e1 = new GeneratedEvent();
-        e1.setSuggestedMinPrice(new BigDecimal("10"));
-        e1.setSuggestedMaxPrice(new BigDecimal("20"));
-        e1.setEventDate(LocalDate.of(2026, 6, 13)); // Saturday
-
-        GeneratedEvent e2 = new GeneratedEvent();
-        e2.setSuggestedMinPrice(new BigDecimal("20"));
-        e2.setSuggestedMaxPrice(new BigDecimal("40"));
-        e2.setEventDate(LocalDate.of(2026, 6, 6)); // Saturday
-
-        when(repository.findComparableEvents(eq("techno"), eq("Berlin"), eq(START), eq(END)))
-                .thenReturn(List.of(e1, e2));
-
-        PricingRecommendation result = pricingService.recommend("techno", "Berlin", DATE);
-
-        assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
-        assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
-        assertThat(result.pricingNotes()).contains("2 comparable");
+    @BeforeEach
+    void setUp() {
+        caller = fx.org();
+        caller.setCountry("FR");
+        caller.setCurrency("EUR");
+        caller = orgs.save(caller);
+        genre = "G-" + UUID.randomUUID();
     }
 
     @Test
-    void recommend_withComparableEventsHavingNullPrices_fallsBackToGenreDefault() {
-        GeneratedEvent nullPriceEvent = new GeneratedEvent();
-        // suggestedMinPrice and suggestedMaxPrice are null (not yet priced)
-        nullPriceEvent.setEventDate(LocalDate.of(2026, 6, 14));
+    void three_comparable_events_give_the_median_listed_prices() {
+        comparable(1000, 2000);
+        comparable(1500, 2500);
+        comparable(2000, 4000);
 
-        when(repository.findComparableEvents(eq("techno"), eq("Berlin"), eq(START), eq(END)))
-                .thenReturn(List.of(nullPriceEvent));
+        PricingRecommendation r = pricing.recommend(caller.getId(), " " + genre + " ");
 
-        PricingRecommendation result = pricingService.recommend("techno", "Berlin", DATE);
+        assertThat(r.suggestedMinPrice()).isEqualTo(new BigDecimal("15.00"));
+        assertThat(r.suggestedMaxPrice()).isEqualTo(new BigDecimal("25.00"));
+        assertThat(r.basis().source()).isEqualTo("comparables");
+        assertThat(r.basis().comparableEvents()).isEqualTo(3);
+        assertThat(r.basis().genre()).isEqualTo(genre);
+        assertThat(r.basis().country()).isEqualTo("FR");
+    }
 
-        assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
-        assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("25.00");
-        assertThat(result.pricingNotes()).contains("default");
+    enum Excluded {
+        PRIVATE, DRAFT, CANCELLED, UNPUBLISHED, DELETED, OTHER_COUNTRY, OTHER_CURRENCY, ONLY_TEST_ORDERS,
+        TOO_OLD, ONLY_FREE_TIERS, ONLY_DISABLED_TIERS, OTHER_GENRE
+    }
+
+    /** The excluded event is created first, so a missing predicate would make it the third comparable. */
+    @ParameterizedTest
+    @EnumSource(Excluded.class)
+    void an_event_failing_one_predicate_is_not_a_comparable(Excluded kind) {
+        excluded(kind);
+        comparable(1000, 2000);
+        comparable(1500, 2500);
+
+        PricingRecommendation r = pricing.recommend(caller.getId(), genre);
+
+        assertThat(r.basis().source()).isEqualTo("default");
+        assertThat(r.basis().comparableEvents()).isNull();
     }
 
     @Test
-    void recommend_withNoComparables_returnsGenreDefault() {
-        when(repository.findComparableEvents(eq("techno"), eq("Berlin"), eq(START), eq(END)))
-                .thenReturn(List.of());
+    void a_blank_genre_uses_the_base_default_without_assuming_one() {
+        comparable(1000, 2000);
+        comparable(1500, 2500);
+        comparable(2000, 4000);
 
-        PricingRecommendation result = pricingService.recommend("techno", "Berlin", DATE);
+        PricingRecommendation r = pricing.recommend(caller.getId(), "  ");
 
-        assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
-        assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("25.00");
-        assertThat(result.pricingNotes()).contains("default");
+        assertThat(r.suggestedMinPrice()).isEqualByComparingTo("15");
+        assertThat(r.suggestedMaxPrice()).isEqualByComparingTo("30");
+        assertThat(r.basis().source()).isEqualTo("default");
+        assertThat(r.basis().comparableEvents()).isNull();
+        assertThat(r.basis().genre()).isNull();
     }
 
-    @Test
-    void recommend_withUnknownGenreAndNoComparables_returnsBaseDefault() {
-        when(repository.findComparableEvents(
-                eq("polka"), eq("Warsaw"),
-                eq(LocalDate.of(2026, 5, 15)), eq(LocalDate.of(2026, 7, 14))))
-                .thenReturn(List.of());
+    // ── fixtures ────────────────────────────────────────────────────────────────
 
-        PricingRecommendation result = pricingService.recommend("polka", "Warsaw", DATE);
+    /** A public LIVE event of another org in FR/EUR, started 10 days ago, with tiers at min and max. */
+    private Event comparable(int minPrice, int maxPrice) {
+        Event e = otherOrgEvent(genre, clock.instant().minus(10, ChronoUnit.DAYS));
+        fx.tier(e, minPrice, 100);
+        fx.tier(e, maxPrice, 100);
+        return e;
+    }
 
-        assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
-        assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
+    private void excluded(Excluded kind) {
+        Instant starts = kind == Excluded.TOO_OLD
+                ? clock.instant().minus(400, ChronoUnit.DAYS)
+                : clock.instant().minus(10, ChronoUnit.DAYS);
+        Event e = otherOrgEvent(kind == Excluded.OTHER_GENRE ? genre + "-x" : genre, starts);
+        switch (kind) {
+            case PRIVATE -> e.setVisibility(EventVisibility.PRIVATE);
+            case DRAFT -> e.setStatus(EventStatus.DRAFT);
+            case CANCELLED -> e.setStatus(EventStatus.CANCELLED);
+            case UNPUBLISHED -> e.setPublishedAt(null);
+            case OTHER_COUNTRY -> e.setVenueCountry("DE");
+            case OTHER_CURRENCY -> e.setCurrency("USD");
+            default -> { }
+        }
+        e = events.save(e);
+        if (kind == Excluded.DELETED) {
+            // deleted_at is insert-only on the entity; soft deletes are bulk writes.
+            jdbc.update("update events set deleted_at = now() where id = ?", e.getId());
+        }
+        int price = kind == Excluded.ONLY_FREE_TIERS ? 0 : 1000;
+        TicketTier a = fx.tier(e, price, 100);
+        TicketTier b = fx.tier(e, kind == Excluded.ONLY_FREE_TIERS ? 0 : 2000, 100);
+        if (kind == Excluded.ONLY_DISABLED_TIERS) {
+            a.setEnabled(false);
+            b.setEnabled(false);
+            tiers.save(a);
+            tiers.save(b);
+        }
+        if (kind == Excluded.ONLY_TEST_ORDERS) {
+            // Test mode is set before the insert, as checkout stamps it.
+            Order o = new Order();
+            o.setToken("ORD_" + UUID.randomUUID());
+            o.setEventId(e.getId());
+            o.setOrgId(e.getOrgId());
+            o.setEmail(fx.email("buyer"));
+            o.setTotalMinor(1000L);
+            o.setCurrency("EUR");
+            o.setPaymentMethod("stripe");
+            o.setTestMode(true);
+            orders.save(o);
+        }
+    }
+
+    private Event otherOrgEvent(String g, Instant startsAt) {
+        Organization other = fx.org();
+        Event e = fx.event(other, fx.owner(other), EventStatus.LIVE, startsAt);
+        e.setGenre(g);
+        e.setVenueCountry("FR");
+        e.setPublishedAt(startsAt.minus(30, ChronoUnit.DAYS));
+        return events.save(e);
     }
 }

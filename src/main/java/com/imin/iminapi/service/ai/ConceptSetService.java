@@ -58,10 +58,7 @@ public class ConceptSetService {
         String brandBlock = brandBlock(p.orgId());
         ConceptSet set = generateWithRetry(req, brandBlock);
 
-        PricingRecommendation prices = pricing.recommend(
-                req.genre() == null ? "techno" : req.genre(),
-                req.city() == null ? "" : req.city(),
-                LocalDate.now().plusMonths(2));
+        PricingRecommendation prices = pricing.recommend(p.orgId(), req.genre());
 
         GeneratedEvent staging = new GeneratedEvent();
         staging.setOrgId(p.orgId());
@@ -105,7 +102,7 @@ public class ConceptSetService {
             List<SuggestedTierDto> tiers = SuggestedTiers.build(prices, cap);
             cards.add(new ConceptCardDto(null, c.name(), c.description(),
                     new CaptionsDto(ig, tt, x),
-                    c.suggestedGenre(), type, cap, tiers));
+                    c.suggestedGenre(), type, cap, tiers, prices.basis()));
             sort++;
         }
         staging.setStatus(GeneratedEventStatus.COMPLETE);
@@ -121,7 +118,7 @@ public class ConceptSetService {
             ConceptCardDto base = cards.get(i);
             withIds.add(new ConceptCardDto(id, base.name(), base.description(), base.captions(),
                     base.suggestedGenre(), base.suggestedType(), base.suggestedCapacity(),
-                    base.suggestedTiers()));
+                    base.suggestedTiers(), base.pricingBasis()));
         }
         return new ConceptSetResponse(staging.getId(), withIds);
     }

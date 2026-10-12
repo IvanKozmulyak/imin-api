@@ -49,8 +49,8 @@ class ConceptSetServiceTest {
     /** Stub the ChatClient chain to return the given set, plus pricing + repo flush behaviour. */
     private void stub(ConceptSet set) {
         when(chat.prompt().user(anyString()).call().entity(ConceptSet.class)).thenReturn(set);
-        when(pricing.recommend(any(), any(), any())).thenReturn(
-                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(pricing.recommend(any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), null));
         when(orgs.findById(any())).thenReturn(Optional.empty());
         // Emulate JPA assigning generated ids to the cascade-persisted Concept rows on flush.
         when(repo.saveAndFlush(any(GeneratedEvent.class))).thenAnswer(inv -> {

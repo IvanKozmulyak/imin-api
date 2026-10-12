@@ -17,7 +17,7 @@ class SuggestedTiersTest {
     @Test
     void splitsCapacityOneFifth_threeFifths_oneFifth_atMinMidMax() {
         var tiers = SuggestedTiers.build(
-                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"), 250);
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), null), 250);
 
         assertThat(tiers).extracting(SuggestedTierDto::name)
                 .containsExactly("Early Bird", "Standard", "Door");
@@ -28,7 +28,7 @@ class SuggestedTiersTest {
     @Test
     void neverEmitsAZeroQuantityTier() {
         var tiers = SuggestedTiers.build(
-                new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"), 1);
+                new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), null), 1);
 
         assertThat(tiers).allSatisfy(t -> assertThat(t.quantity()).isGreaterThanOrEqualTo(1));
     }

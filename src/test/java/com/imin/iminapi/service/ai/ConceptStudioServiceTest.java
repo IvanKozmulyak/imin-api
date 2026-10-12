@@ -88,8 +88,8 @@ class ConceptStudioServiceTest {
                         new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, List.of(), "COMPLETE", null)));
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(result);
 
-        when(pricing.recommend(any(), any(), any())).thenReturn(
-                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(pricing.recommend(any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), null));
 
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("ANTRUM", "Deep in a Berlin warehouse...",
@@ -141,8 +141,8 @@ class ConceptStudioServiceTest {
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, List.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, List.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, List.of(), "COMPLETE", null))));
-        when(pricing.recommend(any(), any(), any())).thenReturn(
-                new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"));
+        when(pricing.recommend(any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), null));
         when(overviewLlm.generate(any(), any())).thenReturn(new ConceptOverview(
                 "NEW NAME", "new desc", List.of("#000"), 200, 80));
         when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
@@ -176,8 +176,8 @@ class ConceptStudioServiceTest {
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
-        when(pricing.recommend(any(), any(), any())).thenReturn(
-                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(pricing.recommend(any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), null));
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("N", "d", List.of("#000"), 100, 50));
         when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
@@ -249,8 +249,8 @@ class ConceptStudioServiceTest {
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
-        when(pricing.recommend(any(), any(), any())).thenReturn(
-                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(pricing.recommend(any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), null));
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("N", "d", List.of("#000"), 100, 50));
         when(orgs.findById(any())).thenReturn(java.util.Optional.empty());

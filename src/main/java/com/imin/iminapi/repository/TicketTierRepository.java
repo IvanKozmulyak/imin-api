@@ -151,4 +151,28 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
                              @Param("seenAttempts") int seenAttempts,
                              @Param("nextAt") Instant nextAt,
                              @Param("now") Instant now);
+
+    /**
+     * Listed prices of other organizers' public events for the pricing suggestion: one
+     * {@code {eventId, min(priceMinor), max(priceMinor)}} per event over its enabled paid tiers,
+     * newest start first. Same predicates as the public listing (published, PUBLIC, LIVE or PAST,
+     * not deleted; CANCELLED out as in the feed) plus the all-test-mode exclusion. Every param is non-null.
+     */
+    @Query("""
+            select t.eventId, min(t.priceMinor), max(t.priceMinor)
+              from TicketTier t, Event e
+             where t.eventId = e.id and t.enabled = true and t.priceMinor > 0
+               and e.deletedAt is null and e.publishedAt is not null
+               and e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+               and e.status in (com.imin.iminapi.model.EventStatus.LIVE, com.imin.iminapi.model.EventStatus.PAST)
+               and e.genreKey = :genreKey and e.venueCountry = :country and upper(e.currency) = :currency
+               and e.startsAt >= :from and e.startsAt < :to
+               and (not exists (select 1 from com.imin.iminapi.model.Order ot where ot.eventId = e.id and ot.testMode = true)
+                    or exists (select 1 from com.imin.iminapi.model.Order ol where ol.eventId = e.id and ol.testMode = false))
+             group by t.eventId, e.startsAt
+             order by e.startsAt desc
+            """)
+    List<Object[]> comparablePriceRows(@Param("genreKey") String genreKey, @Param("country") String country,
+                                       @Param("currency") String currency, @Param("from") Instant from,
+                                       @Param("to") Instant to, Pageable pageable);
 }

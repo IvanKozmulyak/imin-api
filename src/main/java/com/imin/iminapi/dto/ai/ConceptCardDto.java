@@ -11,4 +11,5 @@ public record ConceptCardDto(
         String suggestedGenre,
         String suggestedType,
         Integer suggestedCapacity,
-        List<SuggestedTierDto> suggestedTiers) {}
+        List<SuggestedTierDto> suggestedTiers,
+        PricingBasisDto pricingBasis) {}
