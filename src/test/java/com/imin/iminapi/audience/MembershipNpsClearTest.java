@@ -5,7 +5,13 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.ProviderEvent;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.webhook.ResendWebhookProjector;
+import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -23,10 +30,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MembershipNpsClearTest {
 
     @Autowired IminFixtures fx;
-    @Autowired AudienceOrderProjector projector;
+    @Autowired AudienceOrderProjector orderProjector;
     @Autowired MembershipRepository memberships;
     @Autowired ConsentService consentService;
     @Autowired JdbcTemplate jdbc;
+    @Autowired ResendWebhookProjector projector;
+    @Autowired CampaignRepository campaigns;
 
     private UUID orgId;
     private UUID mid;
@@ -35,7 +44,7 @@ class MembershipNpsClearTest {
     void setUp() {
         orgId = fx.org().getId();
         String email = fx.email("nps");
-        projector.upsertMembership(orgId, email, null);
+        orderProjector.upsertMembership(orgId, email, null);
         mid = jdbc.queryForObject("select m.membership_id from memberships m join consumers c on c.consumer_id ="
                 + " m.consumer_id where m.org_id = ? and c.normalized_email = ?", UUID.class, orgId, email);
     }
@@ -48,7 +57,9 @@ class MembershipNpsClearTest {
         jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
         jdbc.update("delete from memberships where org_id = ?", orgId);
         for (UUID cid : cids) jdbc.update("delete from consumers where consumer_id = ?", cid);
-        jdbc.update("delete from organizations where id = ?", orgId);
+        jdbc.update("delete from suppression_entries where org_id = ?", orgId);
+        CampaignRows.delete(jdbc, List.of(orgId));
+        OrgRows.delete(jdbc, List.of(orgId));
     }
 
     @Test
@@ -58,6 +69,27 @@ class MembershipNpsClearTest {
         consentService.unsubscribe(orgId, mid, "unsubscribe_link", ConsentOrigin.DATA_SUBJECT, null);
 
         assertThat(nps()).as("an objection takes the person out of Promoters").isNull();
+    }
+
+    @Test
+    void a_spam_complaint_clears_the_score() {
+        memberships.updateNps(mid, (short) 9);
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("Sent");
+        c.setStatus("sent");
+        c.setOrigin("manual");
+        c.setSubject("S");
+        c.setBodyMd("B");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        UUID campaignId = campaigns.save(c).getId();
+
+        projector.project(campaignId, null, mid, null, ProviderEvent.TYPE_COMPLAINED, null, Instant.now());
+
+        assertThat(nps()).as("a spam report is the person objecting").isNull();
     }
 
     @Test

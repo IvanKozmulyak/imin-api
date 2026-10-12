@@ -403,7 +403,9 @@ class SurveyServiceTest {
                 .andExpect(jsonPath("$.nps").value(9));
     }
 
-    enum NotLinked { OLD_NOTICE, UNTICKED, OBJECTED, UNSUBSCRIBED_MEMBER, MARKETING_SUPPRESSED_MEMBER, ERASE_PENDING_MEMBER }
+    // An erased address has no membership left (erasure deletes it), so its row checks that none is created.
+    enum NotLinked { OLD_NOTICE, UNTICKED, OBJECTED, ERASED, OPTED_OUT_MEMBER, UNSUBSCRIBED_MEMBER,
+        MARKETING_SUPPRESSED_MEMBER, ERASE_PENDING_MEMBER }
 
     /** Only the linking notice, a ticked box, an unblocked address and no objection put the score on a person. */
     @ParameterizedTest
@@ -418,6 +420,14 @@ class SurveyServiceTest {
             jdbc.update("update memberships set nps = ? where membership_id = ?", before, mid);
             switch (kind) {
                 case OBJECTED -> jdbc.update("update memberships set objected_profiling = true where membership_id = ?", mid);
+                case OPTED_OUT_MEMBER -> {
+                    MarketingOptOut o = new MarketingOptOut();
+                    o.setEmailNormalized(email);
+                    o.setOrgId(orgId);
+                    o.setChannel("email");
+                    o.setSource("unsubscribe_link");
+                    optOuts.save(o);
+                }
                 case UNSUBSCRIBED_MEMBER ->
                         jdbc.update("update memberships set consent_status = 'unsubscribed' where membership_id = ?", mid);
                 case ERASE_PENDING_MEMBER ->
@@ -434,6 +444,7 @@ class SurveyServiceTest {
             }
         }
 
+        if (kind == NotLinked.ERASED) erase(orgId, email);
         service.submit(token, switch (kind) {
             case OLD_NOTICE -> scored(9, NOTICE, email);
             case UNTICKED -> scored(9, LINKED, null);
@@ -441,7 +452,10 @@ class SurveyServiceTest {
         });
 
         assertThat(onlyResponse().get("nps_score")).isEqualTo(9);
-        if (kind == NotLinked.UNTICKED) {
+        if (kind == NotLinked.ERASED) {
+            assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class,
+                    email)).isZero();
+        } else if (kind == NotLinked.UNTICKED) {
             assertThat(jdbc.queryForObject("select count(*) from memberships where org_id = ? and nps is not null",
                     Integer.class, orgId)).isZero();
         } else {
