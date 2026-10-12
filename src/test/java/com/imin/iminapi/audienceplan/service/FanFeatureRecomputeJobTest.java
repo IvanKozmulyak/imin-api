@@ -50,14 +50,14 @@ class FanFeatureRecomputeJobTest {
 
     @Test
     void backfillCompleted_runsOneLockedRecompute() {
-        job.onBackfillCompleted(new AudienceBackfillCompleted(3, 0));
+        job.onBackfillCompleted(new AudienceBackfillCompleted(3, 0, 0));
         verify(proxied).recomputeAll();
     }
 
     @Test
     void backfillCompleted_recomputeFailure_isSwallowed() {
         doThrow(new IllegalStateException("boom")).when(proxied).recomputeAll();
-        assertThatCode(() -> job.onBackfillCompleted(new AudienceBackfillCompleted(0, 0))).doesNotThrowAnyException();
+        assertThatCode(() -> job.onBackfillCompleted(new AudienceBackfillCompleted(0, 0, 0))).doesNotThrowAnyException();
     }
 
     @Test

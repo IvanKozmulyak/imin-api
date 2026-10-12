@@ -126,7 +126,8 @@ class NeverSoftOptInGuardTest {
         freeTier = tiers.save(freeTier);
 
         // Plain instance so the projection runs synchronously on this thread.
-        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic, txManager, erasedAddresses);
+        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic, txManager, erasedAddresses,
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()));
     }
 
     @AfterEach

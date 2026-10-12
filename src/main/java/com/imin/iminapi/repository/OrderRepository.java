@@ -250,14 +250,15 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                                         @Param("normalizedEmails") Collection<String> normalizedEmails);
 
     /**
-     * Distinct (orgId, lower(email)) pairs for all paid orders.
-     * Used by {@link com.imin.iminapi.audience.service.AudienceBackfillJob}.
+     * Rows of {@code [orgId, lower(email), newest createdAt]}, one per (org, address) over all orders.
+     * Used by {@link com.imin.iminapi.audience.service.AudienceBackfillJob}, which skips pairs past retention.
      */
     // Every Order row represents issued tickets (orders are only created on successful
     // issuance), so no payment-intent filter: free (promo-zeroed / free-tier) orders
     // must reach the audience too. The old "stripePaymentIntentId is not null" filter
     // silently excluded them from the backfill.
-    @Query("select distinct o.orgId, lower(o.email) from Order o where o.email is not null")
+    @Query("select o.orgId, lower(o.email), max(o.createdAt) from Order o where o.email is not null"
+            + " group by o.orgId, lower(o.email)")
     List<Object[]> findDistinctOrgAndEmailPairs();
 
     // ── Door reminders (buyer-account-area spec §4.7) ───────────────────────

@@ -30,8 +30,8 @@ import java.util.UUID;
  * had explicitly unsubscribed from, without anyone ever asking them.
  *
  * <p><b>Keyed by address, not by account</b>, so an unsubscribe by someone who has
- * no imin account is still recorded and still binds if they open one later. Nothing
- * but account erasure ever deletes a row.
+ * no imin account is still recorded and still binds if they open one later. Only
+ * account erasure and the 3-year retention purge (from {@code created_at}) delete a row.
  *
  * <p><b>Insert-only.</b> {@link #isNew()} is hard-coded {@code true} so Spring Data
  * always {@code persist()}s rather than {@code merge()}s. That is deliberate, and it

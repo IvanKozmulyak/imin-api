@@ -2,6 +2,7 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
+import com.imin.iminapi.audienceplan.service.RetentionCutoff;
 import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
@@ -14,13 +15,17 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * One-shot backfill: iterates every order that has an email (free and paid)
  * through the same upsertMembership path as live ingestion → identical projection.
+ * Erased addresses and (org, address) pairs whose newest order is past the 3-year retention cutoff are skipped.
  * ShedLock-guarded so only one replica runs at a time.
  *
  * <p>The job runs daily at 03:00 UTC; it is idempotent and safe to re-run.
@@ -42,17 +47,20 @@ public class AudienceBackfillJob {
      */
     private final ObjectProvider<AudienceBackfillJob> self;
     private final ApplicationEventPublisher events;
+    private final RetentionCutoff retentionCutoff;
 
     public AudienceBackfillJob(OrderRepository orderRepo,
                                AudienceOrderProjector projector,
                                ErasedAddressRepository erasedAddressRepo,
                                ObjectProvider<AudienceBackfillJob> self,
-                               ApplicationEventPublisher events) {
+                               ApplicationEventPublisher events,
+                               RetentionCutoff retentionCutoff) {
         this.orderRepo = orderRepo;
         this.projector = projector;
         this.erasedAddressRepo = erasedAddressRepo;
         this.self = self;
         this.events = events;
+        this.retentionCutoff = retentionCutoff;
     }
 
     /**
@@ -96,6 +104,8 @@ public class AudienceBackfillJob {
 
         int processed = 0;
         int skippedErased = 0;
+        int skippedPastRetention = 0;
+        Map<java.util.UUID, Instant> cutoffs = new HashMap<>();
         for (Object[] pair : pairs) {
             java.util.UUID orgId = (java.util.UUID) pair[0];
             String email = (String) pair[1];
@@ -103,6 +113,12 @@ public class AudienceBackfillJob {
             if (erasedPlatformWide.contains(normalizedEmail)
                     || erasedPerOrg.contains(orgId + "|" + normalizedEmail)) {
                 skippedErased++;
+                continue;
+            }
+            // The retention purge deleted (or will delete) this contact; replaying archived orders must not rebuild it.
+            Instant cutoff = cutoffs.computeIfAbsent(orgId, id -> retentionCutoff.forOrg(id).at());
+            if (((Instant) pair[2]).isBefore(cutoff)) {
+                skippedPastRetention++;
                 continue;
             }
             try {
@@ -113,9 +129,9 @@ public class AudienceBackfillJob {
                         LogSafe.redact(e.getMessage()));
             }
         }
-        log.info("AudienceBackfillJob: done — {} memberships processed, {} skipped (erased)",
-                processed, skippedErased);
+        log.info("AudienceBackfillJob: done — {} memberships processed, {} skipped (erased), {} skippedPastRetention",
+                processed, skippedErased, skippedPastRetention);
         // The fan-feature recompute chains on this rather than on a clock of its own.
-        events.publishEvent(new AudienceBackfillCompleted(processed, skippedErased));
+        events.publishEvent(new AudienceBackfillCompleted(processed, skippedErased, skippedPastRetention));
     }
 }

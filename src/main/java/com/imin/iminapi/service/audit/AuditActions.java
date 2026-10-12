@@ -50,6 +50,8 @@ public final class AuditActions {
     public static final String DSAR_OBJECT              = "DSAR_OBJECT";
     public static final String DSAR_ERASE_REQUESTED     = "DSAR_ERASE_REQUESTED";
     public static final String DSAR_ERASE_EXECUTED      = "DSAR_ERASE_EXECUTED";
+    /** The nightly 3-year retention purge deleted or redacted this org's audience rows; the summary has counts only. */
+    public static final String AUDIENCE_RETENTION_PURGED = "AUDIENCE_RETENTION_PURGED";
 
     // ---- Buyer account deletion (buyer-accounts epic §7) ----
     // Buyer-initiated, and therefore platform-wide rather than org-scoped. The

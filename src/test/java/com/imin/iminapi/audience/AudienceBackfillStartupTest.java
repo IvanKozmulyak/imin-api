@@ -3,6 +3,7 @@ package com.imin.iminapi.audience;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.service.AudienceBackfillJob;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audienceplan.service.RetentionCutoff;
 import com.imin.iminapi.repository.OrderRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
@@ -28,7 +29,8 @@ class AudienceBackfillStartupTest {
                 mock(AudienceOrderProjector.class),
                 mock(ErasedAddressRepository.class),
                 self,
-                e -> { });
+                e -> { },
+                mock(RetentionCutoff.class));
 
         job.onStartup();
 
@@ -41,8 +43,13 @@ class AudienceBackfillStartupTest {
     void run_publishesCompletionWithItsCounts_soTheFanFeatureRecomputeChains() {
         OrderRepository orders = mock(OrderRepository.class);
         java.util.UUID orgId = java.util.UUID.randomUUID();
+        java.time.Instant now = java.time.Instant.now();
         when(orders.findDistinctOrgAndEmailPairs()).thenReturn(java.util.List.of(
-                new Object[]{orgId, "kept@example.com"}, new Object[]{orgId, "gone@example.com"}));
+                new Object[]{orgId, "kept@example.com", now}, new Object[]{orgId, "gone@example.com", now},
+                new Object[]{orgId, "archived@example.com", java.time.Instant.EPOCH.minusSeconds(1)}));
+        RetentionCutoff cutoff = mock(RetentionCutoff.class);
+        when(cutoff.forOrg(orgId)).thenReturn(new RetentionCutoff.Cutoff(
+                java.time.LocalDate.EPOCH, java.time.Instant.EPOCH, java.time.ZoneOffset.UTC));
         ErasedAddressRepository erased = mock(ErasedAddressRepository.class);
         com.imin.iminapi.audience.model.ErasedAddress gone = new com.imin.iminapi.audience.model.ErasedAddress();
         gone.setEmailNormalized("gone@example.com");
@@ -50,9 +57,9 @@ class AudienceBackfillStartupTest {
         java.util.List<Object> published = new java.util.ArrayList<>();
 
         new AudienceBackfillJob(orders, mock(AudienceOrderProjector.class), erased,
-                mock(ObjectProvider.class), published::add).run();
+                mock(ObjectProvider.class), published::add, cutoff).run();
 
         org.assertj.core.api.Assertions.assertThat(published)
-                .containsExactly(new com.imin.iminapi.audience.service.AudienceBackfillCompleted(1, 1));
+                .containsExactly(new com.imin.iminapi.audience.service.AudienceBackfillCompleted(1, 1, 1));
     }
 }

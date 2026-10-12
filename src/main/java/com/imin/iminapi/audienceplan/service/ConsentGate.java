@@ -4,17 +4,13 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.ProofRequirement;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
-import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -67,18 +63,16 @@ public class ConsentGate {
     }
 
     private final FanFeatureRepository repo;
-    private final OrganizationRepository orgRepo;
     private final AudiencePlanLogic logic;
     private final AudiencePlanProperties props;
-    private final Clock clock;
+    private final RetentionCutoff cutoff;
 
     public ConsentGate(FanFeatureRepository repo, OrganizationRepository orgRepo, AudiencePlanLogic logic,
                        AudiencePlanProperties props, Clock clock) {
         this.repo = repo;
-        this.orgRepo = orgRepo;
         this.logic = logic;
         this.props = props;
-        this.clock = clock;
+        this.cutoff = new RetentionCutoff(orgRepo, logic, clock);
     }
 
     /** Open/click tracking is off for everyone. */
@@ -245,27 +239,25 @@ public class ConsentGate {
             else if (req == ProofRequirement.PROVENANCE_ROW) provenance.add(source);
             else if (req == ProofRequirement.TEXT_VERSION) textVersion.add(source);
         });
-        // Sources the person uses themselves; an import is never contact from the person.
-        List<String> person = new ArrayList<>(named);
-        person.addAll(textVersion);
-
-        ZoneId zone = orgZone(orgId);
-        LocalDate cutoffDate = LocalDate.now(clock.withZone(zone)).minusDays(legal.retentionDays());
-        Instant cutoffAt = cutoffDate.atStartOfDay(zone).toInstant();
+        RetentionCutoff.Cutoff c = cutoff.forOrg(orgId);
         List<String> softBases = Boolean.TRUE.equals(props.getSoftOptInEnabled()) ? List.of(SOFT_OPT_IN) : List.of();
         return new Params(orNever(named), orNever(List.copyOf(legal.organizerNamedTextVersions())),
-                orNever(provenance), orNever(textVersion), orNever(person), orNever(softBases),
-                cutoffAt, cutoffDate);
+                orNever(provenance), orNever(textVersion), personSources(), orNever(softBases),
+                c.at(), c.date());
     }
 
-    private ZoneId orgZone(UUID orgId) {
-        String tz = orgRepo.findById(orgId).map(Organization::getTimezone).orElse(null);
-        if (tz == null || tz.isBlank()) return ZoneOffset.UTC;
-        try {
-            return ZoneId.of(tz);
-        } catch (DateTimeException e) {
-            return ZoneOffset.UTC;
-        }
+    /**
+     * Consent sources the person uses themselves (organizer-named and text-version ones); an import never is.
+     * Never empty: a never-matching sentinel stands in, so the list binds into a native {@code IN}.
+     */
+    public List<String> personSources() {
+        List<String> person = new ArrayList<>();
+        logic.logic().legal().explicitSources().forEach((source, req) -> {
+            if (req == ProofRequirement.ORGANIZER_NAMED_TEXT_VERSION || req == ProofRequirement.TEXT_VERSION) {
+                person.add(source);
+            }
+        });
+        return orNever(person);
     }
 
     private static List<String> orNever(List<String> values) {

@@ -240,7 +240,8 @@ class AudienceOrderProjectorRaceTest {
         Order order = orderIn(org, email);
         // Plain instance so the projection runs synchronously on this thread.
         AudienceOrderProjector sync = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector,
-                consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses);
+                consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses,
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()));
 
         try (PgFaults.Fault fault = PgFaults.failWrites(jdbc, "memberships", "org_id", org.getId())) {
             assertThatCode(() -> sync.onTicketsIssued(new TicketsIssuedEvent(order.getId())))

@@ -320,6 +320,34 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending'")
     List<Membership> findAllByOrgId(@Param("orgId") UUID orgId);
 
+    // ---- retention purge (RetentionPurgeSql) ----
+
+    @Query("select distinct m.orgId from Membership m")
+    List<UUID> findDistinctOrgIds();
+
+    /** Rows of {@code [membership_id, created_at]} due for the purge, oldest first after the cursor. */
+    @Query(value = RetentionPurgeSql.CANDIDATES, nativeQuery = true)
+    List<Object[]> findRetentionPurgeCandidates(@Param("orgId") UUID orgId,
+                                                @Param("personSources") Collection<String> personSources,
+                                                @Param("cutoffAt") Instant cutoffAt,
+                                                @Param("cutoffDate") java.time.LocalDate cutoffDate,
+                                                @Param("afterCreatedAt") Instant afterCreatedAt,
+                                                @Param("afterId") UUID afterId,
+                                                @Param("limit") int limit);
+
+    @Query(value = RetentionPurgeSql.CANDIDATES_AMONG, nativeQuery = true)
+    List<Object[]> findRetentionPurgeCandidatesAmong(@Param("orgId") UUID orgId,
+                                                     @Param("personSources") Collection<String> personSources,
+                                                     @Param("cutoffAt") Instant cutoffAt,
+                                                     @Param("cutoffDate") java.time.LocalDate cutoffDate,
+                                                     @Param("ids") Collection<UUID> ids);
+
+    @Query(value = RetentionPurgeSql.COUNT, nativeQuery = true)
+    long countRetentionPurgeCandidates(@Param("orgId") UUID orgId,
+                                       @Param("personSources") Collection<String> personSources,
+                                       @Param("cutoffAt") Instant cutoffAt,
+                                       @Param("cutoffDate") java.time.LocalDate cutoffDate);
+
     // ---- erasure job ----
 
     /** Memberships past their erasure grace period, ready for destructive cascade. */

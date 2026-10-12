@@ -436,13 +436,19 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * dsar_erased} — the same anonymous-aggregate shape the redaction preserves elsewhere — and
      * clear any backoff so nothing re-claims them. Called immediately BEFORE the redaction.
      */
+    default int divertPendingForErasedMembership(UUID membershipId) {
+        return divertPendingForDeletedMembership(membershipId, "dsar_erased");
+    }
+
+    /** The divert above with the skip reason the organizer sees ({@code dsar_erased}, {@code retention_purged}). */
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.transaction.annotation.Transactional
     @org.springframework.data.jpa.repository.Query(
-        "UPDATE CampaignRecipient r SET r.status='skipped', r.skipReason='dsar_erased', "
+        "UPDATE CampaignRecipient r SET r.status='skipped', r.skipReason=:reason, "
         + "r.nextAttemptAt=null WHERE r.membershipId=:membershipId AND r.status='pending'")
-    int divertPendingForErasedMembership(
-            @org.springframework.data.repository.query.Param("membershipId") UUID membershipId);
+    int divertPendingForDeletedMembership(
+            @org.springframework.data.repository.query.Param("membershipId") UUID membershipId,
+            @org.springframework.data.repository.query.Param("reason") String reason);
 
     /**
      * DSAR (spec §7): null the recipient PII (email/phone) for every row belonging
@@ -460,4 +466,28 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
         "UPDATE CampaignRecipient r SET r.email=null, r.phoneE164=null "
         + "WHERE r.membershipId=:membershipId")
     void redactPiiByMembershipId(@org.springframework.data.repository.query.Param("membershipId") UUID membershipId);
+
+    // Retention purge: finished rows of a campaign that ended before the cutoff; pending rows keep their address.
+    String ENDED_BEFORE_WHERE = " c.id = r.campaign_id AND c.org_id = :orgId"
+            + " AND c.status IN ('sent', 'canceled', 'failed') AND r.status <> 'pending'"
+            + " AND COALESCE(c.sent_at, c.created_at) < :cutoff"
+            + " AND (r.email IS NOT NULL OR r.phone_e164 IS NOT NULL)";
+
+    /** Same columns as {@link #redactPiiByMembershipId}, for rows of campaigns that ended before {@code cutoff}. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients r SET email = NULL, phone_e164 = NULL"
+            + " FROM campaigns c WHERE" + ENDED_BEFORE_WHERE, nativeQuery = true)
+    int redactPiiForCampaignsEndedBefore(@Param("orgId") UUID orgId, @Param("cutoff") java.time.Instant cutoff);
+
+    @Query(value = "SELECT COUNT(*) FROM campaign_recipients r, campaigns c WHERE" + ENDED_BEFORE_WHERE,
+            nativeQuery = true)
+    long countPiiForCampaignsEndedBefore(@Param("orgId") UUID orgId, @Param("cutoff") java.time.Instant cutoff);
+
+    /** Orgs with a campaign that still has a recipient row carrying an address. */
+    @Query(value = "SELECT DISTINCT c.org_id FROM campaigns c WHERE EXISTS (SELECT 1 FROM campaign_recipients r"
+            + " WHERE r.campaign_id = c.id"
+            + " AND (r.email IS NOT NULL OR r.phone_e164 IS NOT NULL))",
+            nativeQuery = true)
+    List<UUID> findOrgIdsWithRecipientPii();
 }

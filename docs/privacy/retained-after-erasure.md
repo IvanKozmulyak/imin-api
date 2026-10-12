@@ -33,7 +33,22 @@ gone" — it is this list.
 | Meta CAPI send log | `meta_capi_events` | Row kept as evidence that a disclosure to Meta happened; `email_sha256`, `fbp` and `fbc` are nulled, so the row records that a send occurred without identifying who. |
 | Audit trail | `audit_logs` | Deliberately immutable, and it is the proof the erasure itself was performed. `actor_email` is nulled; the action, target and timestamp remain. |
 | Erasure ledger | `erased_addresses` | The normalized address only (V99). It exists solely so the nightly `AudienceBackfillJob` does not rebuild an audience profile from the retained orders — keeping it is what makes the erasure stick. |
-| Marketing opt-out | `marketing_optouts` | Kept deliberately for an org-scoped erasure: dropping it would let the next purchase re-subscribe someone who had opted out. Removed for a buyer-account erasure, where the account itself is going. |
+| Marketing opt-out | `marketing_optouts` | Kept deliberately for an org-scoped erasure: dropping it would let the next purchase re-subscribe someone who had opted out. Removed for a buyer-account erasure, where the account itself is going, and by the retention purge 3 years after `created_at`. |
+
+## Retention purge (3 years)
+
+`AudienceRetentionPurgeJob` (04:15 Europe/Paris, behind `IMIN_AUDIENCE_RETENTION_PURGE_ENABLED`, default off)
+applies the privacy policy's 3-year rule for every org. The cutoff is today in the org's timezone minus 1095 days.
+
+| What | Removed | Kept |
+|---|---|---|
+| Membership with no contact since the cutoff (newest of own purchase or attendance, contact from the person, any order of the org for the address, a person-sourced email consent, an imported last purchase date; else its creation date) | The membership, its consent records and confirmation tokens, marketing suppressions, fan features, import provenance, experiment assignments; the consumer when no other membership or verified buyer-account address uses it. Queued recipient rows of the member are skipped with reason `retention_purged`, and all its rows lose `email` and `phone_e164`. | Orders, tickets, `notify_subscriptions`. No `erased_addresses` row is written: a new purchase or sign-up starts a new membership. |
+| `marketing_optouts` | Rows created before the cutoff | Newer rows |
+| `campaign_recipients` | `email`, `phone_e164` of non-pending rows of `sent`/`canceled`/`failed` campaigns that ended before the cutoff | Status, skip reason and timestamps (anonymous aggregate); pending rows |
+| `audit_logs` | Nothing | One `AUDIENCE_RETENTION_PURGED` row per org per run with counts only |
+
+The nightly `AudienceBackfillJob` skips an (org, address) whose newest order is older than the cutoff, and never
+restores a checkout consent from such an order, so the purge is not undone from the retained orders.
 
 ## Known gaps
 

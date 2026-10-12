@@ -6,6 +6,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.service.RetentionCutoff;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
@@ -58,6 +59,7 @@ public class AudienceOrderProjector {
     private final AudiencePlanLogic logic;
     private final TransactionTemplate requiresNew;
     private final ErasedAddressRepository erasedAddressRepo;
+    private final RetentionCutoff retentionCutoff;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
@@ -68,8 +70,10 @@ public class AudienceOrderProjector {
                                    OrganizationRepository orgRepo,
                                    AudiencePlanLogic logic,
                                    PlatformTransactionManager transactionManager,
-                                   ErasedAddressRepository erasedAddressRepo) {
+                                   ErasedAddressRepository erasedAddressRepo,
+                                   RetentionCutoff retentionCutoff) {
         this.erasedAddressRepo = erasedAddressRepo;
+        this.retentionCutoff = retentionCutoff;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.orgRepo = orgRepo;
@@ -241,17 +245,22 @@ public class AudienceOrderProjector {
             TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             return;
         }
+        Instant cutoffAt = retentionCutoff.forOrg(orgId).at();
         for (Order order : orderRepo.findByOrgIdAndNormalizedEmail(orgId, normalizedEmail)) {
-            if (restorable(m, order)) {
+            if (restorable(m, order, cutoffAt)) {
                 captureCheckoutConsent(orgId, m, order.getId(), order.getMarketingOptInProof(),
                         provenTextVersion(order), order.getCreatedAt());
             }
         }
     }
 
-    /** Whether the order's checkout grant is missing and nothing the member did since, or before it, refuses it. */
-    private boolean restorable(Membership m, Order order) {
+    /**
+     * Whether the order's checkout grant is missing and nothing the member did since, or before it, refuses it.
+     * An order from before the retention cutoff is archived: its tick is never replayed.
+     */
+    private boolean restorable(Membership m, Order order, Instant cutoffAt) {
         if (!order.isMarketingOptIn()) return false;
+        if (order.getCreatedAt().isBefore(cutoffAt)) return false;
         String proof = order.getMarketingOptInProof();
         if (proof == null || proof.isBlank()) return false;
         if (ERASE_PENDING.equals(m.getStatus())) return false;

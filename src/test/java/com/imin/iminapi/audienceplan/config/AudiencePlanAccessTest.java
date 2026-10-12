@@ -81,6 +81,7 @@ class AudiencePlanAccessTest {
                 arguments("IMIN_AUDIENCE_PLAN_SENDS_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getSendsEnabled),
                 arguments("IMIN_AUDIENCE_PLAN_SOFT_OPT_IN", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getSoftOptInEnabled),
                 arguments("IMIN_AUDIENCE_RETENTION_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getRetentionJobEnabled),
+                arguments("IMIN_AUDIENCE_RETENTION_PURGE_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getRetentionPurgeEnabled),
                 arguments("IMIN_CONSENT_GATE_ALL_CAMPAIGNS", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getConsentGateAllCampaigns),
                 arguments("IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getLegalIdentityAllCampaigns),
                 arguments("IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED", (Function<AudiencePlanProperties, Boolean>) AudiencePlanProperties::getConsentConfirmationEmailsEnabled));

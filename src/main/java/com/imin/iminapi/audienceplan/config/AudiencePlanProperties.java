@@ -34,6 +34,9 @@ public class AudiencePlanProperties {
     /** Lets the nightly retention job remove basis past 3 years; false = dry run that only logs counts. Blank binds false. */
     private Boolean retentionJobEnabled = Boolean.FALSE;
 
+    /** Lets the nightly retention purge delete memberships, opt-outs and recipient PII; false = dry run. Blank binds false. */
+    private Boolean retentionPurgeEnabled = Boolean.FALSE;
+
     /** Requires ConsentGate for every campaign's recipients, not only audience-plan ones. Blank binds false. */
     private Boolean consentGateAllCampaigns = Boolean.FALSE;
 
@@ -109,6 +112,8 @@ public class AudiencePlanProperties {
     public void setSoftOptInEnabled(Boolean softOptInEnabled) { this.softOptInEnabled = Boolean.TRUE.equals(softOptInEnabled); }
     public Boolean getRetentionJobEnabled() { return retentionJobEnabled; }
     public void setRetentionJobEnabled(Boolean retentionJobEnabled) { this.retentionJobEnabled = Boolean.TRUE.equals(retentionJobEnabled); }
+    public Boolean getRetentionPurgeEnabled() { return retentionPurgeEnabled; }
+    public void setRetentionPurgeEnabled(Boolean retentionPurgeEnabled) { this.retentionPurgeEnabled = Boolean.TRUE.equals(retentionPurgeEnabled); }
     public Boolean getConsentGateAllCampaigns() { return consentGateAllCampaigns; }
     public void setConsentGateAllCampaigns(Boolean consentGateAllCampaigns) { this.consentGateAllCampaigns = Boolean.TRUE.equals(consentGateAllCampaigns); }
     public Boolean getLegalIdentityAllCampaigns() { return legalIdentityAllCampaigns; }

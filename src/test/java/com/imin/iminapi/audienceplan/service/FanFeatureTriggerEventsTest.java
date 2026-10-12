@@ -212,7 +212,7 @@ class FanFeatureTriggerEventsTest {
             while (pool.getActiveCount() < 1 && System.nanoTime() < deadline) Thread.sleep(5);
             assertThat(pool.getActiveCount()).isEqualTo(1);
 
-            publisher.publishEvent(new AudienceBackfillCompleted(1, 0));
+            publisher.publishEvent(new AudienceBackfillCompleted(1, 0, 0));
 
             // Run inline, the pass would have finished and the queue would be empty.
             assertThat(pool.getQueue()).hasSize(1);
@@ -232,7 +232,8 @@ class FanFeatureTriggerEventsTest {
                 "  " + email.toUpperCase() + " ", Instant.now(), Ticket.STATE_ISSUED);
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses,
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
                 .onTicketsIssued(new TicketsIssuedEvent(o.getId()));
 
         assertThat(captured).containsExactly(new MembershipProjected(org.id(), email));
@@ -242,7 +243,8 @@ class FanFeatureTriggerEventsTest {
     void ticketsIssued_unknownOrder_publishesNothing() {
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses,
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
                 .onTicketsIssued(new TicketsIssuedEvent(UUID.randomUUID()));
 
         assertThat(captured).isEmpty();
