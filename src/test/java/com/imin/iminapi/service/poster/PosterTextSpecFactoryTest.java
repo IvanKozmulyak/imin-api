@@ -28,6 +28,8 @@ class PosterTextSpecFactoryTest {
 
         assertThat(spec.required()).containsExactly("BIG NIGHT - BERLIN", "7 JUN 2026", "RSO");
         assertThat(spec.allowed()).contains("DJ A", "DJ B", "BERLIN");
+        // Date and city are built upper-case, so the gate takes them only as written or in ALL CAPS.
+        assertThat(spec.exact()).containsExactly("7 JUN 2026", "BERLIN");
     }
 
     // Catches: the date left out of posters (the renderer drops text it reads late) and DJ or city

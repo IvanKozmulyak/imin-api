@@ -80,6 +80,18 @@ class PosterTextValidationServiceTest {
         assertThat(client.reads).isEqualTo(1);
     }
 
+    // Catches: a lowercase date passing because the gate dropped the spec's exact list.
+    @Test
+    void exactStrings_fromTheSpec_reachTheMatcher() {
+        PosterTextSpec spec = new PosterTextSpec(SPEC.required(), SPEC.allowed(), "prompt", List.of("7 JUN 2026"));
+        FakeClient client = new FakeClient(() -> transcript("BIG NIGHT", "7 jun 2026"), () -> CLEAN_EDGES);
+
+        var decision = new PosterTextValidationService(client, true, 0, false).validateOrExplain(PNG, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.missingRequired()).containsExactly("7 JUN 2026");
+    }
+
     // Catches: a truncated or failed read accepted as "no text found", or recorded without saying why.
     @ParameterizedTest(name = "{0}")
     @MethodSource("readFailures")
@@ -161,6 +173,7 @@ class PosterTextValidationServiceTest {
         assertThat(both.extraText()).containsExactly("GLITCH", "[edge bottom: © ODD MOOD CO.]");
         assertThat(both.edge()).isEqualTo(EdgeOutcome.MARKS);
         assertThat(one.accepted()).isTrue();
+        assertThat(one.extraText()).containsExactly("GLITCH");
     }
 
     private static final class FakeClient implements PosterTextValidationClient {

@@ -17,6 +17,7 @@ class PosterTextMatcherTest {
     private static final String DATE = "31 OCT 2026";
     private static final List<String> REQUIRED = List.of(TITLE, DATE);
     private static final List<String> ALLOWED = List.of(TITLE, DATE, "PARIS", "KOLA", "Jean-Luc");
+    private static final List<String> EXACT = List.of(DATE, "PARIS");
 
     private static Seen s(String text) {
         return new Seen(text, 1);
@@ -32,7 +33,7 @@ class PosterTextMatcherTest {
     @MethodSource("rows")
     void match_appliesCaseRepeatAndJoinRules(String name, List<Seen> texts, List<String> unreadable,
                                              List<String> missing, List<String> extra) {
-        PosterTextMatcher.Match m = PosterTextMatcher.match(new Transcript(texts, unreadable), REQUIRED, ALLOWED);
+        PosterTextMatcher.Match m = PosterTextMatcher.match(new Transcript(texts, unreadable), REQUIRED, ALLOWED, EXACT);
 
         assertThat(m.missing()).containsExactlyElementsOf(missing);
         assertThat(m.extra()).containsExactlyElementsOf(extra);
@@ -45,8 +46,16 @@ class PosterTextMatcherTest {
                 Arguments.of("one letter re-cased", List.of(s("THE MIDNIGHT BEAn SOCIETY"), s(DATE)), List.of(),
                         List.of(TITLE), List.of("THE MIDNIGHT BEAn SOCIETY")),
                 Arguments.of("lowercase", List.of(s("the midnight bean society"), s(DATE)), List.of(), List.of(), List.of()),
-                Arguments.of("Title Case of a string typed in caps", List.of(s(TITLE), s(DATE), s("Paris")), List.of(),
+                Arguments.of("Title Case of a name typed in caps", List.of(s(TITLE), s(DATE), s("Kola")), List.of(),
                         List.of(), List.of()),
+                Arguments.of("city in Title Case", List.of(s(TITLE), s(DATE), s("Paris")), List.of(),
+                        List.of(), List.of("Paris")),
+                Arguments.of("date in lowercase", List.of(s(TITLE), s("31 oct 2026")), List.of(),
+                        List.of(DATE), List.of("31 oct 2026")),
+                Arguments.of("combined block with a re-cased word", List.of(s("31 OCT 2026 THE MIDNIGHT BEAn SOCIETY")),
+                        List.of(), List.of(TITLE, DATE), List.of("31 OCT 2026 THE MIDNIGHT BEAn SOCIETY")),
+                Arguments.of("combined block with the allowed-only city", List.of(s(TITLE), s("31 OCT 2026 PARIS")),
+                        List.of(), List.of(DATE), List.of("31 OCT 2026 PARIS")),
                 Arguments.of("each word in its own allowed case", List.of(s("THE Midnight bean SOCIETY"), s(DATE)),
                         List.of(), List.of(), List.of()),
                 Arguments.of("one letter re-cased inside a word", List.of(s("THE MIDNIGHT BeaN SOCIETY"), s(DATE)),

@@ -53,12 +53,12 @@ public class PosterTextValidationService {
                     List.of(), List.of(), false, read, EdgeOutcome.SKIPPED);
         }
 
-        PosterTextMatcher.Match match = PosterTextMatcher.match(transcript, spec.required(), spec.allowed());
+        PosterTextMatcher.Match match = PosterTextMatcher.match(transcript, spec.required(), spec.allowed(), exactOf(spec));
         if (!match.missing().isEmpty() || match.extra().size() > maxExtraTextItems) {
             return rejected(match.missing(), match.extra(), EdgeOutcome.SKIPPED);
         }
         if (!edgePassEnabled) {
-            return ValidationDecision.accepted(EdgeOutcome.OFF);
+            return ValidationDecision.accepted(EdgeOutcome.OFF, match.extra());
         }
 
         List<String> edgeExtras;
@@ -68,10 +68,10 @@ public class PosterTextValidationService {
         } catch (PosterTextValidationClient.UnusableReadException e) {
             // The edge pass only adds checks: when it cannot answer, the main read's verdict stands.
             log.warn("Text gate edge pass returned an unusable read; keeping the main verdict: {}", e.getMessage());
-            return ValidationDecision.accepted(EdgeOutcome.UNUSABLE);
+            return ValidationDecision.accepted(EdgeOutcome.UNUSABLE, match.extra());
         } catch (RuntimeException e) {
             log.warn("Text gate edge pass failed; keeping the main verdict: {}", e.toString());
-            return ValidationDecision.accepted(EdgeOutcome.FAILED);
+            return ValidationDecision.accepted(EdgeOutcome.FAILED, match.extra());
         }
 
         List<String> allExtra = new ArrayList<>(match.extra());
@@ -79,7 +79,11 @@ public class PosterTextValidationService {
         if (allExtra.size() > maxExtraTextItems) {
             return rejected(List.of(), allExtra, EdgeOutcome.MARKS);
         }
-        return ValidationDecision.accepted(edgeExtras.isEmpty() ? EdgeOutcome.CLEAN : EdgeOutcome.MARKS);
+        return ValidationDecision.accepted(edgeExtras.isEmpty() ? EdgeOutcome.CLEAN : EdgeOutcome.MARKS, allExtra);
+    }
+
+    private static List<String> exactOf(PosterTextSpec spec) {
+        return spec.exact() == null ? List.of() : spec.exact();
     }
 
     private static ValidationDecision rejected(List<String> missing, List<String> extra, EdgeOutcome edge) {
@@ -128,7 +132,12 @@ public class PosterTextValidationService {
         }
 
         public static ValidationDecision accepted(EdgeOutcome edge) {
-            return new ValidationDecision(true, null, List.of(), List.of(), true, ReadOutcome.READ, edge);
+            return accepted(edge, List.of());
+        }
+
+        /** {@code tolerated} keeps extras under the configured tolerance visible in the journal count. */
+        public static ValidationDecision accepted(EdgeOutcome edge, List<String> tolerated) {
+            return new ValidationDecision(true, null, List.of(), List.copyOf(tolerated), true, ReadOutcome.READ, edge);
         }
     }
 }

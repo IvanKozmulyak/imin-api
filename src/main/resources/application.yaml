@@ -106,7 +106,8 @@ poster:
     generator-read-timeout-seconds: ${POSTER_STYLE_CARDS_GENERATOR_READ_TIMEOUT_SECONDS:180}
   text-validation:
     # Text (vision) gate — HARD. The model only transcribes; PosterTextMatcher decides: each word of a listed
-    # string matches as written, ALL CAPS, Title Case or lowercase, once (copies and fragments are extra). Any missing or extra text
+    # string matches as written, ALL CAPS, Title Case or lowercase (date and city only as written or ALL CAPS),
+    # once (copies and fragments are extra). Any missing or extra text
     # triggers a fresh generate with a new seed, and the fewest-errors attempt ships best-effort. Uses a
     # strong vision model because gpt-4o-mini under-read dense poster type.
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}

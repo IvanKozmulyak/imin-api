@@ -17,8 +17,10 @@ import java.util.Set;
  * comparison happens here, so a misspelled or re-cased word can never be waved through as "near".
  *
  * <p>A listed string matches when each word is drawn as written, in ALL CAPS, Title Case or lowercase
- * (a word re-cased inside, like "BEAn", does not), and each listed string may appear once: further
- * copies and fragments are extra. One block may hold several required strings joined by spaces.
+ * (a word re-cased inside, like "BEAn", does not); an {@code exact} string (date, city) only as written
+ * or in ALL CAPS. Each listed string may appear once: further copies and fragments are extra. One block
+ * may hold several required strings joined by spaces.
+ * ponytail: per-word casing rejects "Jean-luc" for "Jean-Luc", "(live)" for "(Live)" and "STRASSE" for "Straße".
  */
 public final class PosterTextMatcher {
 
@@ -39,14 +41,22 @@ public final class PosterTextMatcher {
         return s.trim();
     }
 
-    static boolean matches(String seen, String target) {
+    /** {@code seen} against the targets joined by spaces, each word checked by its own target's case rule. */
+    static boolean matches(String seen, List<String> targets, Set<String> exact) {
         String[] s = normalize(seen).split(" ");
-        String[] t = normalize(target).split(" ");
-        if (s.length != t.length) return false;
-        for (int i = 0; i < s.length; i++) {
-            if (!wordMatches(s[i], t[i])) return false;
+        int i = 0;
+        for (String target : targets) {
+            boolean strict = exact.contains(target);
+            for (String word : normalize(target).split(" ")) {
+                if (i >= s.length) return false;
+                boolean ok = strict
+                        ? s[i].equals(word) || s[i].equals(word.toUpperCase(Locale.ROOT))
+                        : wordMatches(s[i], word);
+                if (!ok) return false;
+                i++;
+            }
         }
-        return true;
+        return i == s.length;
     }
 
     private static boolean wordMatches(String seen, String target) {
@@ -60,6 +70,12 @@ public final class PosterTextMatcher {
     }
 
     public static Match match(Transcript transcript, List<String> required, List<String> allowed) {
+        return match(transcript, required, allowed, List.of());
+    }
+
+    public static Match match(Transcript transcript, List<String> required, List<String> allowed,
+                              List<String> exactStrings) {
+        Set<String> exact = Set.copyOf(exactStrings);
         List<String> entries = new ArrayList<>();
         for (Seen seen : transcript.texts()) {
             for (int i = 0; i < seen.count(); i++) entries.add(seen.text());
@@ -70,13 +86,13 @@ public final class PosterTextMatcher {
         Set<String> covered = new LinkedHashSet<>();
         for (String target : required) {
             if (covered.contains(target)) continue;
-            if (consume(entries, used, target)) continue;
-            List<String> group = consumeCombined(entries, used, target, required, covered);
+            if (consume(entries, used, target, exact)) continue;
+            List<String> group = consumeCombined(entries, used, target, required, covered, exact);
             if (group.isEmpty()) missing.add(target);
             else covered.addAll(group);
         }
         for (String target : allowed) {
-            if (!required.contains(target)) consume(entries, used, target);
+            if (!required.contains(target)) consume(entries, used, target, exact);
         }
 
         Map<String, Integer> leftovers = new LinkedHashMap<>();
@@ -90,9 +106,10 @@ public final class PosterTextMatcher {
     }
 
     /** Takes the first unused entry equal to the target, else the first run of 2–4 unused entries that joins to it. */
-    private static boolean consume(List<String> entries, boolean[] used, String target) {
+    private static boolean consume(List<String> entries, boolean[] used, String target, Set<String> exact) {
+        List<String> one = List.of(target);
         for (int i = 0; i < entries.size(); i++) {
-            if (!used[i] && matches(entries.get(i), target)) {
+            if (!used[i] && matches(entries.get(i), one, exact)) {
                 used[i] = true;
                 return true;
             }
@@ -103,7 +120,7 @@ public final class PosterTextMatcher {
                 if (used[end]) break;
                 if (end > start) joined.append(' ');
                 joined.append(entries.get(end));
-                if (end > start && matches(joined.toString(), target)) {
+                if (end > start && matches(joined.toString(), one, exact)) {
                     for (int k = start; k <= end; k++) used[k] = true;
                     return true;
                 }
@@ -117,7 +134,7 @@ public final class PosterTextMatcher {
      * not yet found, in any order (e.g. "3 OCT 2026 LA STATION"); returns the strings it covers.
      */
     private static List<String> consumeCombined(List<String> entries, boolean[] used, String target,
-                                                List<String> required, Set<String> covered) {
+                                                List<String> required, Set<String> covered, Set<String> exact) {
         List<String> others = new ArrayList<>();
         for (String r : required) {
             if (!r.equals(target) && !covered.contains(r)) others.add(r);
@@ -126,9 +143,8 @@ public final class PosterTextMatcher {
         permutations(new ArrayList<>(List.of(target)), others, orders);
         for (List<String> order : orders) {
             if (order.size() < 2) continue;
-            String joined = String.join(" ", order);
             for (int i = 0; i < entries.size(); i++) {
-                if (!used[i] && matches(entries.get(i), joined)) {
+                if (!used[i] && matches(entries.get(i), order, exact)) {
                     used[i] = true;
                     return order;
                 }

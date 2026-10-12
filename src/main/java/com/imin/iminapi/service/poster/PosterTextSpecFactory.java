@@ -27,7 +27,12 @@ public class PosterTextSpecFactory {
         // DJ names and the city stay allowed for the gate but are never asked for: in DJ mode the
         // character reference carries the DJ, and extra strings were where invented text crept in.
         List<String> allowed = new ArrayList<>(required);
-        if (has(r.city())) allowed.add(r.city().trim().toUpperCase(Locale.ENGLISH));
+        List<String> exact = new ArrayList<>();
+        if (date != null) exact.add(date);
+        if (has(r.city())) {
+            allowed.add(r.city().trim().toUpperCase(Locale.ENGLISH));
+            exact.add(r.city().trim().toUpperCase(Locale.ENGLISH));
+        }
         if (has(r.djName())) {
             Arrays.stream(r.djName().split("[,·/&]"))
                     .map(String::trim)
@@ -35,7 +40,8 @@ public class PosterTextSpecFactory {
                     .forEach(allowed::add);
         }
 
-        return new PosterTextSpec(List.copyOf(required), List.copyOf(allowed), textSentence(title, date, venue));
+        return new PosterTextSpec(List.copyOf(required), List.copyOf(allowed), textSentence(title, date, venue),
+                List.copyOf(exact));
     }
 
     /**

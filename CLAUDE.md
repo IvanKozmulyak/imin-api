@@ -171,7 +171,7 @@ ConceptController → ConceptStudioService
         → text gate (hard)  → the vision model transcribes verbatim (text + count + unreadable marks);
                               PosterTextMatcher compares in code: each word of a listed string matches
                               as written, ALL CAPS, Title Case or lowercase (a word re-cased inside,
-                              e.g. "BEAn", fails), once — copies and fragments are extra; one block
+                              e.g. "BEAn", fails; date and city only as written or ALL CAPS), once — copies and fragments are extra; one block
                               may hold several required strings joined by spaces. Optional second
                               read of the four enlarged 12% edge strips
                               (POSTER_TEXT_VALIDATION_EDGE_PASS_ENABLED, default false); an
