@@ -80,10 +80,12 @@ public class PayoutRetentionMonitor {
     /**
      * One stranded event. {@code netMinor} is in {@code currency}: the settlement currency when every
      * order is stamped with what Stripe settled, else the event currency at presentment ({@code approximate}).
-     * {@code cancelled} events are held by the payout job, so ops refund or release instead of forcing a payout.
+     * Orders settled in more than one currency have no single figure: {@code mixedCurrencies} is true and
+     * {@code currency} is null. {@code cancelled} events are held by the payout job, so ops refund or
+     * release instead of forcing a payout.
      */
     record StrandedEvent(UUID eventId, UUID orgId, Instant endsAt, long netMinor, String currency,
-                         long unstampedOrders, boolean approximate, boolean cancelled) {}
+                         long unstampedOrders, boolean approximate, boolean mixedCurrencies, boolean cancelled) {}
 
     @Scheduled(cron = "0 30 3 * * *", zone = "Europe/Amsterdam")
     @SchedulerLock(name = "PayoutRetentionMonitor.scan", lockAtLeastFor = "PT30S", lockAtMostFor = "PT10M")
@@ -92,20 +94,21 @@ public class PayoutRetentionMonitor {
 
         List<StrandedEvent> stranded = findStranded(clock.instant(), BATCH_SIZE);
         for (StrandedEvent s : stranded) {
+            String net = s.mixedCurrencies()
+                    ? "net=mixed currencies (orders settled in more than one currency)"
+                    : "net=" + (s.approximate() ? "≈" : "") + s.netMinor() + " " + s.currency()
+                            + " (" + s.unstampedOrders() + " unstamped orders)";
             if (s.cancelled()) {
                 // Held on purpose by the payout job; a payout is the wrong fix, refunds or a release are.
-                log.warn("[payout-retention] HELD FUNDS: event {} org {} is CANCELLED, ended {} (>{} d ago), "
-                                + "net={}{} {} ({} unstamped orders) and has no PAID payout run; "
-                                + "refund buyers or release the funds before Stripe's retention window closes",
-                        s.eventId(), s.orgId(), s.endsAt(), RETENTION_BOUND.toDays(),
-                        s.approximate() ? "≈" : "", s.netMinor(), s.currency(), s.unstampedOrders());
+                log.warn("[payout-retention] HELD FUNDS: event {} org {} is CANCELLED, ended {} (>{} d ago), {} "
+                                + "and has no PAID payout run; refund buyers or release the funds before Stripe's "
+                                + "retention window closes",
+                        s.eventId(), s.orgId(), s.endsAt(), RETENTION_BOUND.toDays(), net);
                 continue;
             }
-            log.warn("[payout-retention] STRANDED FUNDS: event {} org {} ended {} (>{} d ago) net={}{} {} "
-                            + "({} unstamped orders) has no PAID payout run — force a payout before Stripe's "
-                            + "retention window closes",
-                    s.eventId(), s.orgId(), s.endsAt(), RETENTION_BOUND.toDays(),
-                    s.approximate() ? "≈" : "", s.netMinor(), s.currency(), s.unstampedOrders());
+            log.warn("[payout-retention] STRANDED FUNDS: event {} org {} ended {} (>{} d ago) {} "
+                            + "has no PAID payout run — force a payout before Stripe's retention window closes",
+                    s.eventId(), s.orgId(), s.endsAt(), RETENTION_BOUND.toDays(), net);
         }
         if (!stranded.isEmpty()) {
             log.warn("[payout-retention] scan flagged {} event(s) with funds past the {}-day retention bound",
@@ -154,9 +157,14 @@ public class PayoutRetentionMonitor {
         }
         long net = Math.max(0L, stake - disputeWithholding.organizerShareLiveMinor(e.getId()));
         if (net <= 0L) return null;
+        boolean cancelled = e.getStatus() == EventStatus.CANCELLED;
+        if (currencies.size() > 1) {
+            return new StrandedEvent(e.getId(), e.getOrgId(), e.getEndsAt(), net, null, unstamped, true, true,
+                    cancelled);
+        }
         boolean exact = unstamped == 0L && currencies.size() == 1;
         String currency = exact ? currencies.iterator().next() : e.getCurrency();
-        return new StrandedEvent(e.getId(), e.getOrgId(), e.getEndsAt(), net, currency, unstamped, !exact,
-                e.getStatus() == EventStatus.CANCELLED);
+        return new StrandedEvent(e.getId(), e.getOrgId(), e.getEndsAt(), net, currency, unstamped, !exact, false,
+                cancelled);
     }
 }

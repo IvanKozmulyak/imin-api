@@ -45,6 +45,7 @@ class PayoutRetentionMonitorTest {
     @Autowired OrganizationRepository orgs;
     @Autowired OrderRepository orders;
     @Autowired RefundRepository refunds;
+    @Autowired PayoutRunRepository payoutRuns;
     @Autowired DisputeRepository disputes;
     @Autowired PayoutRetentionMonitor monitor;
     @Autowired UserRepository users;
@@ -126,6 +127,52 @@ class PayoutRetentionMonitorTest {
 
         assertThat(strandedById(1, older.getId())).isNull();
         assertThat(strandedById(1, newer.getId())).as("found on a later page").isNotNull();
+    }
+
+    @Test
+    void an_event_already_paid_out_is_not_flagged() {
+        Organization org = eligibleOrg();
+        Event e = endedEvent(org, Instant.now().minus(100, ChronoUnit.DAYS));
+        order(e, 10_000, 1_000, true, false);
+        PayoutRun r = new PayoutRun();
+        r.setOrgId(org.getId());
+        r.setEventId(e.getId());
+        r.setStripeAccountId(org.getStripeAccountId());
+        r.setAmountMinor(9_000);
+        r.setCurrency("eur");
+        r.setStatus(PayoutRunStatus.PAID);
+        r.setAttempt(1);
+        r.setIdempotencyKey("evt:" + e.getId() + ":attempt:1");
+        payoutRuns.save(r);
+
+        assertThat(strandedById(200, e.getId())).as("the funds were disbursed").isNull();
+    }
+
+    /** Orders settled in two currencies have no single net to print, so none is summed. */
+    @Test
+    void orders_settled_in_two_currencies_are_flagged_without_a_summed_figure() {
+        Event e = endedEvent(eligibleOrg(), Instant.now().minus(100, ChronoUnit.DAYS));
+        order(e, 10_000, 1_000, true, false);
+        Order gbp = new Order();
+        gbp.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+        gbp.setEventId(e.getId());
+        gbp.setOrgId(e.getOrgId());
+        gbp.setEmail("buyer-" + UUID.randomUUID() + "@test.example");
+        gbp.setTotalMinor(5_000);
+        gbp.setCurrency("eur");
+        gbp.setApplicationFeeMinor(500);
+        gbp.setPaymentMethod("card");
+        // Settlement columns are insert-only, so the second currency is set before the save.
+        gbp.setSettlementCurrency("gbp");
+        gbp.setSettlementGrossMinor(4_300L);
+        gbp.setSettlementFeeMinor(430L);
+        orders.save(gbp);
+
+        PayoutRetentionMonitor.StrandedEvent s = strandedById(200, e.getId());
+
+        assertThat(s).isNotNull();
+        assertThat(s.mixedCurrencies()).isTrue();
+        assertThat(s.currency()).isNull();
     }
 
     private PayoutRetentionMonitor.StrandedEvent strandedById(int pageSize, UUID eventId) {
