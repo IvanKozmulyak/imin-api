@@ -101,7 +101,7 @@ class MembershipNpsClearTest {
         Membership stale = memberships.findByIdAndOrgId(mid, orgId).orElseThrow();
         memberships.updateNps(mid, (short) 9);
 
-        stale.setVibe("late");
+        stale.setNotes("late");
         memberships.save(stale);
 
         assertThat(nps()).isEqualTo((short) 9);
@@ -110,7 +110,7 @@ class MembershipNpsClearTest {
     @Test
     void a_save_before_the_score_lets_the_score_land() {
         Membership m = memberships.findByIdAndOrgId(mid, orgId).orElseThrow();
-        m.setVibe("early");
+        m.setNotes("early");
         memberships.save(m);
 
         memberships.updateNps(mid, (short) 9);
