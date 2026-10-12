@@ -175,6 +175,22 @@ class PayoutRetentionMonitorTest {
         assertThat(s.currency()).isNull();
     }
 
+    /** A cancelled event is held by the payout job, so it is reported as held funds, not a payout to force. */
+    @ParameterizedTest
+    @EnumSource(value = EventStatus.class, names = {"PAST", "CANCELLED"})
+    void a_stranded_cancelled_event_is_reported_as_held_funds(EventStatus status) {
+        Event e = endedEvent(eligibleOrg(), Instant.now().minus(100, ChronoUnit.DAYS));
+        e.setStatus(status);
+        events.save(e);
+        order(e, 10_000, 1_000, true, false);
+
+        PayoutRetentionMonitor.StrandedEvent s = strandedById(200, e.getId());
+
+        assertThat(s).as("the event still holds 9_000 of funds").isNotNull();
+        assertThat(s.netMinor()).isEqualTo(9_000L);
+        assertThat(s.cancelled()).isEqualTo(status == EventStatus.CANCELLED);
+    }
+
     private PayoutRetentionMonitor.StrandedEvent strandedById(int pageSize, UUID eventId) {
         return monitor.findStranded(Instant.now(), pageSize).stream()
                 .filter(s -> s.eventId().equals(eventId)).findFirst().orElse(null);
