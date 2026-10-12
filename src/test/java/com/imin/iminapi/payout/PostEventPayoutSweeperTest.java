@@ -338,7 +338,104 @@ class PostEventPayoutSweeperTest {
         assertThat(disputes.findById(d.getId()).orElseThrow().getRecoveredAt()).isNotNull();
     }
 
+    @Test
+    void cancelled_event_is_not_a_payout_candidate_unless_a_retrying_run_needs_replay() {
+        Event cancelled = cancelledEvent(eligibleOrg(), Instant.now().minus(12, ChronoUnit.DAYS));
+        Organization replayOrg = eligibleOrg();
+        Event replaying = cancelledEvent(replayOrg, Instant.now().minus(11, ChronoUnit.DAYS));
+        seedRun(replayOrg, replaying, PayoutRunStatus.RETRYING);
+        Event past = endedEvent(eligibleOrg(), Instant.now().minus(10, ChronoUnit.DAYS));
+
+        assertThat(candidateIds())
+                .as("a RETRYING run may already be a payout at Stripe; only its key replay resolves it")
+                .contains(replaying.getId(), past.getId())
+                .doesNotContain(cancelled.getId());
+    }
+
+    @Test
+    void held_report_lists_cancelled_events_with_live_paid_orders_only() {
+        Instant base = Instant.now().minus(30, ChronoUnit.DAYS);
+        List<UUID> excluded = new ArrayList<>();
+        // Excluded fixtures past the cutoff end before the held ones, so a dropped predicate would list them first.
+        Event notCancelled = endedEvent(eligibleOrg(), base.plusSeconds(1));
+        orderOn(notCancelled);
+        excluded.add(notCancelled.getId());
+        Event testOnly = cancelledEvent(eligibleOrg(), base.plusSeconds(2));
+        Order t = orderOn(testOnly);
+        t.setTestMode(true);
+        orders.save(t);
+        excluded.add(testOnly.getId());
+        Event free = cancelledEvent(eligibleOrg(), base.plusSeconds(3));
+        Order f = orderOn(free);
+        f.setTotalMinor(0);
+        f.setApplicationFeeMinor(0);
+        f.setSettlementGrossMinor(0L);
+        f.setSettlementFeeMinor(0L);
+        orders.save(f);
+        excluded.add(free.getId());
+        Event deleted = cancelledEvent(eligibleOrg(), base.plusSeconds(4));
+        orderOn(deleted);
+        jdbc.update("update events set deleted_at = ? where id = ?", Timestamp.from(Instant.now()), deleted.getId());
+        excluded.add(deleted.getId());
+        Event withinBuffer = cancelledEvent(eligibleOrg(), Instant.now().minus(1, ChronoUnit.DAYS));
+        orderOn(withinBuffer);
+        excluded.add(withinBuffer.getId());
+        Organization automatic = eligibleOrg();
+        automatic.setStripePayoutScheduleManual(false);
+        orgs.save(automatic);
+        Event automaticSchedule = cancelledEvent(automatic, base.plusSeconds(5));
+        orderOn(automaticSchedule);
+        excluded.add(automaticSchedule.getId());
+        Organization disabled = eligibleOrg();
+        disabled.setStripeConnectState(StripeConnectState.DISABLED);
+        Organization noTransfers = eligibleOrg();
+        noTransfers.setStripePayoutsEnabled(false);
+        Organization noAccount = eligibleOrg();
+        noAccount.setStripeAccountId(null);
+        int ineligible = 0;
+        for (Organization o : List.of(disabled, noTransfers, noAccount)) {
+            orgs.save(o);
+            Event e = cancelledEvent(o, base.plusSeconds(20 + ineligible++));
+            orderOn(e);
+            excluded.add(e.getId());
+        }
+        Event refundedInFull = cancelledEvent(eligibleOrg(), base.plusSeconds(30));
+        refund(orderOn(refundedInFull), 4_000, RefundStatus.SUCCEEDED);
+        excluded.add(refundedInFull.getId());
+        for (PayoutRunStatus moved : List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED,
+                PayoutRunStatus.RETRYING, PayoutRunStatus.PAID)) {
+            Organization o = eligibleOrg();
+            Event e = cancelledEvent(o, base.plusSeconds(6 + moved.ordinal()));
+            orderOn(e);
+            seedRun(o, e, moved);
+            excluded.add(e.getId());
+        }
+
+        Event held = cancelledEvent(eligibleOrg(), base.plusSeconds(60));
+        orderOn(held);
+        Organization partialOrg = eligibleOrg();
+        Event topUpOwed = cancelledEvent(partialOrg, base.plusSeconds(61));
+        orderOn(topUpOwed);
+        seedRun(partialOrg, topUpOwed, PayoutRunStatus.PARTIAL);
+
+        Event partlyRefunded = cancelledEvent(eligibleOrg(), base.plusSeconds(62));
+        refund(orderOn(partlyRefunded), 3_999, RefundStatus.SUCCEEDED);
+        Event refundFailed = cancelledEvent(eligibleOrg(), base.plusSeconds(63));
+        refund(orderOn(refundFailed), 4_000, RefundStatus.FAILED);
+
+        List<UUID> reported = events.findHeldCancelledPayoutEventIds(cutoff, PageRequest.of(0, 10_000));
+
+        assertThat(reported).contains(held.getId(), topUpOwed.getId(), partlyRefunded.getId(), refundFailed.getId());
+        assertThat(reported).doesNotContainAnyElementsOf(excluded);
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────────
+
+    private Event cancelledEvent(Organization owner, Instant endsAt) {
+        Event e = endedEvent(owner, endsAt);
+        e.setStatus(EventStatus.CANCELLED);
+        return events.save(e);
+    }
 
     private Organization eligibleOrg() {
         Organization o = new Organization();
@@ -406,6 +503,20 @@ class PostEventPayoutSweeperTest {
         o.setSettlementGrossMinor(4_000L);
         o.setSettlementFeeMinor(400L);
         return orders.save(o);
+    }
+
+    private Refund refund(Order o, long amountMinor, RefundStatus status) {
+        Refund r = new Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("eur");
+        r.setApplicationFeeRefundMinor(0);
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(status);
+        r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        return refunds.save(r);
     }
 
     private Refund platformFundedRefund(Order o) {

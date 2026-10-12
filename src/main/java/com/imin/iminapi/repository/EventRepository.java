@@ -584,6 +584,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      *   <li>its orders are not ALL test-mode (V130). A test-era event's gross is money
      *       that never reached a real balance; paying it out would move live funds against
      *       fake revenue. An event with no orders at all is untouched by this clause.</li>
+     *   <li>it is not CANCELLED (buyers may be owed refunds from that balance), unless a
+     *       RETRYING run must replay its key: that payout may already exist at Stripe.</li>
      * </ul>
      *
      * <p>{@code Organization} has no JPA back-reference from {@code Event}, so the
@@ -627,6 +629,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                     AND r1.status IN (com.imin.iminapi.payout.PayoutRunStatus.PLANNED,
                                       com.imin.iminapi.payout.PayoutRunStatus.SUBMITTED,
                                       com.imin.iminapi.payout.PayoutRunStatus.PAID))
+           AND (e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+                OR EXISTS (SELECT 1 FROM PayoutRun rr
+                            WHERE rr.eventId = e.id
+                              AND rr.status = com.imin.iminapi.payout.PayoutRunStatus.RETRYING))
            AND (NOT EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ot WHERE ot.eventId = e.id AND ot.testMode = true)
                 OR EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol WHERE ol.eventId = e.id AND ol.testMode = false))
            AND (e.endsAt > :afterEndsAt OR (e.endsAt = :afterEndsAt AND e.id > :afterId))
@@ -634,6 +640,45 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
 """)
     List<Event> findPayoutCandidatesAfter(@Param("cutoff") Instant cutoff, @Param("afterEndsAt") Instant afterEndsAt,
                                           @Param("afterId") UUID afterId, Pageable pageable);
+
+    /** Status of a non-deleted event read from the database, bypassing the persistence context; empty when deleted or gone. */
+    @Query("select e.status from Event e where e.id = :id and e.deletedAt is null")
+    Optional<EventStatus> findStatusIfNotDeleted(@Param("id") UUID id);
+
+    /**
+     * CANCELLED events of payout-eligible orgs, past the payout cutoff, with a live paid order not fully
+     * refunded and no payout run that already moved or will replay the money: their funds sit held on the balance.
+     */
+    @Query("""
+        SELECT e.id FROM Event e
+         WHERE e.status = com.imin.iminapi.model.EventStatus.CANCELLED
+           AND e.deletedAt IS NULL
+           AND e.endsAt IS NOT NULL
+           AND e.endsAt < :cutoff
+           AND EXISTS (
+                 SELECT 1 FROM Organization o
+                  WHERE o.id = e.orgId
+                    AND o.stripePayoutsEnabled = true
+                    AND o.stripePayoutScheduleManual = true
+                    AND o.stripeConnectState <> com.imin.iminapi.stripe.StripeConnectState.DISABLED
+                    AND o.stripeAccountId IS NOT NULL
+                    AND o.stripeAccountId <> ''
+               )
+           AND EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol
+                        WHERE ol.eventId = e.id AND ol.testMode = false AND ol.totalMinor > 0
+                          AND ol.totalMinor > COALESCE((SELECT SUM(rf.amountMinor) FROM com.imin.iminapi.refund.Refund rf
+                                WHERE rf.orderId = ol.id
+                                  AND rf.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED), 0))
+           AND NOT EXISTS (
+                 SELECT 1 FROM PayoutRun r
+                  WHERE r.eventId = e.id
+                    AND r.status IN (com.imin.iminapi.payout.PayoutRunStatus.PLANNED,
+                                     com.imin.iminapi.payout.PayoutRunStatus.SUBMITTED,
+                                     com.imin.iminapi.payout.PayoutRunStatus.RETRYING,
+                                     com.imin.iminapi.payout.PayoutRunStatus.PAID))
+         ORDER BY e.endsAt ASC, e.id ASC
+""")
+    List<UUID> findHeldCancelledPayoutEventIds(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     /** Lowest keyset cursor: before every real {@code endsAt} and the smallest uuid. */
     Instant FIRST_ENDS_AT = Instant.parse("0001-01-01T00:00:00Z");

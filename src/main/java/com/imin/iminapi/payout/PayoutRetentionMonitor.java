@@ -1,6 +1,7 @@
 package com.imin.iminapi.payout;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.stripe.StripeProperties;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -29,7 +30,8 @@ import java.util.List;
  * <p>Each day it finds events that ended more than {@link #RETENTION_BOUND} ago, still
  * carry sold revenue, belong to a manual-schedule eligible org, and have NO {@code PAID}
  * payout run — i.e. funds the org is likely still holding past the safe bound — and logs
- * a WARN alert per event so ops can force a payout before Stripe's deadline. It moves no
+ * a WARN alert per event so ops can force a payout before Stripe's deadline. A CANCELLED event
+ * gets its own HELD FUNDS message instead: the payout job holds it, so ops refund or release. It moves no
  * money and writes nothing; it is a read-only alarm.
  *
  * <p><b>Inert when the flag is off:</b> returns at the first line when
@@ -80,6 +82,15 @@ public class PayoutRetentionMonitor {
             // bound is an alert: ops must force a payout before Stripe's window closes.
             if (payoutRuns.existsByEventIdAndStatus(e.getId(), PayoutRunStatus.PAID)) continue;
             stranded++;
+            if (e.getStatus() == EventStatus.CANCELLED) {
+                // Held on purpose by the payout job; a payout is the wrong fix, refunds or a release are.
+                log.warn("[payout-retention] HELD FUNDS: event {} org {} is CANCELLED, ended {} (>{} d ago), "
+                                + "revenue_minor={} {} (gross, refunds not netted) and has no PAID payout run; "
+                                + "refund buyers or release the funds before Stripe's retention window closes",
+                        e.getId(), e.getOrgId(), e.getEndsAt(), RETENTION_BOUND.toDays(),
+                        e.getRevenueMinor(), e.getCurrency());
+                continue;
+            }
             log.warn("[payout-retention] STRANDED FUNDS: event {} org {} ended {} (>{} d ago) revenue={} {} "
                             + "has no PAID payout run — force a payout before Stripe's retention window closes",
                     e.getId(), e.getOrgId(), e.getEndsAt(), RETENTION_BOUND.toDays(),

@@ -5,6 +5,7 @@ import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.RefundRepository;
@@ -68,6 +69,10 @@ import java.util.UUID;
  *       the organizer's share of every LOST dispute not recovered yet, and transfer a recovered
  *       share back once its dispute turned won with no other dispute withholding on the order.
  *       The sweeper also runs this org-wide ({@link #recoverForOrg}) for orgs with no candidate event.</li>
+ *   <li><b>step 0c — cancelled-event hold.</b> A CANCELLED or deleted event is not paid: buyers may be
+ *       owed refunds from that balance. Nothing is written (no run, no attempt spent, no no-bank park);
+ *       the status is re-read from the database right before step 5. A RETRYING run is still replayed
+ *       with its key, since that payout may already exist. Once the event is not CANCELLED it pays normally.</li>
  *   <li><b>step 0 — double-pay guard (DB, not Stripe), FIRST.</b> A connected
  *       balance is one shared pool across all of an org's events, so AT MOST ONE
  *       in-flight payout per org per tick. Skip the event entirely if any
@@ -220,8 +225,8 @@ public class PostEventPayoutService {
         Event event = events.findById(eventId).orElse(null);
         if (event == null) return;
 
-        // Must match EventRepository.findPayoutCandidates exactly: "sell ⇒ payable" —
-        // the transfers capability is the gate, so RESTRICTED is payable, DISABLED is not.
+        // Org eligibility must match EventRepository.findPayoutCandidates exactly: "sell ⇒ payable" —
+        // the transfers capability is the gate, so RESTRICTED is payable, DISABLED is not. Event status: step 0c.
         Organization org = orgs.findById(event.getOrgId()).orElse(null);
         if (org == null
                 || !org.isStripePayoutsEnabled()
@@ -239,6 +244,16 @@ public class PostEventPayoutService {
         stamper.stampOrg(org);
         recoverPlatformFundedRefunds(org);
         settleDisputes(org);
+
+        // ── step 0c — a CANCELLED (or deleted) event is held: buyers may be owed refunds from this balance ──
+        // A RETRYING run is replayed with its key anyway: that payout may already exist at Stripe.
+        boolean replaying = payoutRuns.findFirstByEventIdAndStatusOrderByAttemptDesc(
+                eventId, PayoutRunStatus.RETRYING).isPresent();
+        if (!replaying && held(Optional.ofNullable(event.getDeletedAt() == null ? event.getStatus() : null))) {
+            log.warn("[payout] hold event {} org {} — event is cancelled or deleted; its funds stay on the "
+                    + "connected balance until a human refunds buyers or restores the event", eventId, org.getId());
+            return;
+        }
 
         // ── step 0a — PARKED-RUN GUARD ──
         // A run parked BLOCKED by the attempt cap needs a human and must never re-candidate.
@@ -290,7 +305,7 @@ public class PostEventPayoutService {
 
         // ── step 1c — an open refund holds the event: its money may still leave the balance ──
         // A RETRYING run replays a payout that may already exist, at its recorded amount; never delay it.
-        if (payoutRuns.findFirstByEventIdAndStatusOrderByAttemptDesc(eventId, PayoutRunStatus.RETRYING).isEmpty()) {
+        if (!replaying) {
             long open = refunds.countLiveOpenByEventId(eventId);
             if (open > 0L) {
                 long stale = refunds.countLiveOpenByEventIdCreatedBefore(eventId, stuckBefore());
@@ -422,6 +437,13 @@ public class PostEventPayoutService {
         // What the clamp leaves unpaid. Recorded on the row so the payout.paid
         // reconciliation lands on PARTIAL (top-up-able) rather than PAID (terminal).
         long remainingMinor = owedMinor - payoutMinor;
+
+        // ── step 4b — re-read the status from the database: the event may have been cancelled since step 0c ──
+        if (!replaying && held(events.findStatusIfNotDeleted(eventId))) {
+            log.warn("[payout] hold event {} org {} — event was cancelled or deleted while its payout was "
+                    + "computed; nothing written", eventId, org.getId());
+            return;
+        }
 
         // ── step 5 — write payout_runs row FIRST (insert-or-find on the deterministic key) ──
         // attempt 1 normally; a fresh attempt (new key) is used ONLY after a FAILED run.
@@ -648,6 +670,11 @@ public class PostEventPayoutService {
         if (e instanceof RateLimitException) return false;       // retry the same key
         Integer status = e.getStatusCode();
         return status != null && status >= 400 && status < 500;
+    }
+
+    /** Held = CANCELLED, or no status because the event is deleted or gone; DRAFT/LIVE/PAST money is earned. */
+    static boolean held(Optional<EventStatus> status) {
+        return status.map(s -> s == EventStatus.CANCELLED).orElse(true);
     }
 
     /**

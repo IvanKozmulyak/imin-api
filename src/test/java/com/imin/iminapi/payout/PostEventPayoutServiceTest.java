@@ -47,6 +47,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.invocation.InvocationOnMock;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -123,6 +124,8 @@ class PostEventPayoutServiceTest {
         volatile String transferCurrency = "eur";
         /** po_ ids land in payout_runs.stripe_payout_id, unique across the shared database. */
         volatile String payoutPrefix = "po_test_";
+        /** Runs when the payout reads the connected balance, i.e. after the step-0c status check. */
+        volatile Runnable onBalanceRead = null;
 
         void reset() {
             availableMinor.set(0L);
@@ -146,6 +149,7 @@ class PostEventPayoutServiceTest {
             paymentIntents.clear();
             paymentIntentReads.clear();
             transferCurrency = "eur";
+            onBalanceRead = null;
         }
 
         @SuppressWarnings("unchecked")
@@ -157,6 +161,8 @@ class PostEventPayoutServiceTest {
                 return (T) ApiResource.GSON.fromJson(paymentIntents.get(id), com.stripe.model.PaymentIntent.class);
             }
             if (path != null && path.startsWith("/v1/balance")) {
+                Runnable hook = onBalanceRead;
+                if (hook != null) hook.run();
                 String json = """
                     { "object": "balance",
                       "available": [ { "amount": %d, "currency": "eur" } ],
@@ -1454,6 +1460,127 @@ class PostEventPayoutServiceTest {
 
         assertThat(payoutRuns.findByEventId(payable.getId())).singleElement()
                 .extracting(PayoutRun::getAmountMinor).isEqualTo(9_000L);
+    }
+
+    // ── cancelled events: their balance may still owe buyers refunds ──────────────
+
+    @ParameterizedTest
+    @EnumSource(EventStatus.class)
+    void only_a_cancelled_event_is_held(EventStatus status) {
+        // Exhaustive on purpose: a new status does not compile until it is classified here.
+        boolean held = switch (status) {
+            case CANCELLED -> true;
+            case DRAFT, LIVE, PAST -> false;
+        };
+        Event e = newEndedEvent(org);
+        e.setStatus(status);
+        events.save(e);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        if (held) {
+            assertThat(fake.payoutCount.get()).as("a cancelled event's money stays on the balance").isZero();
+            assertThat(payoutRuns.findByEventId(e.getId())).as("held, not failed or parked").isEmpty();
+        } else {
+            assertThat(fake.payoutCount.get()).isEqualTo(1);
+            assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+            assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                    .satisfies(r -> {
+                        assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                        assertThat(r.getAttempt()).isEqualTo(1);
+                    });
+        }
+    }
+
+    @Test
+    void a_held_cancelled_event_pays_at_attempt_1_once_restored() {
+        Event e = newEndedEvent(org);
+        e.setStatus(EventStatus.CANCELLED);
+        events.save(e);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        service.payOneEvent(e.getId());
+        service.payOneEvent(e.getId());      // a second nightly tick while still cancelled
+
+        setStatusElsewhere(e.getId(), EventStatus.PAST);
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(1);
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+        assertThat(fake.lastIdempotencyKey.get())
+                .as("holding spent no attempt").isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                    assertThat(r.getAttempt()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    void an_event_cancelled_while_its_payout_is_computed_is_not_paid() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        // The cancel commits on its own connection after step 0c has already read the event as PAST.
+        fake.onBalanceRead = () -> setStatusElsewhere(e.getId(), EventStatus.CANCELLED);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).as("nothing written").isEmpty();
+    }
+
+    @Test
+    void a_timed_out_payout_of_a_since_cancelled_event_is_still_replayed_with_its_key() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+        service.payOneEvent(e.getId());      // outcome unknown: run parked RETRYING at 9_000
+        fake.failApiConnection = false;
+        setStatusElsewhere(e.getId(), EventStatus.CANCELLED);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).as("the replay resolves the unknown payout").isEqualTo(1);
+        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                    assertThat(r.getAttempt()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    void a_cancelled_event_on_an_account_without_a_bank_sends_no_blocked_notice() {
+        Event e = newEndedEvent(org);
+        e.setStatus(EventStatus.CANCELLED);
+        events.save(e);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.hasBank = false;
+
+        service.payOneEvent(e.getId());
+
+        assertThat(payoutRuns.findByEventId(e.getId())).as("no BLOCKED park").isEmpty();
+        assertThat(published.stream(PayoutBlockedEvent.class).toList())
+                .as("no 'add a bank' email for money the organizer will not get").isEmpty();
+    }
+
+    /** Commits a status change on a fresh connection, as a concurrent organizer or ops write would. */
+    private void setStatusElsewhere(UUID eventId, EventStatus status) {
+        Thread t = new Thread(() -> jdbc.update("update events set status = ? where id = ?", status.name(), eventId));
+        t.start();
+        try {
+            t.join(10_000);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+        assertThat(t.isAlive()).as("status update finished").isFalse();
     }
 
     private java.time.Duration bufferDays() {

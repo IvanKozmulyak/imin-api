@@ -43,6 +43,9 @@ import java.util.UUID;
  * per-event unit runs through the {@link PostEventPayoutService} proxy so its
  * {@code REQUIRES_NEW} boundary is real and one event's failure can't roll back the
  * batch; the outer try/catch is a second isolation net.
+ *
+ * <p>CANCELLED events are not candidates (unless a RETRYING run must replay its key); each tick
+ * logs at ERROR the ones past the buffer that still hold live paid money.
  */
 @Component
 public class PostEventPayoutSweeper {
@@ -135,7 +138,25 @@ public class PostEventPayoutSweeper {
                         MAX_PAGES * BATCH_SIZE);
             }
         }
+        reportHeldCancelled(cutoff);
         log.info("[payout-sweep] tick done processed={} errored={}", paid, failed);
+    }
+
+    private static final int HELD_REPORT_LIMIT = 100;
+
+    /** Cancelled events past the buffer whose live paid money gets no payout; only a human can refund or release it. */
+    private void reportHeldCancelled(Instant cutoff) {
+        try {
+            List<UUID> held = events.findHeldCancelledPayoutEventIds(cutoff, PageRequest.of(0, HELD_REPORT_LIMIT + 1));
+            if (held.isEmpty()) return;
+            boolean more = held.size() > HELD_REPORT_LIMIT;
+            List<UUID> shown = more ? held.subList(0, HELD_REPORT_LIMIT) : held;
+            log.error("[payout-sweep] {}{} cancelled event(s) past the payout buffer have live paid orders not "
+                            + "fully refunded and get no payout; refunding buyers or releasing the funds needs a human: {}",
+                    shown.size(), more ? "+" : "", shown);
+        } catch (Exception ex) {
+            log.error("[payout-sweep] held cancelled-event report failed — {}", ex.getMessage(), ex);
+        }
     }
 
     /**
