@@ -230,8 +230,7 @@ class PostEventPayoutSweeperTest {
         org.setStripeConnectState(StripeConnectState.RESTRICTED);
         orgs.save(org);
         Event e = endedEvent(org, Instant.now().minus(100, ChronoUnit.DAYS));
-        e.setRevenueMinor(10_000);
-        events.save(e);
+        orderOn(e);
 
         Instant retentionCutoff = Instant.now().minus(75, ChronoUnit.DAYS);
 
@@ -244,8 +243,7 @@ class PostEventPayoutSweeperTest {
         org.setStripeConnectState(StripeConnectState.DISABLED);
         orgs.save(org);
         Event e = endedEvent(org, Instant.now().minus(100, ChronoUnit.DAYS));
-        e.setRevenueMinor(10_000);
-        events.save(e);
+        orderOn(e);
 
         assertThat(retentionIds(Instant.now().minus(75, ChronoUnit.DAYS)))
                 .as("DISABLED is terminal — nothing will ever be paid out, and the payout "

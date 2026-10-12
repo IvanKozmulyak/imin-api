@@ -154,12 +154,10 @@ class PayoutTestModeExclusionTest {
     void eventWithOnlyTestModeOrdersIsNotARetentionCandidate() {
         Event testEra = endedEvent();
         testEra.setEndsAt(Instant.now().minus(100, ChronoUnit.DAYS));
-        testEra.setRevenueMinor(50_000);
         events.save(testEra);
         order(testEra, 50_000, 5_000, true);
         Event liveEra = endedEvent();
         liveEra.setEndsAt(Instant.now().minus(100, ChronoUnit.DAYS));
-        liveEra.setRevenueMinor(50_000);
         events.save(liveEra);
         order(liveEra, 50_000, 5_000, false);
 

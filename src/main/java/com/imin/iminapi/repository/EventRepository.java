@@ -690,38 +690,25 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     }
 
     /**
-     * Track B Phase 2 retention monitor (plan §7) — events that ENDED before
-     * {@code retentionCutoff} (e.g. {@code now − 75 days}, a ~15-day margin under the
-     * common 90-day Stripe retention window) and still carry sold revenue
-     * ({@code revenueMinor > 0}) for a manual-schedule, payout-eligible org. These are
-     * orgs that may be holding un-disbursed funds past the safe bound — the monitor
-     * cross-checks each against a PAID payout run and alerts on the stragglers so ops
-     * can force a payout before Stripe's deadline.
+     * Retention monitor candidates: events that ENDED before {@code retentionCutoff}
+     * ({@code now − 75 days}, a ~15-day margin under the common 90-day Stripe retention
+     * window), for a manual-schedule, payout-eligible org, with no {@code PAID} payout run
+     * and a positive presentment net over their LIVE-mode paid orders: gross less SUCCEEDED
+     * refunds, less the application fee still kept. Same terms as
+     * {@link OrderRepository#settlementRowsByEventId}; test-mode orders are out of every term
+     * (V130), so an event with only test-era orders never qualifies.
      *
-     * <p>Same org-eligibility join as {@link #findPayoutCandidates} — including the
-     * "sell ⇒ payable" rule, so only terminal {@code DISABLED} is excluded. It has to
-     * match: an org this query drops is an org whose stranded funds nobody is warned
-     * about, and a RESTRICTED org is exactly the one most likely to strand them. Plus a
-     * far older cutoff and a NOT EXISTS guard against an already-PAID payout run for the
-     * event (an event we've already disbursed is not a straggler).
-     *
-     * <p>// ponytail: {@code revenue_minor} is a denormalised, COARSE prefilter — it
-     * stays positive after a full refund, so it over-selects. It is only here to cheaply
-     * drop never-sold events; the payout job computes the authoritative net
-     * ({@code gross − refunds − net app fee}) and skips when that is {@code <= 0}. This
-     * monitor stays an APPROXIMATE alert by design — do not over-engineer the net into the
-     * query. The PAID-run NOT EXISTS removes the common false positive (already disbursed).
-     *
-     * <p>Carries the same all-test-mode exclusion as {@link #findPayoutCandidates} (V130):
-     * an event whose only orders are test-era holds no real funds, so it is not a straggler
-     * and alerting on it would be a fabricated warning.
+     * <p>Same org-eligibility join as {@link #findPayoutCandidates}, including "sell ⇒
+     * payable", so only terminal {@code DISABLED} is excluded: a RESTRICTED org is the one most
+     * likely to strand funds. The presentment net is a prefilter; the monitor computes the
+     * settlement-unit net and subtracts the organizer's dispute share, as the payout job does.
+     * Keyset-paged on {@code (endsAt, id)} so a page of zero-net events never hides a later one.
      */
     @Query("""
         SELECT e FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.endsAt IS NOT NULL
            AND e.endsAt < :retentionCutoff
-           AND e.revenueMinor > 0
            AND EXISTS (
                  SELECT 1 FROM Organization o
                   WHERE o.id = e.orgId
@@ -735,9 +722,21 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                  SELECT 1 FROM PayoutRun r
                   WHERE r.eventId = e.id
                     AND r.status = com.imin.iminapi.payout.PayoutRunStatus.PAID)
-           AND (NOT EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ot WHERE ot.eventId = e.id AND ot.testMode = true)
-                OR EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol WHERE ol.eventId = e.id AND ol.testMode = false))
-         ORDER BY e.endsAt ASC
+           AND (SELECT coalesce(sum(o.totalMinor - o.applicationFeeMinor), 0) FROM com.imin.iminapi.model.Order o
+                 WHERE o.eventId = e.id AND o.testMode = false AND o.totalMinor > 0)
+             > (SELECT coalesce(sum(rf.amountMinor - rf.applicationFeeRefundMinor), 0) FROM com.imin.iminapi.refund.Refund rf
+                 WHERE rf.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+                   AND rf.orderId IN (SELECT o2.id FROM com.imin.iminapi.model.Order o2
+                                       WHERE o2.eventId = e.id AND o2.testMode = false AND o2.totalMinor > 0))
+           AND (e.endsAt > :afterEndsAt OR (e.endsAt = :afterEndsAt AND e.id > :afterId))
+         ORDER BY e.endsAt ASC, e.id ASC
 """)
-    List<Event> findRetentionMonitorCandidates(@Param("retentionCutoff") Instant retentionCutoff, Pageable pageable);
+    List<Event> findRetentionMonitorCandidatesAfter(@Param("retentionCutoff") Instant retentionCutoff,
+                                                    @Param("afterEndsAt") Instant afterEndsAt,
+                                                    @Param("afterId") UUID afterId, Pageable pageable);
+
+    /** First page of {@link #findRetentionMonitorCandidatesAfter}; the monitor pages on with the last row as cursor. */
+    default List<Event> findRetentionMonitorCandidates(Instant retentionCutoff, Pageable pageable) {
+        return findRetentionMonitorCandidatesAfter(retentionCutoff, FIRST_ENDS_AT, FIRST_ID, pageable);
+    }
 }
