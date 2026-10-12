@@ -132,11 +132,14 @@ class RetentionJobIntegrationTest {
         UUID mid = member(orgA);
         consent(mid, "explicit", "door_qr", "door-v1", Instant.parse("2035-01-01T12:00:00Z"));
         contact(mid, DAY_BEFORE_CUTOFF);
+        membershipRepo.updateNps(mid, (short) 9);
 
         RetentionJob.Result r = job(true).run();
 
         assertThat(r.cleared()).isEqualTo(1);
         assertCleared(mid);
+        assertThat(jdbc.queryForObject("select nps from memberships where membership_id = ?", Short.class, mid))
+                .as("the recommendation score is profiling too").isNull();
     }
 
     @Test

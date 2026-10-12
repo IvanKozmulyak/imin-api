@@ -134,6 +134,7 @@ public class ResendWebhookProjector {
                         m.setObjectedProfiling(true);
                         membershipRepo.save(m);
                         fanFeatureRepo.clearProfiling(membershipId);
+                        membershipRepo.updateNps(membershipId, null);
                         events.publishEvent(new ConsentChanged(orgId, membershipId, false));
                     });
                 }

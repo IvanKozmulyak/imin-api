@@ -41,6 +41,10 @@ public class SurveyResponse {
     @Column(name = "first_time")
     private Boolean firstTime;
 
+    /** 0..10, or null when not answered. */
+    @Column(name = "nps_score")
+    private Short npsScore;
+
     @Column(name = "notice_version", nullable = false, length = 32)
     private String noticeVersion;
 

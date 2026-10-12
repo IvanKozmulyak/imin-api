@@ -21,6 +21,7 @@ import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -443,6 +444,28 @@ class EventOutcomeServiceTest {
         t.setCreatedAt(at);
         if ("redeemed".equals(state)) t.setRedeemedAt(at);
         tickets.save(t);
+    }
+
+    /** Event NPS from the scored survey answers; an unscored answer is not one of n, and n below 5 is withheld. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(nullValues = "null", value = {"'10,10,9,7,3', 40.000", "'10,10,9,7', null"})
+    void finalize_stores_the_survey_nps(String scores, java.math.BigDecimal expected) {
+        Event e = liveEvent();
+        tier(e.getId(), "GA", 2000, 50, 0);
+        service.freezeOnPublish(e);
+        try {
+            for (String score : (scores + ",null").split(",")) {
+                jdbc.update("insert into survey_responses (id, org_id, event_id, notice_version, locale, created_at,"
+                        + " nps_score, heard_from) values (?, ?, ?, 'survey-notice-2026-10', 'en', now(), ?, 'friend')",
+                        UUID.randomUUID(), org.getId(), e.getId(), "null".equals(score) ? null : Short.valueOf(score));
+            }
+
+            service.finalize(outcomes.findById(e.getId()).orElseThrow(), e, Instant.now());
+
+            assertThat(outcomes.findById(e.getId()).orElseThrow().getNps()).isEqualTo(expected);
+        } finally {
+            jdbc.update("delete from survey_responses where event_id = ?", e.getId());
+        }
     }
 
     @Test

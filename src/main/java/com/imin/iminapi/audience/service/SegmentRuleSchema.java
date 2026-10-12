@@ -29,8 +29,8 @@ import java.util.TreeSet;
  *   <li><b>Enum</b> (equality only): {@code lifecycle}, {@code consent_status}, {@code consent_basis}</li>
  *   <li><b>Set</b> ({@code ==} or {@code in}): {@code guest_class}, {@code genre} (the 8 buckets), {@code city}</li>
  * </ul>
- * A draft is one AND group. {@code nps} (not collected yet) and {@code attended_event} (picked in the editor)
- * are reported as unsupported. An empty rule list matches everyone.
+ * A draft is one AND group. {@code nps} (read only by the prebuilt Promoters segment, kept out of the editor)
+ * and {@code attended_event} (picked in the editor) are reported as unsupported. An empty rule list matches everyone.
  */
 public final class SegmentRuleSchema {
 

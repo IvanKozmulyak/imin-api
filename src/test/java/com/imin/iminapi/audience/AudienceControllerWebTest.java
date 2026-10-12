@@ -294,28 +294,26 @@ class AudienceControllerWebTest {
 
     /** Prebuilts used to be seeded only from tests, so a production org could list zero segments forever. */
     @Test
-    void list_seeds_six_prebuilt_segments_and_is_idempotent() throws Exception {
-        // First list: org has never been seeded → the endpoint provisions the 6 live prebuilts (no Promoters).
+    void list_seeds_seven_prebuilt_segments_and_is_idempotent() throws Exception {
+        // First list: org has never been seeded → the endpoint provisions the 7 prebuilts.
         mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(6))
-                .andExpect(jsonPath("$[?(@.name == 'Promoters')]").isEmpty());
+                .andExpect(jsonPath("$.length()").value(7))
+                .andExpect(jsonPath("$[?(@.name == 'Promoters')]").isNotEmpty());
 
         // Second list: no duplicate seeding.
         mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(6));
+                .andExpect(jsonPath("$.length()").value(7));
 
-        assertThat(segments.findByOrgId(orgA)).filteredOn(Segment::isPrebuilt).hasSize(6);
+        assertThat(segments.findByOrgId(orgA)).filteredOn(Segment::isPrebuilt).hasSize(7);
     }
 
-    /** A retired prebuilt is hidden from the list, but a campaign may still point at it: it hands off by id. */
+    /** An existing Promoters row is listed and hands off by id, with no second copy provisioned. */
     @Test
-    void segment_handoff_still_hands_off_a_retired_promoters_row() throws Exception {
+    void segment_handoff_hands_off_an_existing_promoters_row() throws Exception {
         UUID promoter = subscribed(orgA, fx.email("promoter"), "Promoter", principalA);
-        Membership m = memberships.findByIdAndOrgId(promoter, orgA).orElseThrow();
-        m.setNps((short) 9);
-        memberships.save(m);
+        memberships.updateNps(promoter, (short) 9);
         Segment promoters = new Segment();
         promoters.setOrgId(orgA);
         promoters.setName("Promoters");
@@ -331,7 +329,8 @@ class AudienceControllerWebTest {
 
         mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.id == '" + segId + "')]").isEmpty());
+                .andExpect(jsonPath("$[?(@.name == 'Promoters')]", org.hamcrest.Matchers.hasSize(1)))
+                .andExpect(jsonPath("$[?(@.id == '" + segId + "')]").isNotEmpty());
     }
 
     /** No body previews everyone; a structured groups body is canonicalised and evaluated, nothing is saved. */

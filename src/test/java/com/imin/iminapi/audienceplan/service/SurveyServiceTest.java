@@ -64,6 +64,15 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.stream.Stream;
 
+import org.springframework.dao.DataIntegrityViolationException;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
@@ -73,6 +82,7 @@ class SurveyServiceTest {
 
     private static final String ORG_NAME = "Vechirka Survey";
     private static final String NOTICE = "survey-notice-2026-10";
+    private static final String LINKED = "survey-notice-2026-10-linked";
     private static final String VERSION = "survey-org-named-2026-09";
     private static final String TEXT = "Email me about events by " + ORG_NAME
             + ". I agree to receive email marketing and can unsubscribe any time, one click in every email.";
@@ -97,6 +107,7 @@ class SurveyServiceTest {
     @Autowired ConsentGate gate;
     @Autowired SendGateService sendGate;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MockMvc mvc;
     @Autowired Clock clock;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
@@ -152,7 +163,7 @@ class SurveyServiceTest {
         List<String> columns = jdbc.queryForList("select lower(column_name) from information_schema.columns"
                 + " where lower(table_name) = 'survey_responses'", String.class);
         assertThat(columns).containsExactlyInAnyOrder("id", "org_id", "event_id", "home_commune", "other_genres",
-                "heard_from", "age_band", "first_time", "notice_version", "locale", "created_at");
+                "heard_from", "age_band", "first_time", "notice_version", "locale", "created_at", "nps_score");
     }
 
     @Test
@@ -351,6 +362,100 @@ class SurveyServiceTest {
             assertThat(jdbc.queryForObject("select count(*) from consumers where normalized_email = ?", Integer.class,
                     email)).isZero();
         }
+    }
+
+    // ── recommendation score ──────────────────────────────────────────────
+
+    @Test
+    void aScoreAlone_isAnAnswer_storedWithoutAMembership() {
+        assertThat(service.submit(token, scored(7, LINKED, null)).received()).isTrue();
+
+        assertThat(onlyResponse().get("nps_score")).isEqualTo(7);
+        assertThat(jdbc.queryForObject("select count(*) from memberships where org_id = ?", Integer.class, orgId)).isZero();
+        assertThat(consentCount()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {11, -1})
+    void aScoreOutsideZeroToTen_is400_andStoresNothing(int score) {
+        assertInvalid(() -> service.submit(token, scored(score, LINKED, null)), "npsScore");
+        assertThat(responseCount()).isZero();
+        // The column refuses it too, should a writer ever skip the check.
+        assertThatThrownBy(() -> jdbc.update("insert into survey_responses (id, org_id, event_id, notice_version, locale,"
+                + " created_at, nps_score) values (?, ?, ?, ?, 'fr', now(), ?)", UUID.randomUUID(), orgId,
+                event.getId(), NOTICE, score)).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void aTickedLinkedAnswer_putsTheScoreOnTheMembership_andTheArt15ExportCarriesIt() throws Exception {
+        String email = addr("promoter");
+        service.submit(token, scored(9, LINKED, email));
+
+        Map<String, Object> m = membership(email);
+        assertThat(m.get("nps")).isEqualTo(9);
+        Map<String, Object> r = onlyResponse();
+        assertThat(r.values()).doesNotContain(email, m.get("membership_id"), m.get("consumer_id"));
+        assertThat(r.get("nps_score")).isEqualTo(9);
+        mvc.perform(post("/api/v1/audience/members/{id}/export", m.get("membership_id"))
+                        .with(authentication(new UsernamePasswordAuthenticationToken(organizer, null,
+                                List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nps").value(9));
+    }
+
+    enum NotLinked { OLD_NOTICE, UNTICKED, OBJECTED, UNSUBSCRIBED_MEMBER, MARKETING_SUPPRESSED_MEMBER, ERASE_PENDING_MEMBER }
+
+    /** Only the linking notice, a ticked box, an unblocked address and no objection put the score on a person. */
+    @ParameterizedTest
+    @EnumSource(NotLinked.class)
+    void aScoreIsNotLinked_whenAnyConditionFails(NotLinked kind) {
+        String email = addr("notlinked");
+        Integer before = null;
+        if (kind.name().endsWith("_MEMBER") || kind == NotLinked.OBJECTED) {
+            projector.upsertMembership(orgId, email, null);
+            UUID mid = (UUID) membership(email).get("membership_id");
+            before = kind == NotLinked.OBJECTED ? null : 5;
+            jdbc.update("update memberships set nps = ? where membership_id = ?", before, mid);
+            switch (kind) {
+                case OBJECTED -> jdbc.update("update memberships set objected_profiling = true where membership_id = ?", mid);
+                case UNSUBSCRIBED_MEMBER ->
+                        jdbc.update("update memberships set consent_status = 'unsubscribed' where membership_id = ?", mid);
+                case ERASE_PENDING_MEMBER ->
+                        jdbc.update("update memberships set status = 'erase_pending' where membership_id = ?", mid);
+                case MARKETING_SUPPRESSED_MEMBER -> {
+                    SuppressionEntry s = new SuppressionEntry();
+                    s.setScope(SuppressionEntry.SCOPE_MARKETING);
+                    s.setOrgId(orgId);
+                    s.setMembershipId(mid);
+                    s.setReason("manual");
+                    suppressions.save(s);
+                }
+                default -> { }
+            }
+        }
+
+        service.submit(token, switch (kind) {
+            case OLD_NOTICE -> scored(9, NOTICE, email);
+            case UNTICKED -> scored(9, LINKED, null);
+            default -> scored(9, LINKED, email);
+        });
+
+        assertThat(onlyResponse().get("nps_score")).isEqualTo(9);
+        if (kind == NotLinked.UNTICKED) {
+            assertThat(jdbc.queryForObject("select count(*) from memberships where org_id = ? and nps is not null",
+                    Integer.class, orgId)).isZero();
+        } else {
+            assertThat(membership(email).get("nps")).isEqualTo(before);
+        }
+    }
+
+    @Test
+    void aLaterLinkedAnswer_replacesTheScore() {
+        String email = addr("changed");
+        service.submit(token, scored(9, LINKED, email));
+        service.submit(token, scored(3, LINKED, email));
+
+        assertThat(membership(email).get("nps")).isEqualTo(3);
     }
 
     // ── validation ────────────────────────────────────────────────────────
@@ -631,7 +736,7 @@ class SurveyServiceTest {
                                                  String email, String text, String version,
                                                  Map<String, Object> unknown) {
         return new SurveyResponseRequest(commune, genres, heard, age, first, notice, locale, ticked, email, text,
-                version, unknown);
+                version, null, unknown);
     }
 
     private static SurveyResponseRequest answers(String commune, List<String> genres, String heard, String age,
@@ -641,6 +746,13 @@ class SurveyServiceTest {
 
     private static SurveyResponseRequest notice(String notice) {
         return request(null, null, "friend", null, null, notice, "en", null, null, null, null, null);
+    }
+
+    /** A score-only answer; a non-null email ticks the box with the shipped sentence. */
+    private static SurveyResponseRequest scored(Integer score, String notice, String email) {
+        boolean ticked = email != null;
+        return new SurveyResponseRequest(null, null, null, null, null, notice, "fr", ticked ? true : null, email,
+                ticked ? TEXT : null, ticked ? VERSION : null, score, null);
     }
 
     private static SurveyResponseRequest consented(String email, String text, String version) {

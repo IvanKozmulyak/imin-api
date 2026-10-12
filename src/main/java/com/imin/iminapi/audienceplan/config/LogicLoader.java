@@ -149,8 +149,34 @@ public final class LogicLoader {
                         Set.copyOf(legal.strings("organizer_named_text_versions")),
                         Set.copyOf(legal.strings("door_qr_text_versions")),
                         Set.copyOf(legal.strings("survey_text_versions")),
-                        Set.copyOf(legal.strings("survey_notice_versions"))),
+                        noticeVersions(legal, "survey_notice_versions"),
+                        linkingNoticeVersions(legal)),
                 catchment(root.map("catchment")));
+    }
+
+    /** Stored in {@code survey_responses.notice_version}, VARCHAR(32). */
+    private static final int NOTICE_VERSION_MAX = 32;
+
+    private static Set<String> noticeVersions(Node legal, String key) {
+        List<String> versions = legal.strings(key);
+        for (String v : versions) {
+            if (v.length() > NOTICE_VERSION_MAX) {
+                throw legal.invalid(key, "'" + v + "' is longer than " + NOTICE_VERSION_MAX + " characters");
+            }
+        }
+        return Set.copyOf(versions);
+    }
+
+    /** Notice versions whose answers may put the score on the membership; each must be an accepted version. */
+    private static Set<String> linkingNoticeVersions(Node legal) {
+        Set<String> accepted = Set.copyOf(legal.strings("survey_notice_versions"));
+        Set<String> linking = noticeVersions(legal, "survey_linking_notice_versions");
+        for (String v : linking) {
+            if (!accepted.contains(v)) {
+                throw legal.invalid("survey_linking_notice_versions", "'" + v + "' is not in survey_notice_versions");
+            }
+        }
+        return linking;
     }
 
     private static CatchmentRule catchment(Node n) {

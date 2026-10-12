@@ -9,6 +9,7 @@ import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.Season;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.audienceplan.repository.SurveyResponseRepository;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -66,12 +67,14 @@ public class EventOutcomeService {
     private final OrderRepository orders;
     private final FunnelEventRepository funnel;
     private final CampaignRecipientRepository campaignRecipients;
+    private final SurveyResponseRepository surveyResponses;
 
     public EventOutcomeService(EventOutcomeRepository outcomes, EventRepository events,
                                OrganizationRepository orgs, TicketTierRepository tiers,
                                PromoCodeRepository promos, TicketRepository tickets,
                                OrderRepository orders, FunnelEventRepository funnel,
-                               CampaignRecipientRepository campaignRecipients) {
+                               CampaignRecipientRepository campaignRecipients,
+                               SurveyResponseRepository surveyResponses) {
         this.outcomes = outcomes;
         this.events = events;
         this.orgs = orgs;
@@ -81,6 +84,7 @@ public class EventOutcomeService {
         this.orders = orders;
         this.funnel = funnel;
         this.campaignRecipients = campaignRecipients;
+        this.surveyResponses = surveyResponses;
     }
 
     // ---- JSON snapshot shapes -------------------------------------------------
@@ -294,9 +298,15 @@ public class EventOutcomeService {
         o.setCampaignSends((int) campaignRecipients.countDispatchedForEventInWindow(
                 e.getId(), windowFrom, windowTo));
 
-        o.setNps(null); // survey does not exist yet
+        o.setNps(eventNps(e.getId()));
         o.setFinalizedAt(now);
         outcomes.save(o);
+    }
+
+    /** The survey NPS of the answers stored by finalize; null below {@link NpsScore#MIN_ANSWERS} answers. */
+    private BigDecimal eventNps(UUID eventId) {
+        Object[] c = surveyResponses.npsCounts(eventId).get(0);
+        return NpsScore.of(((Number) c[0]).longValue(), ((Number) c[1]).longValue(), ((Number) c[2]).longValue());
     }
 
     // ---- helpers --------------------------------------------------------------

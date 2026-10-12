@@ -133,7 +133,8 @@ public class Membership {
 
     // ---- profile ----
 
-    @Column(name = "nps")
+    // Written only by MembershipRepository.updateNps, so a stale full-entity save cannot revert a score.
+    @Column(name = "nps", updatable = false)
     private Short nps;
 
     @Convert(converter = StringListJsonConverter.class)

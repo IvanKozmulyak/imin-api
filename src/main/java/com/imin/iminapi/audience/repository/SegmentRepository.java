@@ -39,6 +39,10 @@ public interface SegmentRepository extends Repository<Segment, UUID> {
     @Query("select count(s) > 0 from Segment s where s.orgId = :orgId and s.prebuilt = true")
     boolean hasPrebuiltSegments(@Param("orgId") UUID orgId);
 
+    /** The prebuilt keys this org already has a row for, retired ones included. */
+    @Query("select s.prebuiltKey from Segment s where s.orgId = :orgId and s.prebuiltKey is not null")
+    List<String> prebuiltKeys(@Param("orgId") UUID orgId);
+
     /**
      * Case-insensitive name collision check for create. {@code name} is never null here
      * (createSegment rejects blank first), so lower() is safe on Postgres — a nullable

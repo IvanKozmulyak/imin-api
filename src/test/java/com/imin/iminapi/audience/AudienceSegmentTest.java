@@ -187,39 +187,47 @@ class AudienceSegmentTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Promoters: retired until NPS is collected
+    // Promoters: provisioned again now that a linked survey answer writes the score
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void promoters_is_not_provisioned_for_a_new_org() {
+    void promoters_is_provisioned_for_a_new_org_and_resolves_nine_and_up() {
         segmentService.ensurePrebuiltSegments(orgA);
+        Membership nine = seedMembership(orgA, fx.email("nine"));
+        membershipRepo.updateNps(nine.getMembershipId(), (short) 9);
+        Membership eight = seedMembership(orgA, fx.email("eight"));
+        membershipRepo.updateNps(eight.getMembershipId(), (short) 8);
 
-        assertThat(segmentRepo.findByOrgId(orgA)).extracting(Segment::getPrebuiltKey)
-                .doesNotContain(PrebuiltSegment.PROMOTERS.key())
-                .hasSize(6);
+        Segment promoters = segmentRepo.findByOrgIdAndPrebuiltKey(orgA, PrebuiltSegment.PROMOTERS.key()).orElseThrow();
+        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).contains(promoters.getId());
+        assertThat(segmentService.resolveMembers(orgA, promoters)).extracting(Membership::getMembershipId)
+                .containsExactly(nine.getMembershipId());
     }
 
     @Test
-    void an_existing_promoters_row_is_hidden_from_the_list_but_still_resolves() {
+    void an_org_seeded_before_promoters_gets_it_once() {
         segmentService.ensurePrebuiltSegments(orgA);
-        Segment legacy = new Segment();
-        legacy.setOrgId(orgA);
-        legacy.setName("Promoters");
-        legacy.setKind("dynamic");
-        legacy.setPrebuilt(true);
-        legacy.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
-        legacy.setRulesJson(PrebuiltSegment.PROMOTERS.rulesJson());
-        legacy = segmentRepo.save(legacy);
+        jdbc.update("delete from segments where org_id = ? and prebuilt_key = ?", orgA, PrebuiltSegment.PROMOTERS.key());
 
-        Membership promoter = seedMembership(orgA, fx.email("prom"));
-        promoter.setNps((short) 9);
-        membershipRepo.save(promoter);
-        seedMembership(orgA, fx.email("nonps"));
+        segmentService.ensurePrebuiltSegments(orgA);
+        segmentService.ensurePrebuiltSegments(orgA);
 
-        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(legacy.getId());
-        assertThat(segmentService.listSegments(orgA)).hasSize(6);
-        assertThat(segmentService.resolveMembers(orgA, legacy)).extracting(Membership::getMembershipId)
-                .containsExactly(promoter.getMembershipId());
+        assertThat(segmentRepo.findByOrgId(orgA)).extracting(Segment::getPrebuiltKey)
+                .filteredOn(PrebuiltSegment.PROMOTERS.key()::equals).hasSize(1);
+        assertThat(segmentRepo.findByOrgId(orgA)).filteredOn(Segment::isPrebuilt).hasSize(7);
+    }
+
+    @Test
+    void an_org_with_its_own_promoters_segment_gets_no_second_one() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        jdbc.update("delete from segments where org_id = ? and prebuilt_key = ?", orgA, PrebuiltSegment.PROMOTERS.key());
+        Segment own = segmentService.createSegment(orgA, "Promoters", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"3\"}]", principalA);
+
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        assertThat(segmentService.listSegments(orgA)).filteredOn(seg -> "Promoters".equals(seg.getName()))
+                .extracting(Segment::getId).containsExactly(own.getId());
     }
 
     @Test
@@ -233,32 +241,11 @@ class AudienceSegmentTest {
         snapshot.setSnapshotIds("[]");
         UUID id = segmentRepo.save(snapshot).getId();
 
-        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(id).hasSize(6);
+        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(id).hasSize(7);
         assertThatThrownBy(() -> segmentService.deleteSegment(orgA, id, principalA))
                 .isInstanceOfSatisfying(ApiException.class,
                         e -> assertThat(e.status()).isEqualTo(HttpStatus.NOT_FOUND));
         assertThat(segmentRepo.findByIdAndOrgId(id, orgA)).isPresent();
-    }
-
-    @Test
-    void a_retired_promoters_row_does_not_block_creating_a_segment_with_that_name() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment legacy = new Segment();
-        legacy.setOrgId(orgA);
-        legacy.setName("Promoters");
-        legacy.setKind("dynamic");
-        legacy.setPrebuilt(true);
-        legacy.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
-        legacy.setRulesJson(PrebuiltSegment.PROMOTERS.rulesJson());
-        segmentRepo.save(legacy);
-
-        Segment created = segmentService.createSegment(orgA, " promoters ", "dynamic", null, principalA);
-
-        assertThat(created.getName()).isEqualTo("promoters");
-        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).contains(created.getId());
-        assertThatThrownBy(() -> segmentService.createSegment(orgA, "PROMOTERS", "dynamic", null, principalA))
-                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class,
-                        e -> assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -668,7 +655,7 @@ class AudienceSegmentTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Ensure the 6 provisioned prebuilt segments are created exactly once
+    // Ensure the 7 provisioned prebuilt segments are created exactly once
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
@@ -678,7 +665,7 @@ class AudienceSegmentTest {
 
         List<Segment> segments = segmentRepo.findByOrgId(orgA);
         long prebuilt = segments.stream().filter(Segment::isPrebuilt).count();
-        assertThat(prebuilt).isEqualTo(6);
+        assertThat(prebuilt).isEqualTo(7);
     }
 
     @Test

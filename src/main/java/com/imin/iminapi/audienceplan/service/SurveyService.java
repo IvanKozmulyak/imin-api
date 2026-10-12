@@ -53,8 +53,10 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 /**
- * Post-event survey: five optional questions, no identity questions, answers never linked to a person. The
- * unticked box naming the organizer records a separate explicit {@code survey} consent. Never soft opt-in.
+ * Post-event survey: six optional questions, no identity questions; the answer row is never linked to a person.
+ * The unticked box naming the organizer records a separate explicit {@code survey} consent. Never soft opt-in.
+ * Under a linking notice version, a ticked box also puts the 0-10 recommendation score on that membership,
+ * unless the address is blocked or the person objected to profiling; the latest score wins.
  */
 @Service
 public class SurveyService {
@@ -163,7 +165,10 @@ public class SurveyService {
         List<String> genres = validGenres(body.otherGenres());
         String heardFrom = oneOf("heardFrom", body.heardFrom(), HEARD_FROM);
         String ageBand = oneOf("ageBand", body.ageBand(), AGE_BANDS);
-        if (commune == null && genres.isEmpty() && heardFrom == null && ageBand == null && body.firstTime() == null) {
+        Integer nps = body.npsScore();
+        if (nps != null && (nps < 0 || nps > 10)) throw invalid("npsScore", "must be a whole number from 0 to 10");
+        if (commune == null && genres.isEmpty() && heardFrom == null && ageBand == null && body.firstTime() == null
+                && nps == null) {
             throw invalid("answers", "answer at least one question");
         }
         String notice = validNotice(body.noticeVersion());
@@ -177,6 +182,7 @@ public class SurveyService {
         r.setHeardFrom(heardFrom);
         r.setAgeBand(ageBand);
         r.setFirstTime(body.firstTime());
+        r.setNpsScore(nps == null ? null : nps.shortValue());
         r.setNoticeVersion(notice);
         r.setLocale(locale);
 
@@ -187,31 +193,40 @@ public class SurveyService {
             String email = validEmail(body.email());
             String version = validVersion(body.consentTextVersion());
             String text = validText(body.consentText(), org);
-            recordConsent(e, email, version, text, locale);
+            Membership m = recordConsent(e, email, version, text, locale);
+            if (m != null && nps != null && logic.logic().legal().surveyLinkingNoticeVersions().contains(notice)) {
+                memberships.updateNps(m.getMembershipId(), nps.shortValue());
+            }
         }
         responses.save(r);
         return SurveyResponseResult.ok();
     }
 
-    /** Records the explicit consent on its own; an erased or opted-out address records nothing. */
-    private void recordConsent(Event e, String email, String version, String text, String locale) {
+    /**
+     * Records the explicit consent on its own and returns the locked membership the score may go on: null for an
+     * erased, opted-out, unsubscribed, erase-pending or suppressed address (nothing recorded), and null when the
+     * person had objected to profiling before this answer.
+     */
+    private Membership recordConsent(Event e, String email, String version, String text, String locale) {
         UUID orgId = e.getOrgId();
-        if (erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)) return;
-        if (optOuts.existsById(new MarketingOptOutId(email, orgId, "email"))) return;
+        if (erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)) return null;
+        if (optOuts.existsById(new MarketingOptOutId(email, orgId, "email"))) return null;
         Membership existing = findMembership(orgId, email);
         if (existing != null && ("unsubscribed".equals(existing.getConsentStatus())
                 || "erase_pending".equals(existing.getStatus())
                 || suppressions.findMarketingByOrgAndMembership(orgId, existing.getMembershipId()).isPresent())) {
-            return;
+            return null;
         }
         projector.upsertMembership(orgId, email, null);
         Membership m = findMembership(orgId, email);
         if (m == null) throw new IllegalStateException("Membership missing after survey upsert");
+        boolean objected = m.isObjectedProfiling();
         UUID recordId = consentService.capture(orgId, m.getMembershipId(), "explicit", SOURCE,
                 "Ticked the survey sign-up at event " + e.getId() + " (locale " + locale + ") next to: \""
                         + text + "\"",
                 "email", version, null, e.getId(), ConsentOrigin.DATA_SUBJECT, null);
         confirmations.requestFor(orgId, m.getMembershipId(), recordId, locale);
+        return objected ? null : m;
     }
 
     /** One 404 for unknown token, deleted, draft, cancelled, unpublished, switched off and the kill switch. */

@@ -8,7 +8,7 @@ import java.util.Map;
 
 /**
  * Body of {@code POST /api/v1/public/surveys/{token}}. Every answer is optional; the email and consent fields
- * are sent only with the ticked box. Any other property lands in {@code unknownFields} and is refused, so a
+ * are sent only with the ticked box. {@code npsScore} is a whole number from 0 to 10. Any other property lands in {@code unknownFields} and is refused, so a
  * client can never add an identity question. Validation is in {@code SurveyService}.
  */
 public record SurveyResponseRequest(
@@ -23,4 +23,5 @@ public record SurveyResponseRequest(
         String email,
         String consentText,
         String consentTextVersion,
+        Integer npsScore,
         @JsonAnySetter @Schema(hidden = true) Map<String, Object> unknownFields) {}

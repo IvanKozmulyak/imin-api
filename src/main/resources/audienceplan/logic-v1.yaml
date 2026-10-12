@@ -43,4 +43,7 @@ legal:
   survey_text_versions: [survey-org-named-2026-09]
   # Art. 13 notice versions shown above the survey; the version is stored on every answer.
   # survey-notice-2026-10: pseudonymous art. 13 notice naming {organizer}, 3-year retention (imin-public survey page, en/es/fr/uk).
-  survey_notice_versions: [survey-notice-2026-10]
+  # survey-notice-2026-10-linked: same, but says the 0-10 score may be kept with a ticked-box email in the guest list.
+  survey_notice_versions: [survey-notice-2026-10, survey-notice-2026-10-linked]
+  # Notice versions whose answers may write the recommendation score to the membership; each must be listed above.
+  survey_linking_notice_versions: [survey-notice-2026-10-linked]

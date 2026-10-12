@@ -84,21 +84,24 @@ class LogicLoaderTest {
     static Stream<Arguments> textVersions() {
         return Stream.of(
                 arguments("checkout", (Function<AudiencePlanLogic.Legal, Collection<String>>)
-                        AudiencePlanLogic.Legal::organizerNamedTextVersions, "checkout-org-named-2026-09"),
+                        AudiencePlanLogic.Legal::organizerNamedTextVersions, List.of("checkout-org-named-2026-09")),
                 arguments("door", (Function<AudiencePlanLogic.Legal, Collection<String>>)
-                        AudiencePlanLogic.Legal::doorQrTextVersions, "door-org-named-2026-09"),
+                        AudiencePlanLogic.Legal::doorQrTextVersions, List.of("door-org-named-2026-09")),
                 arguments("survey", (Function<AudiencePlanLogic.Legal, Collection<String>>)
-                        AudiencePlanLogic.Legal::surveyTextVersions, "survey-org-named-2026-09"),
+                        AudiencePlanLogic.Legal::surveyTextVersions, List.of("survey-org-named-2026-09")),
                 arguments("surveyNotice", (Function<AudiencePlanLogic.Legal, Collection<String>>)
-                        AudiencePlanLogic.Legal::surveyNoticeVersions, "survey-notice-2026-10"));
+                        AudiencePlanLogic.Legal::surveyNoticeVersions,
+                        List.of("survey-notice-2026-10", "survey-notice-2026-10-linked")),
+                arguments("surveyLinkingNotice", (Function<AudiencePlanLogic.Legal, Collection<String>>)
+                        AudiencePlanLogic.Legal::surveyLinkingNoticeVersions, List.of("survey-notice-2026-10-linked")));
     }
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("textVersions")
     void textVersions_holdExactlyTheShippedPageVersion(String surface,
                                                        Function<AudiencePlanLogic.Legal, Collection<String>> versions,
-                                                       String expected) {
-        assertThat(versions.apply(shipped().logic().legal())).containsExactly(expected);
+                                                       List<String> expected) {
+        assertThat(versions.apply(shipped().logic().legal())).containsExactlyInAnyOrderElementsOf(expected);
     }
 
     @Test
@@ -247,7 +250,15 @@ class LogicLoaderTest {
                         "logic.classes[3].days_since_last_paid_min: must not exceed days_since_last_paid_max"),
                 arguments("duplicateClassKey_fails",
                         (UnaryOperator<String>) l -> l.replace("{ key: repeat,", "{ key: loyal,"),
-                        "logic.classes[1].key: duplicate class 'loyal'"));
+                        "logic.classes[1].key: duplicate class 'loyal'"),
+                arguments("linkingNoticeNotAccepted_fails",
+                        (UnaryOperator<String>) l -> l.replace("survey_linking_notice_versions: [survey-notice-2026-10-linked]",
+                                "survey_linking_notice_versions: [survey-notice-2026-11-linked]"),
+                        "logic.legal.survey_linking_notice_versions: 'survey-notice-2026-11-linked' is not in survey_notice_versions"),
+                arguments("overlongNoticeVersion_fails",
+                        (UnaryOperator<String>) l -> l.replace("survey_notice_versions: [survey-notice-2026-10, ",
+                                "survey_notice_versions: [survey-notice-2026-10-with-a-long-suffix, "),
+                        "logic.legal.survey_notice_versions: 'survey-notice-2026-10-with-a-long-suffix' is longer than 32 characters"));
     }
 
     @ParameterizedTest(name = "{0}")

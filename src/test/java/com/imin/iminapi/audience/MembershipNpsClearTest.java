@@ -1,0 +1,88 @@
+package com.imin.iminapi.audience;
+
+import com.imin.iminapi.audience.service.ConsentOrigin;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import java.util.List;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** The membership recommendation score: cleared on the person's own unsubscribe, never reverted by a stale save. */
+@IminIntegrationTest
+class MembershipNpsClearTest {
+
+    @Autowired IminFixtures fx;
+    @Autowired AudienceOrderProjector projector;
+    @Autowired MembershipRepository memberships;
+    @Autowired ConsentService consentService;
+    @Autowired JdbcTemplate jdbc;
+
+    private UUID orgId;
+    private UUID mid;
+
+    @BeforeEach
+    void setUp() {
+        orgId = fx.org().getId();
+        String email = fx.email("nps");
+        projector.upsertMembership(orgId, email, null);
+        mid = jdbc.queryForObject("select m.membership_id from memberships m join consumers c on c.consumer_id ="
+                + " m.consumer_id where m.org_id = ? and c.normalized_email = ?", UUID.class, orgId, email);
+    }
+
+    @AfterEach
+    void tearDown() {
+        List<UUID> cids = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, orgId);
+        jdbc.update("delete from consent_records where membership_id = ?", mid);
+        jdbc.update("delete from fan_features where membership_id = ?", mid);
+        jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
+        jdbc.update("delete from memberships where org_id = ?", orgId);
+        for (UUID cid : cids) jdbc.update("delete from consumers where consumer_id = ?", cid);
+        jdbc.update("delete from organizations where id = ?", orgId);
+    }
+
+    @Test
+    void the_persons_own_unsubscribe_clears_the_score() {
+        memberships.updateNps(mid, (short) 9);
+
+        consentService.unsubscribe(orgId, mid, "unsubscribe_link", ConsentOrigin.DATA_SUBJECT, null);
+
+        assertThat(nps()).as("an objection takes the person out of Promoters").isNull();
+    }
+
+    @Test
+    void a_stale_full_entity_save_after_the_score_keeps_it() {
+        Membership stale = memberships.findByIdAndOrgId(mid, orgId).orElseThrow();
+        memberships.updateNps(mid, (short) 9);
+
+        stale.setVibe("late");
+        memberships.save(stale);
+
+        assertThat(nps()).isEqualTo((short) 9);
+    }
+
+    @Test
+    void a_save_before_the_score_lets_the_score_land() {
+        Membership m = memberships.findByIdAndOrgId(mid, orgId).orElseThrow();
+        m.setVibe("early");
+        memberships.save(m);
+
+        memberships.updateNps(mid, (short) 9);
+
+        assertThat(nps()).isEqualTo((short) 9);
+    }
+
+    private Short nps() {
+        return jdbc.queryForObject("select nps from memberships where membership_id = ?", Short.class, mid);
+    }
+}

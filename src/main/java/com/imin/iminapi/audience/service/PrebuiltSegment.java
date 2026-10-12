@@ -26,9 +26,9 @@ public enum PrebuiltSegment {
             "[{\"field\":\"recency\",\"operator\":\">=\",\"value\":\"90\"},{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"subscribed\"}]"),
     FIRST_TIMERS("First-timers",
             "[{\"field\":\"events\",\"operator\":\"==\",\"value\":\"1\"}]"),
-    // Retired until NPS is collected: never provisioned and hidden, but an existing row still resolves.
+    // Reads memberships.nps, which a linked survey answer writes.
     PROMOTERS("Promoters",
-            "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]", true),
+            "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]"),
     BOUGHT_NO_SHOWED("Bought-no-showed",
             "[{\"field\":\"no_show\",\"operator\":\">\",\"value\":\"0\"}]"),
     NEWEST_30D("Newest-30d",

@@ -197,7 +197,7 @@ class SurveyControllerWebTest {
     @Test
     void organizerGetAndPut_roundTripTheSwitchForTheCallersOrg() throws Exception {
         surveyService.submit(token, new SurveyResponseRequest("Metz", null, null, null, null, NOTICE, "en", null, null,
-                null, null, null));
+                null, null, null, null));
         String url = emailProps.getBuyerSiteBaseUrl() + "/e/" + event.getId() + "/survey?t=" + token;
 
         mvc.perform(get("/api/v1/events/{id}/survey", event.getId()).with(auth(owner)))

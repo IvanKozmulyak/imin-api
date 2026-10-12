@@ -215,7 +215,7 @@ class ConsentConfirmationServiceTest {
         String token = survey.setEnabled(owner, event.getId(), true).surveyUrl().replaceAll(".*\\?t=", "");
 
         survey.submit(token, new SurveyResponseRequest(null, null, "friend", null, null, NOTICE, "es", true,
-                a("survey"), TEXT, SURVEY_VERSION, null));
+                a("survey"), TEXT, SURVEY_VERSION, null, null));
 
         assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("survey"));
         assertThat(lastOwn().subject()).startsWith("Confirma tu correo");

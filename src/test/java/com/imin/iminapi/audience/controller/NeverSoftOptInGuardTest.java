@@ -241,7 +241,7 @@ class NeverSoftOptInGuardTest {
         survey.submit(token, new SurveyResponseRequest(null, null, "friend", null, null, "survey-notice-2026-10",
                 "en", true, a("survey-guard"),
                 "Email me about events by Guard Org. I agree to receive email marketing.",
-                "survey-org-named-2026-09", null));
+                "survey-org-named-2026-09", null, null));
 
         assertThat(basesOf(a("survey-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();

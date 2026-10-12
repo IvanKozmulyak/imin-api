@@ -138,6 +138,7 @@ public class RetentionJob {
         if (gate.hasPaidOrderWithinRetention(orgId, membershipId)) return false;
         consentService.unsubscribe(orgId, membershipId, SOURCE, ConsentOrigin.OPERATOR, null);
         features.clearProfiling(membershipId);
+        memberships.updateNps(membershipId, null);
         return true;
     }
 }

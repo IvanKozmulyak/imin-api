@@ -401,21 +401,23 @@ public class SegmentService {
     }
 
     /**
-     * Provision the 7 prebuilt segments for a new org. Idempotent AND concurrency-safe:
-     * the cheap existence check short-circuits the common case, and the first-time path takes
-     * a {@code FOR UPDATE} lock on the org row and re-checks under it, so two parallel first
-     * calls (e.g. two concurrent GET /segments) can never both insert the prebuilt set.
-     * If the org row is absent (some unit tests seed segments without an org), the lock is a
-     * no-op and the double-check still keeps single-threaded callers correct.
+     * Provision every non-retired prebuilt segment the org has no row for, so an org seeded before a
+     * prebuilt existed gets it too. Idempotent AND concurrency-safe: the cheap key check short-circuits the
+     * common case, and the insert path takes a {@code FOR UPDATE} lock on the org row and re-checks under it,
+     * so two parallel calls can never both insert. A missing prebuilt whose name a visible segment already
+     * uses is skipped rather than duplicated. If the org row is absent (some unit tests seed segments without
+     * an org), the lock is a no-op and the re-check still keeps single-threaded callers correct.
      */
     @Transactional
     public void ensurePrebuiltSegments(UUID orgId) {
-        if (segmentRepo.hasPrebuiltSegments(orgId)) return;
-        // Serialize concurrent first-time seeders for this org.
+        if (missingPrebuilts(orgId).isEmpty()) return;
+        // Serialize concurrent seeders for this org.
         orgRepo.findByIdForUpdate(orgId);
-        if (segmentRepo.hasPrebuiltSegments(orgId)) return; // re-check under the lock
-        for (PrebuiltSegment pb : PrebuiltSegment.values()) {
-            if (pb.retired()) continue;
+        List<PrebuiltSegment> missing = missingPrebuilts(orgId); // re-check under the lock
+        boolean firstSeed = !segmentRepo.hasPrebuiltSegments(orgId);
+        for (PrebuiltSegment pb : missing) {
+            // ponytail: an org-made segment of the same name blocks a later-added prebuilt for good.
+            if (!firstSeed && visibleNameTaken(orgId, pb.displayName())) continue;
             Segment s = new Segment();
             s.setOrgId(orgId);
             s.setName(pb.displayName());
@@ -425,6 +427,13 @@ public class SegmentService {
             s.setRulesJson(pb.rulesJson());
             segmentRepo.save(s);
         }
+    }
+
+    private List<PrebuiltSegment> missingPrebuilts(UUID orgId) {
+        Set<String> present = new HashSet<>(segmentRepo.prebuiltKeys(orgId));
+        return Arrays.stream(PrebuiltSegment.values())
+                .filter(pb -> !pb.retired() && !present.contains(pb.key()))
+                .toList();
     }
 
     /**

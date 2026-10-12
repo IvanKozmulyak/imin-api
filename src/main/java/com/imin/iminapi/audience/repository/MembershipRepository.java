@@ -42,6 +42,12 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
             nativeQuery = true)
     Optional<Membership> lockByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /** Sets or (with null) clears the recommendation score; the only writer of {@code memberships.nps}. */
+    @Modifying
+    @Transactional
+    @Query("update Membership m set m.nps = :nps where m.membershipId = :id")
+    int updateNps(@Param("id") UUID id, @Param("nps") Short nps);
+
     @Query("select m from Membership m where m.membershipId = :id and m.orgId = :orgId")
     Optional<Membership> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 

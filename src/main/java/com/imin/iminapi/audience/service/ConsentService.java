@@ -251,6 +251,7 @@ public class ConsentService {
             // cleared here, not via a droppable queue.
             m.setObjectedProfiling(true);
             fanFeatureRepo.clearProfiling(membershipId);
+            membershipRepo.updateNps(membershipId, null);
         }
         membershipRepo.save(m);
         // The global toggle fans out over every org and sets no objection, so it can wait for the nightly pass.
