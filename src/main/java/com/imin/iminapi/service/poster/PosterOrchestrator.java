@@ -40,12 +40,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Renders the art director's 3 concept variants via the native Ideogram V3 API, validates each
  * with the vision gates, and persists the result.
  *
- * <p>Per variant: generate once; run the HARD text gate; on failure retry up to
- * {@code poster.validation.max-regenerations} times. A render missing required text (or one the gate
- * could not judge) is regenerated from the original prompt with a new seed, because a remix keeps the
- * layout that dropped the text; a render with only extra/garbled text is remixed with a correction
- * prompt. When every attempt fails, the attempt with the fewest text errors ships best-effort, and a
- * retry render that throws ships the best attempt so far. The SOFT style gate is advisory — a
+ * <p>Per variant: generate once; run the HARD text gate; on any failure regenerate from the original
+ * prompt with a new seed, up to {@code poster.validation.max-regenerations} times (a remix keeps the
+ * layout that broke the text, so it is used only for the DJ palette regrade). When every attempt
+ * fails, the attempt with the fewest text errors ships best-effort, and a retry render that throws
+ * ships the best attempt so far. The SOFT style gate is advisory — a
  * style-only failure is accepted best-effort without another render. Text is fully baked by the
  * model; there is no QR/address/Satori overlay.
  */
@@ -60,7 +59,6 @@ public class PosterOrchestrator {
     private static final String VERDICT_BEST_EFFORT = "BEST_EFFORT";
     private static final String MODE_GENERATE = "generate";
     private static final String MODE_REGENERATE = "regenerate";
-    private static final String MODE_REMIX = "remix";
     private static final AtomicInteger POOL_THREAD_SEQ = new AtomicInteger();
 
     private final IdeogramV3Client ideogramClient;
@@ -75,7 +73,6 @@ public class PosterOrchestrator {
     private final PosterGenerationRepository generationRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final int maxRegenerations;
-    private final int remixImageWeight;
     private final boolean paletteRegradeEnabled;
     private final int paletteRegradeWeight;
     private final int maxReferences;
@@ -93,7 +90,6 @@ public class PosterOrchestrator {
             BrandLogoCompositor logoCompositor,
             PosterGenerationRepository generationRepository,
             @Value("${poster.validation.max-regenerations:2}") int maxRegenerations,
-            @Value("${ideogram.remix.image-weight:70}") int remixImageWeight,
             @Value("${poster.palette-regrade.enabled:true}") boolean paletteRegradeEnabled,
             @Value("${poster.palette-regrade.image-weight:85}") int paletteRegradeWeight,
             @Value("${ideogram.max-references:3}") int maxReferences,
@@ -109,7 +105,6 @@ public class PosterOrchestrator {
         this.logoCompositor = logoCompositor;
         this.generationRepository = generationRepository;
         this.maxRegenerations = Math.max(0, maxRegenerations);
-        this.remixImageWeight = remixImageWeight;
         this.paletteRegradeEnabled = paletteRegradeEnabled;
         this.paletteRegradeWeight = paletteRegradeWeight;
         this.maxReferences = Math.max(0, maxReferences);
@@ -279,8 +274,7 @@ public class PosterOrchestrator {
     }
 
     /**
-     * Generate → text gate (hard: regenerate on missing/unjudged text, remix on extra text only,
-     * best-of on exhaustion) → style gate (soft).
+     * Generate → text gate (hard: regenerate on every failure, best-of on exhaustion) → style gate (soft).
      */
     private GeneratedPoster renderWithValidation(
             PosterVariantEntity entity, PosterVariant variant, long baseSeed,
@@ -294,7 +288,6 @@ public class PosterOrchestrator {
 
         long seed = baseSeed;
         byte[] image = null;
-        String correction = null;
         String mode = MODE_GENERATE;
         Candidate best = null;
 
@@ -306,11 +299,8 @@ public class PosterOrchestrator {
                     mode, variant.heroType(), attempt, maxRegenerations, seed);
             IdeogramV3Client.IdeogramResult render;
             try {
-                render = MODE_REMIX.equals(mode)
-                        ? ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(),
-                                style.preset(), brandPalette, characterRef)
-                        : ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
-                                brandPalette, characterRef);
+                render = ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
+                        brandPalette, characterRef);
             } catch (RuntimeException e) {
                 if (attempt == 0 || best == null) throw e;
                 attempts.add(failedRenderJson(attempt, seed, mode, e));
@@ -336,11 +326,9 @@ public class PosterOrchestrator {
                             maxRegenerations, best.attempt, text.reason());
                     return acceptBest(entity, best, attempts, brand);
                 }
-                // A remix keeps the layout that dropped the text, so missing text needs a fresh render;
-                // unreadable marks have no words a correction could name, so they get one too.
-                mode = (!text.evaluated() || missing > 0 || describesUnreadableText(text.extraText()))
-                        ? MODE_REGENERATE : MODE_REMIX;
-                correction = MODE_REMIX.equals(mode) ? buildCorrectionPrompt(variant.ideogramPrompt(), text) : null;
+                // A remix keeps the layout that broke the text (it lost the date in prod), so every
+                // failure gets a fresh render from the original prompt.
+                mode = MODE_REGENERATE;
                 seed = nextSeed(seed);
                 continue;
             }
@@ -398,7 +386,7 @@ public class PosterOrchestrator {
         try {
             IdeogramV3Client.IdeogramResult regraded = ideogramClient.remix(
                     image, buildPaletteRegradePrompt(brandPalette), paletteRegradeWeight, regradeSeed,
-                    List.of(), null, brandPalette, null);
+                    List.of(), null, brandPalette);
             PosterTextValidationService.ValidationDecision text =
                     textValidation.validateOrExplain(regraded.imageBytes(), spec);
             Map<String, Object> entry = attemptJson(attempts.size(), regradeSeed, "palette-regrade", text, null);
@@ -470,38 +458,6 @@ public class PosterOrchestrator {
         entity.setFinalUrl(finalUrl);
         entity.setLogoCompositeStatus(compositeStatus);
         return toDto(entity);
-    }
-
-    static String buildCorrectionPrompt(String originalPrompt,
-                                        PosterTextValidationService.ValidationDecision text) {
-        StringBuilder c = new StringBuilder(originalPrompt);
-        c.append("\n\nCORRECTION — the previous render had text errors. ");
-        if (text.missingRequired() != null && !text.missingRequired().isEmpty()) {
-            c.append("Render these exact strings, correctly spelled and clearly legible: ")
-             .append(quoteJoin(text.missingRequired())).append(". ");
-        }
-        List<String> words = text.extraText() == null ? List.of()
-                : text.extraText().stream().filter(s -> !isDescription(s)).toList();
-        if (!words.isEmpty()) {
-            c.append("Remove these invented or garbled words: ")
-             .append(quoteJoin(words)).append(". ");
-        }
-        c.append("Keep the composition, hero, colors, and layout identical — only fix the text.");
-        return c.toString();
-    }
-
-    /** The text gate reports unreadable marks as a bracketed description, e.g. "[fine print, bottom-left]". */
-    static boolean isDescription(String extra) {
-        String s = extra == null ? "" : extra.trim();
-        return s.length() >= 2 && s.startsWith("[") && s.endsWith("]");
-    }
-
-    private static boolean describesUnreadableText(List<String> extra) {
-        return extra != null && extra.stream().anyMatch(PosterOrchestrator::isDescription);
-    }
-
-    private static String quoteJoin(List<String> items) {
-        return String.join(", ", items.stream().map(s -> "\"" + s + "\"").toList());
     }
 
     private Map<String, Object> attemptJson(int attempt, long seed, String mode,

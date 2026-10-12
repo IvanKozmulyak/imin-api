@@ -62,9 +62,9 @@ replicate:
   image:
     storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
 
-# Native Ideogram V3 render API (sole renderer). TURBO for generate and remix by default. A render
-# missing required text is regenerated with a new seed; one with only extra text is remixed. Exactly
-# one style control: reference images win, style_preset is the no-refs fallback.
+# Native Ideogram V3 render API (sole renderer). TURBO for generate and remix by default. Every text-gate
+# failure is regenerated from the original prompt with a new seed; remix is used only for the DJ palette
+# regrade. Exactly one style control: reference images win, style_preset is the no-refs fallback.
 ideogram:
   api-key: ${IDEOGRAM_API_KEY:}
   base-url: ${IDEOGRAM_BASE_URL:https://api.ideogram.ai}
@@ -77,11 +77,10 @@ ideogram:
   # Wait before the single retry of a render or download that answered 429 or 5xx.
   retry-backoff-millis: ${IDEOGRAM_RETRY_BACKOFF_MILLIS:2000}
   generate:
-    # TURBO by default — QUALITY costs 3x and the text gate + corrective remix are the quality net.
+    # TURBO by default — QUALITY costs 3x and the text gate + regenerate are the quality net.
     rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:TURBO}
   remix:
     rendering-speed: ${IDEOGRAM_REMIX_RENDERING_SPEED:TURBO}
-    image-weight: ${IDEOGRAM_REMIX_IMAGE_WEIGHT:70}
   character:
     # color_palette is NEVER sent with a character reference — Ideogram rejects the combination
     # with a 400 (confirmed in production 2026-06-12); brand colours ride the prompt channel.
@@ -108,8 +107,8 @@ poster:
   text-validation:
     # Legibility + invented-text (vision) gate — HARD. Enforced server-side: the gate fails on ANY
     # missing required string or invented/garbled text, regardless of the model's own `accepted` verdict;
-    # missing (or unjudged) text triggers a fresh generate with a new seed, extra text alone a corrective
-    # remix, and the fewest-errors attempt ships best-effort. Uses a strong vision model because the
+    # every failure (missing, extra or unjudged text) triggers a fresh generate with a new seed, and the
+    # fewest-errors attempt ships best-effort. Uses a strong vision model because the
     # old gpt-4o-mini under-read dense poster type and false-passed hallucinated text. For a cheaper
     # reader set POSTER_TEXT_VALIDATION_MODEL=google/gemini-2.0-flash-001 (strong OCR, low cost).
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
@@ -119,7 +118,7 @@ poster:
     # Cap on the gate's response length. Bounds a runaway OCR transcription (texture-heavy posters can
     # make the model enumerate garbled "text" until it overruns and truncates the verdict JSON mid-string).
     # A legitimate verdict is a few short strings, well under this. An unusable verdict is treated as a
-    # non-acceptance (corrective remix / best-effort), never a fatal variant error.
+    # non-acceptance (regenerate / best-effort), never a fatal variant error.
     max-tokens: ${POSTER_TEXT_VALIDATION_MAX_TOKENS:1500}
   style-validation:
     # Style-adherence (vision) gate — SOFT (hero present, medium/palette match). ENABLED for the

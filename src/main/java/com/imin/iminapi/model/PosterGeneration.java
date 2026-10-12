@@ -43,7 +43,7 @@ public class PosterGeneration {
 
     /**
      * Resolved brand stamped at creation: JSON {colors, logoUrl, logoOn} or NULL when brandless.
-     * The corrective remix path re-reads THIS snapshot, not live org state, so a poster remixed
+     * Retry and regrade renders re-read THIS snapshot, not live org state, so a poster re-rendered
      * after a rebrand doesn't silently mix old prompt colours with a new logo.
      */
     @Column(name = "brand_snapshot", columnDefinition = "TEXT")

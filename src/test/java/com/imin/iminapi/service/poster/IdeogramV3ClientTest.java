@@ -75,19 +75,6 @@ class IdeogramV3ClientTest {
         var parts = clientWithFlags(true, true)
                 .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
         assertThat(parts.containsKey("color_palette")).isFalse();
-        var remixParts = clientWithFlags(true, true)
-                .buildRemixParts(new byte[]{9}, "fix", 70, 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
-        assertThat(remixParts.containsKey("color_palette")).isFalse();
-    }
-
-    @Test
-    void remixCarriesCharacterRefToo() {
-        var parts = clientWithFlags(false, false)
-                .buildRemixParts(new byte[]{9}, "fix", 70, 42L, List.of(), null, PALETTE, CHAR_REF);
-        assertThat(parts.containsKey("character_reference_images")).isTrue();
-        assertThat(parts.containsKey("image")).isTrue();
-        assertThat(parts.containsKey("seed")).isFalse();
-        assertThat(parts.containsKey("color_palette")).isFalse();
     }
 
     @Test
@@ -165,7 +152,7 @@ class IdeogramV3ClientTest {
                 .andRespond(withSuccess(new byte[]{7, 8}, MediaType.IMAGE_PNG));
 
         IdeogramV3Client.IdeogramResult r = h.client().remix(
-                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST", List.of(), null);
+                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST", List.of());
 
         assertThat(r.imageBytes()).containsExactly(7, 8);
         assertThat(r.seed()).isEqualTo(99L);
@@ -236,7 +223,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/f.png"))
                 .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
 
-        h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"), null);
+        h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"));
 
         h.server().verify();
     }

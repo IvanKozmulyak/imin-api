@@ -11,7 +11,7 @@ import java.util.Map;
 
 /**
  * The resolved org brand for one generation. Stamped on {@code poster_generations.brand_snapshot}
- * at creation, so the corrective remix path and any audit read the snapshot, not live org state.
+ * at creation, so retry and regrade renders and any audit read the snapshot, not live org state.
  *
  * @param colors  ordered accent hex (#rrggbb); index 0 leads. Empty when brandless.
  * @param logoUrl the org logo URL, or null when none.

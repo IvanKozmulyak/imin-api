@@ -38,8 +38,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * enforced structurally even when reference images carry a different palette.
  * The response carries a temporary image URL, which is downloaded immediately (the link expires).
  *
- * <p>Both {@code generate} and the corrective {@code remix} default to the TURBO tier (QUALITY
- * costs 3x; the text gate + corrective remix are the quality net), env-overridable via
+ * <p>Both {@code generate} and {@code remix} (used only for the DJ palette regrade) default to the
+ * TURBO tier (QUALITY costs 3x; the text gate + regenerate are the quality net), env-overridable via
  * {@code IDEOGRAM_GENERATE_RENDERING_SPEED} / {@code IDEOGRAM_REMIX_RENDERING_SPEED}.
  *
  * <p>When a non-null {@code characterRef} is supplied (DJ mode), the character reference image is
@@ -124,21 +124,20 @@ public class IdeogramV3Client {
         return parts;
     }
 
-    /** Image-conditioned remix (TURBO tier). {@code characterRef} keeps the DJ likeness through corrections. */
+    /** Image-conditioned remix (TURBO tier), used only for the DJ-mode palette regrade. */
     public IdeogramResult remix(byte[] image, String prompt, int imageWeight, long seed,
                                 List<StyleReferencePart> styleRefs, String stylePreset,
-                                List<String> paletteHexes, StyleReferencePart characterRef) {
+                                List<String> paletteHexes) {
         MultiValueMap<String, Object> parts =
-                buildRemixParts(image, prompt, imageWeight, seed, styleRefs, stylePreset, paletteHexes, characterRef);
-        log.info("[ideogram v3 remix] promptLen={} weight={} {} palette={} seed={} charRef={}",
+                buildRemixParts(image, prompt, imageWeight, seed, styleRefs, stylePreset, paletteHexes);
+        log.info("[ideogram v3 remix] promptLen={} weight={} {} palette={} seed={}",
                 prompt.length(), imageWeight, styleLabel(styleRefs, stylePreset),
-                paletteHexes == null ? 0 : paletteHexes.size(), seed, characterRef != null);
+                paletteHexes == null ? 0 : paletteHexes.size(), seed);
         return new IdeogramResult(post(REMIX_PATH, parts), seed);
     }
 
     MultiValueMap<String, Object> buildRemixParts(byte[] image, String prompt, int imageWeight, long seed,
-            List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes,
-            StyleReferencePart characterRef) {
+            List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes) {
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         parts.add("image", filePart(new StyleReferencePart(image, "source.png", "image/png")));
         parts.add("prompt", prompt);
@@ -148,7 +147,7 @@ public class IdeogramV3Client {
         parts.add("magic_prompt", MAGIC_PROMPT);
         // Accepted on remix too: probed against the live API on 2026-10-12 (200).
         parts.add("enable_copyright_detection", String.valueOf(copyrightDetection));
-        applyConditional(parts, seed, styleRefs, stylePreset, paletteHexes, characterRef);
+        applyConditional(parts, seed, styleRefs, stylePreset, paletteHexes, null);
         return parts;
     }
 
