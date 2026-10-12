@@ -157,7 +157,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * Public feed listing. CANCELLED events are excluded here (and from the city/genre
      * facets) even though {@link #findPublic} still serves them: a cancelled event must
      * stay reachable by share-link so the detail page can render the cancellation banner,
-     * but it has no business appearing in a browse feed.
+     * but it has no business appearing in a browse feed. An event under an active sales hold
+     * ({@code moderation_holds}, on it or its org) is left out of the feed and both facets the same way.
      *
      * <p><b>{@code freeOnly}</b> keeps only events whose cheapest PURCHASABLE tier is
      * €0. Because prices are non-negative, "min purchasable price == 0" is exactly
@@ -198,6 +199,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                 OR e.startsAt >= :from
                 OR (:includeOngoing = true AND (e.endsAt IS NULL OR e.endsAt > :now)))
            AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
+           AND NOT EXISTS (SELECT 1 FROM ModerationHold h
+                            WHERE h.orgId = e.orgId AND h.liftedAt IS NULL AND h.suspendSales = true
+                              AND (h.eventId IS NULL OR h.eventId = e.id))
            AND (:genreCount = 0 OR e.genreKey IN :genreKeys)
            AND (:typeCount = 0 OR e.type IN :types)
            /* The two facets above are multi-select (?genre=a&genre=b). The count
@@ -291,6 +295,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND (e.startsAt >= :now OR e.endsAt IS NULL OR e.endsAt > :now)
+           AND NOT EXISTS (SELECT 1 FROM ModerationHold h
+                            WHERE h.orgId = e.orgId AND h.liftedAt IS NULL AND h.suspendSales = true
+                              AND (h.eventId IS NULL OR h.eventId = e.id))
            AND e.venueCityKey IS NOT NULL
            AND e.venueCityKey <> ''
          GROUP BY e.venueCityKey, e.venueCity, e.venueCountry
@@ -570,6 +577,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND (e.startsAt >= :now OR e.endsAt IS NULL OR e.endsAt > :now)
+           AND NOT EXISTS (SELECT 1 FROM ModerationHold h
+                            WHERE h.orgId = e.orgId AND h.liftedAt IS NULL AND h.suspendSales = true
+                              AND (h.eventId IS NULL OR h.eventId = e.id))
            AND e.genreKey IS NOT NULL
            AND e.genreKey <> ''
          GROUP BY e.genreKey, e.genre

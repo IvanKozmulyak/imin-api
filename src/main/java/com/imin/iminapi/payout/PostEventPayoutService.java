@@ -11,6 +11,7 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.settlement.SettlementRate;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.stripe.StripeConnectState;
@@ -78,6 +79,9 @@ import java.util.UUID;
  *   <li><b>step 0u — unknown outcome.</b> While the event has a PLANNED or RETRYING run, an earlier create's
  *       answer was never recorded; {@link #resolveUnknownRun} settles it from Stripe's payout list first, and
  *       this method never re-sends a key.</li>
+ *   <li><b>step 0d — moderation hold.</b> An active {@code moderation_holds} row with {@code hold_payouts} on the
+ *       org or this event stops a new payout: nothing written, re-checked right before step 5. Recoveries owed to
+ *       imin (step 0b) still run, and an unknown outcome is still settled by {@link #resolveUnknownRun}.</li>
  *   <li><b>step 0 — double-pay guard (DB, not Stripe), FIRST.</b> A connected
  *       balance is one shared pool across all of an org's events, so AT MOST ONE
  *       in-flight payout per org per tick. Skip the event entirely if any
@@ -188,6 +192,7 @@ public class PostEventPayoutService {
     private final OrderSettlementStamper stamper;
     private final ApplicationEventPublisher publisher;
     private final PayoutRunStore runStore;
+    private final ModerationHoldRepository holds;
 
     public PostEventPayoutService(StripeClient stripeClient,
                                   StripeProperties props,
@@ -202,7 +207,8 @@ public class PostEventPayoutService {
                                   DisputeRecoveryMarker disputeMarker,
                                   OrderSettlementStamper stamper,
                                   ApplicationEventPublisher publisher,
-                                  PayoutRunStore runStore) {
+                                  PayoutRunStore runStore,
+                                  ModerationHoldRepository holds) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.events = events;
@@ -217,6 +223,7 @@ public class PostEventPayoutService {
         this.stamper = stamper;
         this.publisher = publisher;
         this.runStore = runStore;
+        this.holds = holds;
     }
 
     /** Bank-statement text: "imin payout · <event name>", name cut so the whole string stays under 250 chars. */
@@ -266,6 +273,12 @@ public class PostEventPayoutService {
         if (payoutRuns.existsByEventIdAndStatusInAndTestMode(eventId, UNRESOLVED, !props.isLiveKey())) {
             log.info("[payout] skip event {} org {} — an earlier payout's outcome is not recorded yet; "
                     + "the sweep resolves it from Stripe first", eventId, org.getId());
+            return;
+        }
+
+        // ── step 0d — a moderation hold on the org or this event: imin staff froze its payouts ──
+        if (holds.payoutsHeld(org.getId(), eventId)) {
+            log.info("[payout] hold event {} org {} — moderation hold on payouts; nothing written", eventId, org.getId());
             return;
         }
 
@@ -460,6 +473,12 @@ public class PostEventPayoutService {
         if (held(events.findStatusIfNotDeleted(eventId))) {
             log.warn("[payout] hold event {} org {} — event was cancelled or deleted while its payout was "
                     + "computed; nothing written", eventId, org.getId());
+            return;
+        }
+        // A hold placed by staff while this payout was being computed (step 0d) stops it too, before any write.
+        if (holds.payoutsHeld(org.getId(), eventId)) {
+            log.info("[payout] hold event {} org {} — moderation hold placed while its payout was computed; "
+                    + "nothing written", eventId, org.getId());
             return;
         }
 

@@ -1,0 +1,19 @@
+{{title}}
+
+{{scopeLine}}
+
+{{sinceLine}}
+
+{{effectLines}}
+
+{{groundLine}}
+
+{{reasonLine}}
+
+{{decidedLine}}
+
+{{appealLine}}
+
+Ouvrir votre tableau de bord : {{dashboardUrl}}
+
+imin.wtf

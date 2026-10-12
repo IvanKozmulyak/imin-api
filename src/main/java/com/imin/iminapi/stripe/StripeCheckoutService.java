@@ -7,7 +7,9 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.moderation.ModerationHoldService;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -76,6 +78,7 @@ public class StripeCheckoutService {
     private final FreeCheckoutService freeCheckoutService;
     private final StripeProperties props;
     private final StripeProductService productService;
+    private final ModerationHoldRepository holds;
     private final Clock clock;
 
     public StripeCheckoutService(StripeClient stripeClient,
@@ -88,6 +91,7 @@ public class StripeCheckoutService {
                                   FreeCheckoutService freeCheckoutService,
                                   StripeProperties props,
                                   StripeProductService productService,
+                                  ModerationHoldRepository holds,
                                   Clock clock) {
         this.stripeClient = stripeClient;
         this.events = events;
@@ -99,6 +103,7 @@ public class StripeCheckoutService {
         this.freeCheckoutService = freeCheckoutService;
         this.props = props;
         this.productService = productService;
+        this.holds = holds;
         this.clock = clock;
     }
 
@@ -558,6 +563,11 @@ public class StripeCheckoutService {
 
         // 1. Load + validate event (must be publicly visible).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
+
+        // 1a. imin staff paused sales for this event or its organizer. Replays answered above never get here.
+        if (holds.salesSuspended(event.getOrgId(), event.getId())) {
+            throw ModerationHoldService.salesSuspendedError();
+        }
 
         // 2. Load + validate the event window (status, on-sale/close) and the tier
         //    (belongs to event, enabled, in sale window, has price+quantity).

@@ -1003,6 +1003,11 @@ imin:
     portrait-refresh-batch: ${IMIN_AUDIENCE_PORTRAIT_REFRESH_BATCH:20}
     # Door QR / survey confirmation emails. Off until legal D9 (entity, privacy policy, DPA) clears; sign-ups stay pending.
     consent-confirmation-emails-enabled: ${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}
+  moderation:
+    # imin staff (users.id, comma-separated) who may place/lift moderation holds; blank = endpoints 404 for everyone.
+    staff-user-ids: ${IMIN_MODERATION_STAFF_USER_IDS:}
+    # Appeal address in hold notices and the dashboard banner (acceptable-use §5).
+    appeal-email: ${IMIN_MODERATION_APPEAL_EMAIL:hello@imin.wtf}
 
 # resendTracking reports TRACKING_ON (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

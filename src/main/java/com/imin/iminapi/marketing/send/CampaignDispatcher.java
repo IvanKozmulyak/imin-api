@@ -33,7 +33,8 @@ import java.util.UUID;
  * CampaignSendUnit (a separate bean so its @Transactional boundary engages). The dispatcher's
  * only transaction is the claim (lock, filter, flip to sending); the per-campaign transactions live in CampaignSendUnit.
  *
- * <p>Gating (spec §2.5 step 4, §7): paused or missing orgs are filtered in the claim SQL, quiet hours and the daily cap in Java.
+ * <p>Gating (spec §2.5 step 4, §7): paused or missing orgs and active moderation holds are filtered in the claim SQL,
+ * quiet hours and the daily cap in Java.
  */
 @Component
 public class CampaignDispatcher {

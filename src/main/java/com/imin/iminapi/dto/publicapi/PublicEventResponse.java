@@ -34,9 +34,12 @@ public record PublicEventResponse(
         Instant saleClosesAt,
         PublicOrganizationDto organization,
         List<PublicTierDto> tiers,
-        String metaPixelId
+        String metaPixelId,
+        /** imin staff paused ticket sales for this event or its organizer; {@code tiers} is empty while true. */
+        boolean salesSuspended
 ) {
-    public static PublicEventResponse from(Event e, Organization org, List<PublicTierDto> tiers, String metaPixelId) {
+    public static PublicEventResponse from(Event e, Organization org, List<PublicTierDto> tiers, String metaPixelId,
+                                           boolean salesSuspended) {
         return new PublicEventResponse(
                 e.getId(),
                 e.getSlug(),
@@ -65,6 +68,7 @@ public record PublicEventResponse(
                 e.getSaleClosesAt(),
                 new PublicOrganizationDto(org.getName(), org.getSlug()),
                 tiers,
-                metaPixelId);
+                metaPixelId,
+                salesSuspended);
     }
 }

@@ -6,6 +6,7 @@ import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.ModerationHold;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -15,6 +16,7 @@ import com.imin.iminapi.refund.RefundReason;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
@@ -376,6 +378,7 @@ class PostEventPayoutServiceTest {
     @Autowired DisputeRepository disputes;
     @Autowired PayoutRunRepository payoutRuns;
     @Autowired UserRepository users;
+    @Autowired ModerationHoldRepository holds;
     /** Records what the service published — the organizer notification is async, the event is not. */
     @Autowired ApplicationEvents published;
 
@@ -434,6 +437,7 @@ class PostEventPayoutServiceTest {
     void tearDown() {
         List<UUID> ids = new java.util.ArrayList<>(extraOrgIds);
         ids.add(org.getId());
+        for (UUID id : ids) jdbc.update("DELETE FROM moderation_holds WHERE org_id = ?", id);
         OrgRows.delete(jdbc, ids);
     }
 
@@ -1644,6 +1648,132 @@ class PostEventPayoutServiceTest {
         assertThat(payoutRuns.findByEventId(e.getId())).as("no BLOCKED park").isEmpty();
         assertThat(published.stream(PayoutBlockedEvent.class).toList())
                 .as("no 'add a bank' email for money the organizer will not get").isEmpty();
+    }
+
+    // ── moderation holds: imin staff froze the organizer's payouts ─────────────────
+
+    @ParameterizedTest
+    @ValueSource(strings = {"org", "event"})
+    void a_payout_hold_stops_only_the_payouts_it_covers(String scope) {
+        Event held = newEndedEvent(org);
+        order(held, 10_000, 1_000);
+        Event other = newEndedEvent(org);
+        order(other, 20_000, 2_000);
+        fake.availableMinor.set(50_000L);
+        // A refund imin fronted for this org: the recovery owed to imin runs whatever the hold.
+        Refund fronted = succeededRefund(order(newEndedEvent(org), 4_000, 400), 2_000, 200, true);
+        AtomicInteger balanceReads = new AtomicInteger();
+        fake.onBalanceRead = balanceReads::incrementAndGet;
+        payoutHold("org".equals(scope) ? null : held.getId());
+
+        service.payOneEvent(held.getId());
+
+        assertThat(fake.reversalCount.get()).as("step 0b still pulls imin's money back").isEqualTo(1);
+        assertThat(fake.lastReversalKey.get()).isEqualTo("refund:" + fronted.getId() + ":reversal");
+        assertThat(balanceReads.get()).as("a held event never reaches Stripe's balance").isZero();
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(payoutRuns.findByEventId(held.getId())).as("held, nothing written").isEmpty();
+
+        service.payOneEvent(other.getId());
+
+        if ("org".equals(scope)) {
+            assertThat(fake.payoutCount.get()).as("an org hold covers every event").isZero();
+            assertThat(payoutRuns.findByEventId(other.getId())).isEmpty();
+        } else {
+            assertThat(fake.payoutCount.get()).as("the org's other event still pays").isEqualTo(1);
+            assertThat(fake.lastPayoutAmount.get()).isEqualTo(18_000L);
+        }
+    }
+
+    @Test
+    void a_hold_placed_during_the_tick_stops_the_payout() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        // Staff commit the hold on their own connection after step 0d has already passed.
+        fake.onBalanceRead = () -> payoutHoldElsewhere(e.getId());
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).as("nothing written").isEmpty();
+    }
+
+    /** Money Stripe already moved is recorded whatever the hold; only a fresh attempt waits for the lift. */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void a_held_org_s_unknown_run_is_still_resolved_but_never_retried(boolean paidAtStripe) {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+        service.payOneEvent(e.getId());      // outcome unknown: run parked RETRYING at 9_000
+        fake.failApiConnection = false;
+        String po = paidAtStripe ? fake.ledgerAdd(e.getId(), 9_000L) : null;
+        payoutHold(null);
+
+        tick();
+
+        assertThat(fake.createCalls.get()).as("no new payout while held").isEqualTo(1);
+        assertThat(payoutRuns.findByEventId(e.getId())).singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getAttempt()).as("no fresh attempt while held").isEqualTo(1);
+                    if (paidAtStripe) {
+                        assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+                        assertThat(r.getStripePayoutId()).isEqualTo(po);
+                    } else {
+                        assertThat(r.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+                        assertThat(r.getFailureReason()).isEqualTo(PayoutBlockReason.NOT_CREATED);
+                    }
+                });
+    }
+
+    @Test
+    void a_held_org_without_a_bank_gets_no_add_a_bank_notice() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+        fake.hasBank = false;
+        payoutHold(null);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(payoutRuns.findByEventId(e.getId())).as("no BLOCKED park").isEmpty();
+        assertThat(published.stream(PayoutBlockedEvent.class).toList())
+                .as("no 'add a bank' email for money imin is holding").isEmpty();
+    }
+
+    private void payoutHold(UUID eventId) {
+        holds.saveAndFlush(payoutHoldRow(eventId));
+    }
+
+    /** Commits the hold on a fresh connection, as the staff endpoint would during the tick. */
+    private void payoutHoldElsewhere(UUID eventId) {
+        Thread t = new Thread(() -> jdbc.update("INSERT INTO moderation_holds (id, org_id, event_id, suspend_sales, "
+                + "hold_payouts, ground, facts, placed_by, placed_at) VALUES (?, ?, ?, false, true, 'fraud', 'x', ?, now())",
+                UUID.randomUUID(), org.getId(), eventId, UUID.randomUUID()));
+        t.start();
+        try {
+            t.join(10_000);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+        assertThat(t.isAlive()).as("hold insert finished").isFalse();
+    }
+
+    private ModerationHold payoutHoldRow(UUID eventId) {
+        ModerationHold h = new ModerationHold();
+        h.setId(UUID.randomUUID());
+        h.setOrgId(org.getId());
+        h.setEventId(eventId);
+        h.setSuspendSales(false);
+        h.setHoldPayouts(true);
+        h.setGround("fraud");
+        h.setFacts("fixture");
+        h.setPlacedBy(UUID.randomUUID());
+        h.setPlacedAt(Instant.now().truncatedTo(ChronoUnit.MICROS));
+        return h;
     }
 
     /** Commits a status change on a fresh connection, as a concurrent organizer or ops write would. */

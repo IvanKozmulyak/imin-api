@@ -8,6 +8,7 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -118,7 +119,8 @@ class FreeCheckoutIdempotencyTest {
 
         svc = new StripeCheckoutService(stripeClient, events, tiers, orgs, promos, connect,
                 inventory, freeCheckout, new StripeProperties(),
-                mock(StripeProductService.class), Clock.fixed(NOW, ZoneOffset.UTC));
+                mock(StripeProductService.class), mock(ModerationHoldRepository.class),
+                Clock.fixed(NOW, ZoneOffset.UTC));
 
         when(events.findPublic(eventId)).thenReturn(Optional.of(event()));
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier()));

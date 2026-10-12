@@ -1,0 +1,15 @@
+{{title}}
+
+{{measureLine}}
+
+{{scopeLine}}
+
+{{effectLines}}
+
+{{otherActiveLine}}
+
+{{decidedLine}}
+
+Open your dashboard: {{dashboardUrl}}
+
+imin.wtf

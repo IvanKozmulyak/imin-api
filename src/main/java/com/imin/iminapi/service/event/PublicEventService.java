@@ -10,6 +10,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
@@ -46,6 +47,7 @@ public class PublicEventService {
     private final Clock clock;
     private final MetaPixelConnectionRepository metaPixelConnections;
     private final StripeProperties stripeProperties;
+    private final ModerationHoldRepository holds;
 
     public PublicEventService(EventRepository eventRepository,
                                TicketTierRepository tierRepository,
@@ -53,7 +55,8 @@ public class PublicEventService {
                                PublicListingProperties listingProperties,
                                Clock clock,
                                MetaPixelConnectionRepository metaPixelConnections,
-                               StripeProperties stripeProperties) {
+                               StripeProperties stripeProperties,
+                               ModerationHoldRepository holds) {
         this.eventRepository = eventRepository;
         this.tierRepository = tierRepository;
         this.organizationRepository = organizationRepository;
@@ -61,6 +64,7 @@ public class PublicEventService {
         this.clock = clock;
         this.metaPixelConnections = metaPixelConnections;
         this.stripeProperties = stripeProperties;
+        this.holds = holds;
     }
 
     @Transactional(readOnly = true)
@@ -95,10 +99,12 @@ public class PublicEventService {
         if (!includeUnavailable) {
             stream = stream.filter(PublicTierDto::onSale);
         }
-        List<PublicTierDto> tiers = stream.toList();
+        // imin staff paused sales: no tier is offered, so no client can render a Buy button.
+        boolean salesSuspended = holds.salesSuspended(event.getOrgId(), event.getId());
+        List<PublicTierDto> tiers = salesSuspended ? List.of() : stream.toList();
 
         String metaPixelId = resolveMetaPixelId(event.getOrgId(), event.getId());
-        return PublicEventResponse.from(event, org, tiers, metaPixelId);
+        return PublicEventResponse.from(event, org, tiers, metaPixelId, salesSuspended);
     }
 
     /**

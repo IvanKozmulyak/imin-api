@@ -6,6 +6,7 @@ import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -90,7 +91,8 @@ class StripeCheckoutServiceTest {
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
         svc = new StripeCheckoutService(stripeClient, events, tiers, orgs, promos,
-                connectService, inventoryService, freeCheckoutService, props, productService, clock);
+                connectService, inventoryService, freeCheckoutService, props, productService,
+                mock(ModerationHoldRepository.class), clock);
 
         // Default happy-path wiring
         Event event = event();

@@ -5,7 +5,9 @@ import com.imin.iminapi.dto.publicapi.QuoteResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.moderation.ModerationHoldService;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
@@ -71,17 +73,20 @@ public class QuoteService {
     private final TicketTierRepository tiers;
     private final PromoCodeRepository promos;
     private final StripeProperties stripeProps;
+    private final ModerationHoldRepository holds;
     private final Clock clock;
 
     public QuoteService(EventRepository events,
                         TicketTierRepository tiers,
                         PromoCodeRepository promos,
                         StripeProperties stripeProps,
+                        ModerationHoldRepository holds,
                         Clock clock) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
         this.stripeProps = stripeProps;
+        this.holds = holds;
         this.clock = clock;
     }
 
@@ -130,6 +135,11 @@ public class QuoteService {
 
         // 2. Event must be publicly visible (draft/private/deleted → 404).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
+
+        // 2a. imin staff paused sales for this event or its organizer: same refusal as checkout.
+        if (holds.salesSuspended(event.getOrgId(), event.getId())) {
+            throw ModerationHoldService.salesSuspendedError();
+        }
 
         // 3. Event must be on sale right now (status + event-level window) and the tier
         //    must belong to it and be on sale too. Same predicate

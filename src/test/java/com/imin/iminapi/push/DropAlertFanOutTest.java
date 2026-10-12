@@ -20,6 +20,7 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.service.event.NotifyReleaseSender;
@@ -41,6 +42,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -98,7 +100,8 @@ class DropAlertFanOutTest {
         pushProps.setEnabled(true);
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 mail, renderer, emailProps, clock,
-                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens);
+                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens,
+                mock(ModerationHoldRepository.class));
 
         org = fx.org();
         owner = fx.owner(org);

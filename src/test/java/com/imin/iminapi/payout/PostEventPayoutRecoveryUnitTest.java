@@ -6,6 +6,7 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.Refund;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.stripe.StripeProperties;
@@ -40,7 +41,8 @@ class PostEventPayoutRecoveryUnitTest {
         PostEventPayoutService service = new PostEventPayoutService(stripe, props, mock(EventRepository.class), orgs,
                 mock(PayoutRunRepository.class), orders, refunds, disputes,
                 mock(DisputeWithholding.class), recoveryMarker, mock(DisputeRecoveryMarker.class),
-                stamper, mock(ApplicationEventPublisher.class), mock(PayoutRunStore.class));
+                stamper, mock(ApplicationEventPublisher.class), mock(PayoutRunStore.class),
+                mock(ModerationHoldRepository.class));
 
         Organization org = new Organization();
         org.setId(UUID.randomUUID());
@@ -72,7 +74,7 @@ class PostEventPayoutRecoveryUnitTest {
                 mock(PayoutRunRepository.class), orders, refunds, mock(DisputeRepository.class),
                 mock(DisputeWithholding.class), recoveryMarker, mock(DisputeRecoveryMarker.class),
                 mock(OrderSettlementStamper.class), mock(ApplicationEventPublisher.class),
-                mock(PayoutRunStore.class));
+                mock(PayoutRunStore.class), mock(ModerationHoldRepository.class));
 
         Organization org = new Organization();
         org.setId(UUID.randomUUID());

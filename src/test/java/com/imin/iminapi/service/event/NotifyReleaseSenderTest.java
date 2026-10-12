@@ -20,6 +20,7 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.push.ExpoPushSender;
 import com.imin.iminapi.push.PushProperties;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -107,7 +108,8 @@ class NotifyReleaseSenderTest {
         pushProps = new PushProperties(); // enabled defaults to false
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 emailService, renderer, emailProps, CLOCK,
-                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens);
+                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens,
+                mock(ModerationHoldRepository.class));
 
         org = new Organization();
         org.setName("Release Org");

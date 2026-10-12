@@ -19,6 +19,7 @@ import com.imin.iminapi.push.ExpoPushSender;
 import com.imin.iminapi.push.PushMessage;
 import com.imin.iminapi.push.PushProperties;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.ModerationHoldRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -92,6 +93,7 @@ public class NotifyReleaseSender {
     private final BuyerAccountEmailRepository buyerEmails;
     private final BuyerNotificationPreferenceRepository pushPrefs;
     private final UnsubscribeTokenService unsubscribeTokens;
+    private final ModerationHoldRepository holds;
 
     public NotifyReleaseSender(NotifySubscriptionRepository subscriptions,
                                EventRepository events,
@@ -106,7 +108,8 @@ public class NotifyReleaseSender {
                                BuyerPushDeviceRepository pushDevices,
                                BuyerAccountEmailRepository buyerEmails,
                                BuyerNotificationPreferenceRepository pushPrefs,
-                               UnsubscribeTokenService unsubscribeTokens) {
+                               UnsubscribeTokenService unsubscribeTokens,
+                               ModerationHoldRepository holds) {
         this.subscriptions = subscriptions;
         this.events = events;
         this.tiers = tiers;
@@ -121,6 +124,7 @@ public class NotifyReleaseSender {
         this.buyerEmails = buyerEmails;
         this.pushPrefs = pushPrefs;
         this.unsubscribeTokens = unsubscribeTokens;
+        this.holds = holds;
     }
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
@@ -145,8 +149,9 @@ public class NotifyReleaseSender {
 
     /**
      * True when the event is publicly listable (not deleted, PUBLIC, published, not DRAFT,
-     * not CANCELLED, not PAST) and at least one of its enabled tiers is purchasable now —
-     * i.e. exactly the state that flips the buyer page from "notify me" to "buy".
+     * not CANCELLED, not PAST), not under an active sales hold, and at least one of its enabled
+     * tiers is purchasable now — i.e. exactly the state that flips the buyer page from "notify me" to "buy".
+     * A suspended event's subscribers stay pending and are mailed once the hold is lifted.
      */
     private boolean isReleased(Event event, Instant now) {
         if (event.getDeletedAt() != null) return false;
@@ -156,6 +161,7 @@ public class NotifyReleaseSender {
         if (status == EventStatus.DRAFT || status == EventStatus.CANCELLED || status == EventStatus.PAST) {
             return false;
         }
+        if (holds.salesSuspended(event.getOrgId(), event.getId())) return false;
         return tiers.findByEventIdAndEnabledTrueOrderBySortOrderAsc(event.getId()).stream()
                 .anyMatch(t -> TierAvailability.isPurchasable(event, t, now));
     }

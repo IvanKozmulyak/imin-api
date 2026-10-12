@@ -184,22 +184,13 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     boolean existsByOrgIdAndStatusIn(UUID orgId, java.util.Collection<String> statuses);
 
     /**
-     * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
-     * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
-     * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
-     * out while their sends switch is off, even if already scheduled, and while their org
-     * lacks a legal name or legal contact (every origin while legalIdentityAllCampaigns is on),
-     * so a held campaign never loops or eats the LIMIT. Campaigns of a missing or complaint-paused
-     * org are left out here too; quiet hours and the daily cap are filtered by the caller.
+     * Everything that makes a campaign of the {@code campaigns} table sendable, timing aside: email, the audience-plan
+     * sends switch ({@code :audiencePlanSendsEnabled}), the legal identity ({@code :legalIdentityAllCampaigns}), an
+     * unpaused org and no active moderation hold on the org or the campaign's event. Shared by {@link #claimDue} and
+     * the moderation lift notice so the two can never disagree on what will send.
      */
-    @Query(value = """
-        SELECT * FROM campaigns
-        WHERE channel = 'email'
-          AND (
-            (status = 'scheduled' AND scheduled_at <= :now)
-            OR (status = 'failed' AND attempts < 3)
-            OR (status = 'sending' AND updated_at < :staleBefore)
-          )
+    String SENDABLE = """
+          channel = 'email'
           AND (:audiencePlanSendsEnabled = TRUE OR origin <> 'audience_plan')
           AND ((origin <> 'audience_plan' AND :legalIdentityAllCampaigns = FALSE) OR EXISTS (
                 SELECT 1 FROM organizations o
@@ -208,6 +199,30 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                   AND TRIM(COALESCE(o.legal_contact, '')) <> ''))
           AND EXISTS (SELECT 1 FROM organizations o
                       WHERE o.id = campaigns.org_id AND o.marketing_paused_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM moderation_holds h
+                          WHERE h.org_id = campaigns.org_id AND h.lifted_at IS NULL
+                            AND (h.event_id IS NULL OR h.event_id = campaigns.event_id))
+        """;
+
+    /** Waiting to send whatever the time: the statuses {@link #claimDue} picks up once due (a failed one until its 3rd attempt). */
+    String WAITING = " (status = 'scheduled' OR (status = 'failed' AND attempts < 3) OR status = 'sending') ";
+
+    /**
+     * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
+     * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
+     * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
+     * out while their sends switch is off, even if already scheduled, and while their org
+     * lacks a legal name or legal contact (every origin while legalIdentityAllCampaigns is on),
+     * so a held campaign never loops or eats the LIMIT. Campaigns of a missing or complaint-paused
+     * org are left out here too, and so are campaigns under an active moderation hold (either measure) on the
+     * org or on the campaign's event, until it is lifted; quiet hours and the daily cap are filtered by the caller.
+     */
+    @Query(value = "SELECT * FROM campaigns WHERE " + SENDABLE + """
+          AND (
+            (status = 'scheduled' AND scheduled_at <= :now)
+            OR (status = 'failed' AND attempts < 3)
+            OR (status = 'sending' AND updated_at < :staleBefore)
+          )
         ORDER BY scheduled_at NULLS FIRST
         LIMIT :scanLimit
         FOR UPDATE SKIP LOCKED

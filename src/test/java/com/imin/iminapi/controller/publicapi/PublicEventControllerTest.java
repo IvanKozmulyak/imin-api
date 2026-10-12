@@ -106,7 +106,7 @@ class PublicEventControllerTest {
                         "genre", "type", "description", "startsAt", "endsAt",
                         "timezone", "venue", "posterUrl", "posterAiGenerated", "videoUrl",
                         "currency", "onSaleAt", "saleClosesAt",
-                        "organization", "tiers", "metaPixelId"));
+                        "organization", "tiers", "metaPixelId", "salesSuspended"));
         assertThat(fieldNames(root.get("organization")))
                 .as("organization keys leaked or missing on PublicOrganizationDto.")
                 .isEqualTo(Set.of("name", "slug"));

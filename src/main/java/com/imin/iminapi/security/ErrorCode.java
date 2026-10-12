@@ -96,6 +96,9 @@ public enum ErrorCode {
     /** Invitation refused: this class × genre fit of the event was already invited with other arms. 409. */
     AUDIENCE_PLAN_ALREADY_INVITED,
 
+    /** Quote, checkout or payment intent refused: imin staff paused ticket sales for this event or its organizer. 409. */
+    SALES_SUSPENDED,
+
     // ---- Buyer accounts ----
     /**
      * Unlinking this identity would leave the account with no way to sign in —
