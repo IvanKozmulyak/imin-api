@@ -1,0 +1,7 @@
+ÉVÉNEMENT ANNULÉ
+
+L'organisateur a annulé {{eventName}}.
+
+{{refundParagraph}}
+
+{{contactLine}}

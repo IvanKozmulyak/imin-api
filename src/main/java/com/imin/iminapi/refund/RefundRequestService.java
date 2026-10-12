@@ -616,6 +616,7 @@ public class RefundRequestService {
     public RefundRequestDecisionResponse approveRequest(
             UUID id, AuthPrincipal principal, RefundRequestApproveRequest body) {
 
+        requests.lockForDecision(id);
         RefundRequest rr = requests.findByIdAndOrgId(id, principal.orgId())
             .orElseThrow(() -> ApiException.notFound("RefundRequest"));
 
@@ -625,6 +626,7 @@ public class RefundRequestService {
                 ErrorCode.REFUND_REQUEST_NOT_PENDING,
                 "Refund request is not pending");
         }
+        requireEventNotCancelled(rr);
 
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
@@ -716,6 +718,7 @@ public class RefundRequestService {
     public RefundRequestDecisionResponse rejectRequest(
             UUID id, AuthPrincipal principal, RefundRequestRejectRequest body) {
 
+        requests.lockForDecision(id);
         RefundRequest rr = requests.findByIdAndOrgId(id, principal.orgId())
             .orElseThrow(() -> ApiException.notFound("RefundRequest"));
 
@@ -725,6 +728,7 @@ public class RefundRequestService {
                 ErrorCode.REFUND_REQUEST_NOT_PENDING,
                 "Refund request is not pending");
         }
+        requireEventNotCancelled(rr);
 
         rr.setStatus(RefundRequestStatus.REJECTED);
         rr.setDecidedAt(Times.nowMicros());
@@ -742,6 +746,14 @@ public class RefundRequestService {
     }
 
     // ---------- helpers ----------
+
+    /** An event imin cancelled has its orders refunded in full by imin; the organizer no longer decides them. */
+    private void requireEventNotCancelled(RefundRequest rr) {
+        if (requests.isEventCancelledThroughImin(rr.getEventId())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                "This event was cancelled; imin refunds this order automatically.");
+        }
+    }
 
     private String baseUrl() {
         String base = emailProps.getBuyerSiteBaseUrl();

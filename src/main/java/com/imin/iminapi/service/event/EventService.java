@@ -344,9 +344,9 @@ public class EventService {
 
     /**
      * Take a LIVE event back to DRAFT, hiding the public page. Blocked once any ticket
-     * has been sold: at that point the organizer owes buyers a refund flow (separate
-     * cancel/refund endpoint, TBD) — silently unpublishing would let an operator pocket
-     * the money and disappear the event page.
+     * has been sold: at that point the organizer owes buyers a refund, which
+     * {@code POST /events/{id}/cancel} makes — silently unpublishing would let an operator
+     * pocket the money and disappear the event page.
      */
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
@@ -375,10 +375,14 @@ public class EventService {
         return detail(p, id);
     }
 
-    /** 409 before validation, so an already-live event never reports missing fields. */
+    /** 409 before validation, so an already-live or cancelled event never reports missing fields. */
     private void requirePublishable(Event e) {
         if (e.getStatus() == EventStatus.LIVE) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Already published");
+        }
+        if (e.getStatus() == EventStatus.CANCELLED) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "A cancelled event cannot be published again");
         }
         validator.validateForPublish(e);
     }

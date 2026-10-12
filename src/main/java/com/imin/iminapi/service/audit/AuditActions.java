@@ -13,6 +13,8 @@ public final class AuditActions {
     public static final String EVENT_PUBLISHED = "EVENT_PUBLISHED";
     public static final String EVENT_UNPUBLISHED = "EVENT_UNPUBLISHED";
     public static final String EVENT_DELETED = "EVENT_DELETED";
+    /** Sales stopped and every order queued for a full refund; irreversible. */
+    public static final String EVENT_CANCELLED = "EVENT_CANCELLED";
     public static final String TIER_CREATED = "TIER_CREATED";
     public static final String TIER_UPDATED = "TIER_UPDATED";
     public static final String TIER_DELETED = "TIER_DELETED";

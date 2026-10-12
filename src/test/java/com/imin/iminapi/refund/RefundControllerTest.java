@@ -106,6 +106,18 @@ class RefundControllerTest {
         verifyNoInteractions(stripeClient);
     }
 
+    /** "Event cancelled" in refund history must only ever mean a cancellation made the refund. */
+    @Test
+    void manualRefund_withEventCancelledReason_is400() throws Exception {
+        mvc.perform(refund(order, body(List.of(ticket.getId()), "event_cancelled"))
+                        .header("Idempotency-Key", "k-" + UUID.randomUUID()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+
+        verifyNoInteractions(stripeClient);
+        assertThat(refunds.findByOrderIdOrderByCreatedAtDesc(order.getId())).isEmpty();
+    }
+
     @Test
     void emptyTicketIds_is400() throws Exception {
         mvc.perform(refund(order, body(List.of(), "other")).header("Idempotency-Key", "k"))

@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.cancellation.CancellationAmounts;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -37,8 +38,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * Refund chokepoint. All refund creation flows through {@link #createRefund} —
- * validation, authorization, persistence, and the Stripe API call live here.
+ * Refund chokepoint. All refund creation flows through {@link #createRefund} or, for a cancelled event's
+ * orders, {@link #createCancellationRefund} — validation, persistence, and the Stripe API call live here.
  *
  * <p>Two phases. {@link RefundAttemptStore#open} commits the REQUESTED row and its ticket claims
  * BEFORE Stripe is called, and Stripe's answer is recorded in a second committed transaction, so
@@ -116,6 +117,11 @@ public class RefundService {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.MISSING_IDEMPOTENCY_KEY,
                 "Idempotency-Key header is required");
+        }
+        if (reason == RefundReason.EVENT_CANCELLED) {
+            // Refund history must only say "Event cancelled" where a cancellation made the refund.
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                "event_cancelled is set by imin only");
         }
 
         // Org check FIRST, before any refund row can be returned. The replay short-circuit
@@ -204,28 +210,85 @@ public class RefundService {
         draft.setInitiatedByUserId(principal.userId());
         draft.setIdempotencyKey(idempotencyKey);
 
-        Refund row;
+        Opened opened = open(draft, selected.stream().map(Ticket::getId).toList());
+        if (opened.replayed()) return opened.row();
+
+        Refund out = attempt(opened.row());
+        log.info("[refund] created id={} orderId={} amount={} {} appFeeRefund={} status={}",
+            out.getId(), orderId, refundAmountMinor, order.getCurrency(), appFeeRefundMinor, out.getStatus());
+        return out;
+    }
+
+    /**
+     * The full refund of a cancelled event's order: what is still owed ({@link CancellationAmounts}), every
+     * ticket not yet refunded or claimed, redeemed and revoked ones included, reason {@code EVENT_CANCELLED}.
+     * Same two-phase attempt as {@link #createRefund}; {@code idempotencyKey} only replays the row.
+     */
+    public Refund createCancellationRefund(UUID orderId, UUID actorUserId, String idempotencyKey) {
+        Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
+        Optional<Refund> existing = refunds.findByOrderIdAndIdempotencyKey(orderId, idempotencyKey);
+        if (existing.isPresent()) return existing.get();
+        if (isBlockedByDispute(orderId)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_DISPUTED,
+                "Order is disputed and cannot be refunded");
+        }
+        if (!hasStripePayment(order) || !matchesStripeMode(order)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
+                "Order has no Stripe payment the running key can refund");
+        }
+        CancellationAmounts owed = CancellationAmounts.of(order.getTotalMinor(), order.getApplicationFeeMinor(),
+            refunds.sumActiveAmountByOrderId(orderId), refunds.sumActiveApplicationFeeRefundMinorByOrderId(orderId));
+        if (owed.refundMinor() <= 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE, "Nothing left to refund");
+        }
+
+        List<UUID> unrefunded = tickets.findByOrderId(orderId).stream()
+            .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
+            .map(Ticket::getId)
+            .toList();
+        Set<UUID> claimed = claimedTicketIds(unrefunded);
+        List<UUID> ticketIds = unrefunded.stream().filter(id -> !claimed.contains(id)).toList();
+
+        Refund draft = new Refund();
+        draft.setOrderId(orderId);
+        draft.setStripePaymentIntentId(order.getStripePaymentIntentId());
+        draft.setAmountMinor(owed.refundMinor());
+        draft.setCurrency(order.getCurrency());
+        draft.setApplicationFeeRefundMinor(owed.feeMinor());
+        draft.setReason(RefundReason.EVENT_CANCELLED);
+        draft.setInitiatedByUserId(actorUserId);
+        draft.setIdempotencyKey(idempotencyKey);
+
+        Opened opened = open(draft, ticketIds);
+        if (opened.replayed()) return opened.row();
+        Refund out = attempt(opened.row());
+        log.info("[refund] cancellation refund id={} orderId={} amount={} {} fee={} tickets={} status={}",
+            out.getId(), orderId, owed.refundMinor(), order.getCurrency(), owed.feeMinor(), ticketIds.size(),
+            out.getStatus());
+        return out;
+    }
+
+    private record Opened(Refund row, boolean replayed) {}
+
+    /** Commits the attempt row and its claims; a same-key race hands back the winner's row as a replay. */
+    private Opened open(Refund draft, List<UUID> ticketIds) {
         try {
-            row = store.open(draft, selected.stream().map(Ticket::getId).toList(), now());
+            return new Opened(store.open(draft, ticketIds, now()), false);
         } catch (DataIntegrityViolationException race) {
             if (violates(race, IDEMPOTENCY_CONSTRAINT)) {
                 // A concurrent POST with the same key committed first: replay its row.
-                Optional<Refund> winner = refunds.findByOrderIdAndIdempotencyKey(orderId, idempotencyKey);
+                Optional<Refund> winner = refunds.findByOrderIdAndIdempotencyKey(draft.getOrderId(),
+                    draft.getIdempotencyKey());
                 if (winner.isPresent()) {
                     log.info("[refund] idempotent replay (raced) orderId={} key={} → returning existing {}",
-                        orderId, idempotencyKey, winner.get().getId());
-                    return winner.get();
+                        draft.getOrderId(), draft.getIdempotencyKey(), winner.get().getId());
+                    return new Opened(winner.get(), true);
                 }
             }
             // UNIQUE(refund_tickets.ticket_id) raced: another refund claimed a ticket after the pre-check.
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.TICKET_ALREADY_REFUNDED,
                 "One or more selected tickets were just refunded by another request");
         }
-
-        Refund out = attempt(row);
-        log.info("[refund] created id={} orderId={} amount={} {} appFeeRefund={} status={}",
-            out.getId(), orderId, refundAmountMinor, order.getCurrency(), appFeeRefundMinor, out.getStatus());
-        return out;
     }
 
     /**

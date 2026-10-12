@@ -414,6 +414,22 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     """)
     void lockActiveForWrite(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /**
+     * LIVE → CANCELLED, only from LIVE. Returns 0 when the status moved meanwhile. The V188 trigger keeps it
+     * CANCELLED against later full-entity saves that still carry LIVE.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE Event e
+           SET e.status = com.imin.iminapi.model.EventStatus.CANCELLED,
+               e.updatedAt = :now
+         WHERE e.id = :id
+           AND e.orgId = :orgId
+           AND e.deletedAt IS NULL
+           AND e.status = com.imin.iminapi.model.EventStatus.LIVE
+    """)
+    int markCancelled(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") Instant now);
+
     /** Committed status of a non-deleted event; a scalar, so a cached stale Event entity cannot answer it. */
     @Query("SELECT e.status FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
     Optional<EventStatus> findActiveStatus(@Param("id") UUID id);

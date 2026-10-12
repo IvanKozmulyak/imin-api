@@ -53,6 +53,8 @@ public enum ErrorCode {
     NO_REFUNDABLE_TICKETS,
     REFUND_REQUEST_NOT_PENDING,
     REFUND_APPROVAL_NOT_CONFIRMED,
+    /** Cancel refused: the event's order count moved since the preview the organizer confirmed. 409. */
+    EVENT_CANCEL_PLAN_CHANGED,
     META_UPSTREAM_ERROR,
 
     /**

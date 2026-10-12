@@ -1,0 +1,7 @@
+ПОДІЮ СКАСОВАНО
+
+Організатор скасував подію {{eventName}}.
+
+{{refundParagraph}}
+
+{{contactLine}}

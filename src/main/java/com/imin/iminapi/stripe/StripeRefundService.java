@@ -82,8 +82,8 @@ public class StripeRefundService {
         String stripeReason = reason.toStripe();
         if (stripeReason != null) {
             // RefundCreateParams.Reason enum names match our RefundReason 1:1
-            // (REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT). OTHER maps to null
-            // and is omitted.
+            // (REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT). OTHER and EVENT_CANCELLED
+            // map to null and are omitted.
             pb.setReason(RefundCreateParams.Reason.valueOf(reason.name()));
         }
         RefundCreateParams params = pb.build();

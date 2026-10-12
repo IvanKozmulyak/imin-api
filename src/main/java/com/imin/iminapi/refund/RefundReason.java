@@ -8,19 +8,21 @@ import java.util.Locale;
 import java.util.stream.Collectors;
 
 public enum RefundReason {
-    REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT, OTHER;
+    REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT, OTHER,
+    /** Set by imin only, on the full refund of a cancelled event's order; a manual refund cannot carry it. */
+    EVENT_CANCELLED;
 
     /**
      * The lowercase string Stripe accepts on RefundCreateParams.reason.
-     * OTHER maps to null because Stripe's enum does not include it — we just
-     * omit the field and Stripe records the refund with no reason set.
+     * OTHER and EVENT_CANCELLED map to null because Stripe's enum does not include them — we
+     * just omit the field and Stripe records the refund with no reason set.
      */
     public String toStripe() {
         return switch (this) {
             case REQUESTED_BY_CUSTOMER -> "requested_by_customer";
             case DUPLICATE -> "duplicate";
             case FRAUDULENT -> "fraudulent";
-            case OTHER -> null;
+            case OTHER, EVENT_CANCELLED -> null;
         };
     }
 

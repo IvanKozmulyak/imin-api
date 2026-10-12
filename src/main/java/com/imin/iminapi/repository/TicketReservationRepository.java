@@ -97,4 +97,12 @@ public interface TicketReservationRepository extends JpaRepository<TicketReserva
            AND r.status = com.imin.iminapi.model.ReservationStatus.HELD
     """)
     int markConfirmed(@Param("id") UUID id, @Param("now") Instant now);
+
+    /** Checkouts still open on the event's tiers: HELD reservations whose payment may yet go through. */
+    @Query("""
+        SELECT COUNT(r) FROM TicketReservation r
+         WHERE r.status = com.imin.iminapi.model.ReservationStatus.HELD
+           AND r.tierId IN (SELECT t.id FROM TicketTier t WHERE t.eventId = :eventId)
+    """)
+    long countHeldByEventId(@Param("eventId") UUID eventId);
 }
