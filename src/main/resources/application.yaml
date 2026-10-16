@@ -498,10 +498,6 @@ imin:
     # HMAC key for the stateless CSRF `state` token. Optional — blank => an
     # ephemeral per-instance key (fine for single-instance/dev; set in prod).
     state-secret: ${IMIN_OAUTH_STATE_SECRET:}
-    # ISO-3166 alpha-2 assigned to an Organization auto-provisioned on first
-    # social sign-in (no country is collected in the OAuth flow; the organizer
-    # can change it later in settings).
-    default-country: ${IMIN_OAUTH_DEFAULT_COUNTRY:NL}
     google:
       # Google Cloud Console → APIs & Services → Credentials → OAuth client ID
       # (type "Web application"). client-secret is that client's secret.

@@ -17,12 +17,15 @@ public record OrganizationDto(
         String currency,
         String legalName,
         String legalContact,
-        Instant updatedAt
+        Instant updatedAt,
+        /** True until the owner of a social sign-up gives the sign-up details through POST /org/setup. */
+        boolean setupRequired
 ) {
     public static OrganizationDto from(Organization o) {
         return new OrganizationDto(o.getId(), o.getName(), o.getSlug(), o.getContactEmail(),
                 o.getCountry(), o.getTimezone(), o.getPlan(),
                 o.getPlanMonthlyEuros(), o.getCurrency(),
-                o.getLegalName(), o.getLegalContact(), o.getUpdatedAt());
+                o.getLegalName(), o.getLegalContact(), o.getUpdatedAt(),
+                o.getSetupCompletedAt() == null);
     }
 }

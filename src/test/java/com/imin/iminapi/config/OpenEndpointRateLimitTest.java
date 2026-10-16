@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.EventContentResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.service.auth.OrganizerTerms;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.RecordingRateLimiter;
@@ -71,7 +72,9 @@ class OpenEndpointRateLimitTest {
                         "firstName", "Ada",
                         "lastName", "Lovelace",
                         "orgName", "Ada Co",
-                        "country", "GB"))));
+                        "country", "GB",
+                        "acceptedTerms", true,
+                        "termsVersion", OrganizerTerms.CURRENT_VERSION))));
         assertThat(limiter.calls()).contains(new Call("signup", LOCAL_IP));
     }
 

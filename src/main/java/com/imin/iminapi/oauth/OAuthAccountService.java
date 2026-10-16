@@ -51,7 +51,9 @@ import java.util.Optional;
  *       Auto-linking an unverified email to a password account is an
  *       account-takeover vector.</li>
  *   <li><b>New email</b> — auto-provision an Organization + OWNER user (no
- *       password, {@code verified_at = now}) and link the identity.</li>
+ *       password, {@code verified_at = now}) and link the identity. The org has
+ *       no country and must finish setup ({@code POST /org/setup}) before it can
+ *       connect Stripe or publish.</li>
  * </ol>
  */
 @Service
@@ -66,7 +68,6 @@ public class OAuthAccountService {
     private final UserIdentityRepository identities;
     private final TokenService tokens;
     private final Duration sessionTtl;
-    private final String defaultCountry;
 
     @Autowired
     public OAuthAccountService(OrganizationRepository orgs,
@@ -74,10 +75,8 @@ public class OAuthAccountService {
                                AuthSessionRepository sessions,
                                UserIdentityRepository identities,
                                TokenService tokens,
-                               OAuthProperties props,
                                @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
-        this(orgs, users, sessions, identities, tokens,
-                Duration.ofDays(sessionTtlDays), props.getDefaultCountry());
+        this(orgs, users, sessions, identities, tokens, Duration.ofDays(sessionTtlDays));
     }
 
     /** Constructor used by tests. */
@@ -86,15 +85,13 @@ public class OAuthAccountService {
                                AuthSessionRepository sessions,
                                UserIdentityRepository identities,
                                TokenService tokens,
-                               Duration sessionTtl,
-                               String defaultCountry) {
+                               Duration sessionTtl) {
         this.orgs = orgs;
         this.users = users;
         this.sessions = sessions;
         this.identities = identities;
         this.tokens = tokens;
         this.sessionTtl = sessionTtl;
-        this.defaultCountry = defaultCountry;
     }
 
     @Transactional
@@ -188,8 +185,8 @@ public class OAuthAccountService {
      * Mirrors {@code AuthService.signup}'s org/user creation (unique slug, derived
      * initials) minus the password + email-verification steps — the account has no
      * password and is marked verified because the provider authenticated it. No
-     * country is collected in the social flow, so the org takes the configured
-     * default; the organizer can change it in settings.
+     * country is collected in the social flow and none is assumed: setup stays
+     * pending until the owner gives the sign-up details through POST /org/setup.
      */
     private User provision(OAuthUserInfo info, String email) {
         String first = safe(info.firstName());
@@ -200,8 +197,9 @@ public class OAuthAccountService {
         org.setName(orgName);
         org.setSlug(uniqueSlug(orgName));
         org.setContactEmail(email);
-        org.setCountry(defaultCountry);
+        org.setCountry(null);
         org.setTimezone("UTC");
+        org.setSetupCompletedAt(null);
         Organization savedOrg;
         try {
             savedOrg = orgs.saveAndFlush(org);

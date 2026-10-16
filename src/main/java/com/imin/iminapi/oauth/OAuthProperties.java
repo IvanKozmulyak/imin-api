@@ -48,9 +48,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code state-secret} — HMAC key for the stateless CSRF {@code state}
  *       token. Optional; when blank an ephemeral per-instance key is generated
  *       (fine for single-instance / dev, set it for multi-instance prod).</li>
- *   <li>{@code default-country} — ISO-3166 alpha-2 assigned to an Organization
- *       auto-provisioned on first OAuth sign-in (no country is collected in the
- *       social flow). The organizer can change it later in settings.</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "imin.oauth")
@@ -60,7 +57,6 @@ public class OAuthProperties {
     private final Apple apple = new Apple();
     private String frontendBaseUrl = "https://dashboard.imin.wtf";
     private String stateSecret = "";
-    private String defaultCountry = "NL";
 
     public Google getGoogle() { return google; }
     public Apple getApple() { return apple; }
@@ -70,9 +66,6 @@ public class OAuthProperties {
 
     public String getStateSecret() { return stateSecret; }
     public void setStateSecret(String stateSecret) { this.stateSecret = stateSecret; }
-
-    public String getDefaultCountry() { return defaultCountry; }
-    public void setDefaultCountry(String defaultCountry) { this.defaultCountry = defaultCountry; }
 
     public static class Google {
         private String clientId = "";

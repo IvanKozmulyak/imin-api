@@ -5,6 +5,7 @@ import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -12,8 +13,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * {@code @DynamicUpdate}: a save writes only the columns it changed, so a request holding an older copy of the
+ * row (settings, brand, Stripe mirror) cannot put back columns another write committed, e.g. setup's.
+ */
 @Entity
 @Table(name = "organizations")
+@DynamicUpdate
 @Getter
 @Setter
 public class Organization {
@@ -30,7 +36,8 @@ public class Organization {
     @Column(name = "contact_email", nullable = false)
     private String contactEmail;
 
-    @Column(nullable = false, length = 2)
+    /** ISO 3166-1 alpha-2; null only while {@link #setupCompletedAt} is null (a social sign-up not yet set up). */
+    @Column(length = 2)
     private String country;
 
     @Column(nullable = false, length = 64)
@@ -160,6 +167,10 @@ public class Organization {
      */
     @Column(name = "ai_unlimited", nullable = false)
     private boolean aiUnlimited = false;
+
+    /** When the owner gave the sign-up details (V190); null while setup is pending. Only completeSetup writes it. */
+    @Column(name = "setup_completed_at", updatable = false)
+    private Instant setupCompletedAt = Times.nowMicros();
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();

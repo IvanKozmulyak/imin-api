@@ -5,6 +5,7 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.org.OrgSetupGuard;
 import com.imin.iminapi.stripe.StripeConnectService;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
@@ -26,7 +27,7 @@ class EventPublishServiceTest {
 
     EventService eventService = mock(EventService.class);
     StripeConnectService stripeConnect = mock(StripeConnectService.class);
-    EventPublishService sut = new EventPublishService(eventService, stripeConnect);
+    EventPublishService sut = new EventPublishService(eventService, stripeConnect, mock(OrgSetupGuard.class));
 
     AuthPrincipal p = new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
     UUID id = UUID.randomUUID();

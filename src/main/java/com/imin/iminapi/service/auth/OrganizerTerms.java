@@ -1,27 +1,33 @@
 package com.imin.iminapi.service.auth;
 
-/**
- * The terms version an organizer is recorded as having accepted at signup.
- *
- * <h2>Server-canonical, like the buyer side</h2>
- *
- * <p>{@code SignupRequest.termsVersion} is accepted so the dashboard can send
- * what it displayed, and is deliberately <b>not</b> written: a client-supplied
- * string that becomes an audit fact is a record that says whatever the client
- * says. The same argument as {@code BuyerTerms}, and the same resolution.
- *
- * <h2>Why acceptance is not required</h2>
- *
- * <p>The dashboard has no terms or privacy pages to link to yet, so a mandatory
- * unticked checkbox would gate signup on a link that 404s — worse than no
- * checkbox, because it manufactures an acceptance of nothing. The column is here
- * so the acceptance can be recorded the moment the dashboard is ready to ask for
- * it; enforcing it, and re-accepting on a version bump, is the follow-up.
- */
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
+import org.springframework.http.HttpStatus;
+
+import java.util.Map;
+import java.util.Set;
+
+/** The organizer-terms versions a sign-up may accept; the stored version is the matched id, not the client's text. */
 public final class OrganizerTerms {
 
     private OrganizerTerms() {}
 
-    /** Bump when the organizer terms change. */
-    public static final String CURRENT_VERSION = "2026-09-08";
+    /** The id the published organizer-terms page prints; the dashboard's ORGANIZER_TERMS_VERSION matches it. */
+    public static final String CURRENT_VERSION = "0.1";
+
+    // Bump order: add the new id here and ship the API, then ship the dashboard, then drop the old id.
+    private static final Set<String> ACCEPTED_VERSIONS = Set.of(CURRENT_VERSION);
+
+    /** The {@code termsVersion} field message for a blank or unknown version. */
+    public static final String STALE_MESSAGE = "The organizer terms have changed; accept the current version";
+
+    /** The accepted version the request names, trimmed; 400 FIELD_INVALID on {@code termsVersion} otherwise. */
+    public static String accepted(String version) {
+        String trimmed = version == null ? "" : version.trim();
+        if (!ACCEPTED_VERSIONS.contains(trimmed)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    Map.of("termsVersion", STALE_MESSAGE));
+        }
+        return trimmed;
+    }
 }
