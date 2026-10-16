@@ -3,6 +3,7 @@ package com.imin.iminapi.dto.auth;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 public record SignupRequest(
@@ -12,20 +13,13 @@ public record SignupRequest(
         @NotBlank @Size(max = 255) String lastName,
         @NotBlank @Size(max = 255) String orgName,
         @NotBlank @Size(min = 2, max = 2) String country,
+        /** The organizer ticked the terms box; absent or false is a 400. */
+        @NotNull @AssertTrue Boolean acceptedTerms,
         /**
-         * Did the organizer tick the terms box? Optional and NOT enforced: the
-         * dashboard has no legal pages to link yet, so requiring it would gate
-         * signup on a link that 404s. true ⇒ users.terms_accepted_at is stamped;
-         * absent ⇒ "not recorded", never "declined". Enforcement is a follow-up.
+         * The version the dashboard displayed: must be an accepted {@code OrganizerTerms} version (else a 400).
+         * The stored version is the matched id, not the client's text.
          */
-        Boolean acceptedTerms,
-        /**
-         * What the dashboard displayed. Accepted so the client can send it and
-         * deliberately not persisted — a client-supplied string that becomes an
-         * audit fact is a record that says whatever the client says. The stored
-         * version is {@code OrganizerTerms.CURRENT_VERSION}.
-         */
-        @Size(max = 32) String termsVersion
+        @NotBlank @Size(max = 32) String termsVersion
 ) {
     /** Spec §11.3 — Password policy: ≥10 chars, ≥1 letter, ≥1 digit. */
     @AssertTrue(message = "Password must be at least 10 characters and contain a letter and a digit")

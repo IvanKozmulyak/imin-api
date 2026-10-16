@@ -14,6 +14,7 @@ import java.util.UUID;
  *
  * <p>The three POSTs are ADMIN+ — they mint onboarding surfaces that bind the org's
  * legal entity and bank details to Stripe. {@code GET /status} stays MEMBER-readable.
+ * The POSTs answer 409 SETUP_REQUIRED until the org's owner has finished setup (country chosen).
  */
 @RestController
 @RequestMapping("/api/v1/orgs/{orgId}/stripe")

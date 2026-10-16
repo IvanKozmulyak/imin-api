@@ -7,6 +7,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.service.org.OrgSetupGuard;
 import com.imin.iminapi.util.Times;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
@@ -82,6 +83,8 @@ public class StripeConnectService {
     /**
      * Step 1 — Create the v2 connected account.
      *
+     * Refused with 409 SETUP_REQUIRED until the org's owner has finished setup: the country sent below is final.
+     *
      * Idempotent: if the org already has a connected account, return that id and {@code created=false}.
      * Otherwise create one via the v2 Accounts API and persist the id. An account whose recorded
      * mode contradicts the running key counts as no account at all — it is replaced and the
@@ -99,6 +102,8 @@ public class StripeConnectService {
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
+        // Stripe fixes the account's country at creation, so it waits for the owner to choose one.
+        OrgSetupGuard.requireComplete(org);
 
         // An account minted in the other Stripe mode is unusable and unrecoverable: it cannot be
         // retrieved, charged or paid, and the early-return below would hand it back forever. Treat
@@ -182,6 +187,7 @@ public class StripeConnectService {
     @Transactional(readOnly = true)
     public String createAccountSession(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
+        OrgSetupGuard.requireComplete(org);
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Stripe connected account not yet created — call /stripe/connect first");
@@ -278,6 +284,7 @@ public class StripeConnectService {
     public String createOnboardingLink(AuthPrincipal principal, UUID orgId,
                                        String returnUrl, String refreshUrl) {
         Organization org = loadOwnedOrg(principal, orgId);
+        OrgSetupGuard.requireComplete(org);
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Stripe connected account not yet created — call /stripe/connect first");

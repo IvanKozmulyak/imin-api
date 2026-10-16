@@ -11,4 +11,6 @@ import java.util.UUID;
 public interface UserIdentityRepository extends JpaRepository<UserIdentity, UUID> {
 
     Optional<UserIdentity> findByProviderAndProviderUserId(String provider, String providerUserId);
+
+    Optional<UserIdentity> findFirstByUserIdOrderByCreatedAtAsc(UUID userId);
 }

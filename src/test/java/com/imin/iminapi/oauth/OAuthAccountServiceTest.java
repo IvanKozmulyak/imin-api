@@ -42,7 +42,7 @@ class OAuthAccountServiceTest {
     TeamAlertService teamAlerts = mock(TeamAlertService.class);
 
     OAuthAccountService sut = new OAuthAccountService(orgs, users, sessions, identities, teamAlerts, tokens,
-            Duration.ofDays(30), "NL");
+            Duration.ofDays(30));
 
     private OAuthUserInfo google(String sub, String email, boolean verified) {
         return new OAuthUserInfo("google", sub, email, verified, "Ada", "Lovelace", "Ada Lovelace");
@@ -132,7 +132,6 @@ class OAuthAccountServiceTest {
         assertThat(savedUser.get().getVerifiedAt()).isNotNull();       // provider-authenticated
         assertThat(savedUser.get().getAvatarInitials()).isEqualTo("AL");
         assertThat(savedOrg.get().getName()).isEqualTo("Ada's events");
-        assertThat(savedOrg.get().getCountry()).isEqualTo("NL");       // configured default
         verify(identities).save(any(UserIdentity.class));
     }
 

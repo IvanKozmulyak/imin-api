@@ -4,13 +4,16 @@ import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
+/** {@code @DynamicUpdate}: a save writes only its changed columns, so a sign-in holding an older copy keeps setup's. */
 @Entity
 @Table(name = "users")
+@DynamicUpdate
 @Getter
 @Setter
 public class User {

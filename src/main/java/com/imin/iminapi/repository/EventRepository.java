@@ -765,4 +765,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     default List<Event> findRetentionMonitorCandidates(Instant retentionCutoff, Pageable pageable) {
         return findRetentionMonitorCandidatesAfter(retentionCutoff, FIRST_ENDS_AT, FIRST_ID, pageable);
     }
+
+    /** Whether the org ever published an event (deleted ones included): its slug may be in public links. */
+    boolean existsByOrgIdAndPublishedAtIsNotNull(UUID orgId);
 }

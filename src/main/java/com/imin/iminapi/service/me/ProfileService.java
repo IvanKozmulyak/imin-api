@@ -106,7 +106,7 @@ public class ProfileService {
     }
 
     /** Two-letter initials from first + last name. Mirrors AuthService.deriveInitials. */
-    static String deriveInitials(String firstName, String lastName) {
+    public static String deriveInitials(String firstName, String lastName) {
         StringBuilder sb = new StringBuilder(2);
         appendInitial(sb, firstName);
         appendInitial(sb, lastName);

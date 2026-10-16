@@ -97,4 +97,19 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
     @Query(value = "SELECT stripe_livemode FROM organizations WHERE id = :id FOR UPDATE",
             nativeQuery = true)
     Optional<Boolean> lockAndReadStripeLivemode(@Param("id") UUID id);
+
+    /** True while the org's owner has not finished setting up a social sign-up (V190). */
+    boolean existsByIdAndSetupCompletedAtIsNull(UUID id);
+
+    /** Setup's one conditional write: 1 for the request that completed it, 0 if already complete. Re-read after. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update Organization o
+               set o.name = :name, o.slug = :slug, o.country = :country, o.timezone = :timezone,
+                   o.setupCompletedAt = :now, o.updatedAt = :now
+             where o.id = :id and o.setupCompletedAt is null
+            """)
+    int completeSetup(@Param("id") UUID id, @Param("name") String name, @Param("slug") String slug,
+                      @Param("country") String country, @Param("timezone") String timezone,
+                      @Param("now") Instant now);
 }

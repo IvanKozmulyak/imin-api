@@ -92,6 +92,7 @@ public class EventController {
         draftDeletion.deleteDraft(p, id);
     }
 
+    /** 409 SETUP_REQUIRED while the org's owner has not finished setting up a social sign-up. */
     @PostMapping("/{id}/publish")
     public EventDto publish(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
         return eventPublish.publish(p, id);

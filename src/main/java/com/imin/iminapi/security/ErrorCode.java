@@ -20,6 +20,8 @@ public enum ErrorCode {
     STRIPE_NOT_READY,
     COUNTRY_NOT_ALLOWED,
     COUNTRY_NOT_SUPPORTED,
+    /** 409: the owner of a social sign-up has not given the sign-up details yet (POST /org/setup). */
+    SETUP_REQUIRED,
     RATE_LIMITED,
     OAUTH_PROVIDER_DISABLED,
     OAUTH_INVALID_STATE,

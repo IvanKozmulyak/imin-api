@@ -103,6 +103,7 @@ public class AuthService {
     public VerificationPendingResponse signup(SignupRequest req) {
         com.imin.iminapi.util.SanctionedCountries.requireAllowed(req.country());
         com.imin.iminapi.util.StripeSupportedCountries.requireSupported(req.country());
+        String termsVersion = OrganizerTerms.accepted(req.termsVersion());
         String emailLower = req.email().toLowerCase();
         if (users.existsByEmailLower(emailLower)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,
@@ -114,6 +115,8 @@ public class AuthService {
         org.setContactEmail(req.email());
         org.setCountry(req.country().toUpperCase());
         org.setTimezone("UTC");
+        // Email sign-up collects every setup detail up front, so the org is set up from creation.
+        org.setSetupCompletedAt(com.imin.iminapi.util.Times.nowMicros());
         Organization savedOrg;
         try {
             // saveAndFlush so the unique-slug constraint fires here, not at txn commit.
@@ -137,14 +140,9 @@ public class AuthService {
         user.setPasswordHash(hasher.hash(req.password()));
         user.setRole(UserRole.OWNER);
         user.setAvatarInitials(deriveInitials(firstName, lastName));
-        // Terms acceptance evidence (V98). Optional and unenforced — the dashboard
-        // has no legal pages to link yet — and the version is server-canonical, not
-        // the string the client sent. Absent ⇒ both columns stay null, which reads
-        // as "not recorded" and must never be read as "declined".
-        if (Boolean.TRUE.equals(req.acceptedTerms())) {
-            user.setTermsAcceptedAt(Instant.now());
-            user.setTermsVersion(OrganizerTerms.CURRENT_VERSION);
-        }
+        // Terms acceptance evidence (V98): the matched server id, never the client's text.
+        user.setTermsAcceptedAt(Instant.now());
+        user.setTermsVersion(termsVersion);
         // verifiedAt left null until /verify-email succeeds
         User savedUser = users.save(user);
 
