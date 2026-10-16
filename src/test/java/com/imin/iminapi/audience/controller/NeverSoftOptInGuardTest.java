@@ -1,6 +1,9 @@
 package com.imin.iminapi.audience.controller;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.FollowProperties;
+import com.imin.iminapi.audienceplan.dto.FollowOptInRequest;
+import com.imin.iminapi.audienceplan.service.FollowOptInService;
 import com.imin.iminapi.audienceplan.dto.DoorOptInRequest;
 import com.imin.iminapi.audienceplan.service.DoorOptInService;
 import com.imin.iminapi.audienceplan.dto.SurveyResponseRequest;
@@ -21,6 +24,7 @@ import com.imin.iminapi.service.audience.SmsConsentService;
 import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import jakarta.validation.Validator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Drives every consent-writing path and asserts none leaves a soft_opt_in record or basis; a source scan
- * pins that no production class writes one. New consent paths (door QR, survey) add themselves here.
+ * pins that no production class writes one. New consent paths (door QR, survey, site follow) add themselves here.
  */
 @IminIntegrationTest
 class NeverSoftOptInGuardTest {
@@ -62,6 +66,9 @@ class NeverSoftOptInGuardTest {
     @Autowired AudienceImportService importService;
     @Autowired SmsConsentService smsConsentService;
     @Autowired DoorOptInService doorOptIn;
+    @Autowired FollowOptInService follow;
+    @Autowired FollowProperties followProps;
+    @Autowired PropertyFlips flips;
     @Autowired SurveyService survey;
     @Autowired AudienceController audienceController;
     @Autowired Validator validator;
@@ -232,6 +239,17 @@ class NeverSoftOptInGuardTest {
                 "door-org-named-2026-09", "en"));
 
         assertThat(basesOf(a("door-guard"))).containsExactly("explicit");
+        assertNoSoftOptInAnywhere();
+    }
+
+    @Test
+    void siteFollow_recordsExplicit() {
+        String slug = orgs.findById(orgId).orElseThrow().getSlug();
+        flips.set(followProps, "orgSlugs", List.of(slug));
+        follow.follow(slug, new FollowOptInRequest(a("follow-guard"), true,
+                "Send me Guard Org news. Unsubscribe anytime.", "site-follow-2026-10", "en"));
+
+        assertThat(basesOf(a("follow-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 

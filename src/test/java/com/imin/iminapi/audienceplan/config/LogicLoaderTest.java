@@ -78,7 +78,8 @@ class LogicLoaderTest {
                 "checkout", ProofRequirement.ORGANIZER_NAMED_TEXT_VERSION,
                 "organizer_import_row", ProofRequirement.PROVENANCE_ROW,
                 "door_qr", ProofRequirement.TEXT_VERSION,
-                "survey", ProofRequirement.TEXT_VERSION));
+                "survey", ProofRequirement.TEXT_VERSION,
+                "site_follow", ProofRequirement.TEXT_VERSION));
     }
 
     static Stream<Arguments> textVersions() {

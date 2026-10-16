@@ -13,8 +13,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The link in a door QR / survey confirmation email. GET is read-only and unmetered (the buyer site calls it from
- * one server IP); POST confirms and is charged per IP. Every failure is the same 200 {@code invalid}.
+ * The link in a door QR, survey or site follow confirmation email. GET is read-only and unmetered (the buyer site
+ * calls it from one server IP); POST confirms and is charged per IP. Every failure is the same 200 {@code invalid}.
  */
 @RestController
 @RequestMapping("/api/v1/public/consent/confirm")

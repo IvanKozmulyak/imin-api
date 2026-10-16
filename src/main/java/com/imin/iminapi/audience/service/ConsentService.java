@@ -167,8 +167,8 @@ public class ConsentService {
     }
 
     /**
-     * Sets {@code confirmed_at} on this member's pending door/survey grants up to {@code at}, then grants as a
-     * capture that needed no confirmation. Callers rule out opt-outs first. Returns the count confirmed.
+     * Sets {@code confirmed_at} on this member's pending door QR, survey and site follow grants up to {@code at}, then
+     * grants as a capture that needed no confirmation. Callers rule out opt-outs first. Returns the count confirmed.
      */
     @Transactional
     public int confirmPending(UUID orgId, UUID membershipId, Instant at) {

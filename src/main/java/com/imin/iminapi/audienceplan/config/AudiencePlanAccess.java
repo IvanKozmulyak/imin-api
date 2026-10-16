@@ -55,7 +55,7 @@ public class AudiencePlanAccess {
         return Boolean.TRUE.equals(props.getLegalIdentityAllCampaigns());
     }
 
-    /** True while door QR / survey sign-ups get a confirmation email; false until legal D9 clears. */
+    /** True while door QR, survey and site follow sign-ups get a confirmation email; off by default. */
     public boolean consentConfirmationEmailsEnabled() {
         return Boolean.TRUE.equals(props.getConsentConfirmationEmailsEnabled());
     }

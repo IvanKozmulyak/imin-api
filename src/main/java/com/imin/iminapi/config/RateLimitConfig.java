@@ -65,6 +65,10 @@ public class RateLimitConfig {
     private int doorOptinCapacity;
     @Value("${imin.ratelimit.door-optin.window-minutes}")
     private int doorOptinWindow;
+    @Value("${imin.ratelimit.follow-optin.capacity}")
+    private int followOptinCapacity;
+    @Value("${imin.ratelimit.follow-optin.window-minutes}")
+    private int followOptinWindow;
     @Value("${imin.ratelimit.survey.capacity}")
     private int surveyCapacity;
     @Value("${imin.ratelimit.survey.window-minutes}")
@@ -202,6 +206,10 @@ public class RateLimitConfig {
         // Public door QR sign-up, keyed per client IP; each stored row is a marketing consent.
         configs.put("door-optin", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(doorOptinCapacity, Duration.ofMinutes(doorOptinWindow)))
+                .build());
+        // Public imin.wtf "Keep me posted" sign-up, keyed per client IP; sized for one person, far below the door's.
+        configs.put("follow-optin", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(followOptinCapacity, Duration.ofMinutes(followOptinWindow)))
                 .build());
         // Public post-event survey, keyed per client IP; a venue queue shares one IP, as at the door.
         configs.put("survey", BucketConfiguration.builder()

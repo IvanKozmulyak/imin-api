@@ -94,7 +94,10 @@ public class AudiencePlanProperties {
     static final int DEFAULT_PORTRAIT_CAP_GLOBAL = 100;
     static final int DEFAULT_PORTRAIT_REFRESH_BATCH = 20;
 
-    /** Emails the confirmation link for door QR / survey sign-ups; false leaves them pending. Blank binds false. */
+    /**
+     * Emails the confirmation link for door QR, survey and site follow sign-ups; false leaves them pending.
+     * Blank binds false.
+     */
     private Boolean consentConfirmationEmailsEnabled = Boolean.FALSE;
 
     public boolean isEnabled() { return enabled; }

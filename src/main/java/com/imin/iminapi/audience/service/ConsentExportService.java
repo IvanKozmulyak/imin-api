@@ -137,7 +137,8 @@ public class ConsentExportService {
                 rs.getString("source_platform"),
                 exportDate == null ? null : exportDate.toString(),
                 rs.getString("proof_ref"),
-                // A door QR / survey grant counts only once confirmed; an empty confirmed_at with true is pending.
+                // A door QR, survey or site follow grant counts only once confirmed; an empty confirmed_at
+                // with true is pending.
                 String.valueOf(rs.getBoolean("confirmation_required")),
                 confirmedAt == null ? null : confirmedAt.toInstant().toString(),
         };

@@ -150,7 +150,8 @@ public final class LogicLoader {
                         Set.copyOf(legal.strings("door_qr_text_versions")),
                         Set.copyOf(legal.strings("survey_text_versions")),
                         noticeVersions(legal, "survey_notice_versions"),
-                        linkingNoticeVersions(legal)),
+                        linkingNoticeVersions(legal),
+                        Set.copyOf(legal.strings("follow_text_versions"))),
                 catchment(root.map("catchment")));
     }
 

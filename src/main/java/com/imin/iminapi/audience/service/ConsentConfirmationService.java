@@ -27,14 +27,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Double opt-in for door QR and survey sign-ups: stores one confirmation email per sign-up (at most one a day per
- * member) and turns a valid link into confirmed consent. Every failure is the same neutral {@code invalid}.
+ * Double opt-in for door QR, survey and site follow sign-ups: stores one confirmation email per sign-up (at most one
+ * a day per member) and turns a valid link into confirmed consent. Every failure is the same neutral {@code invalid}.
  */
 @Service
 public class ConsentConfirmationService {
 
     static final Duration TTL = Duration.ofDays(7);
     static final Duration RESEND_AFTER = Duration.ofHours(24);
+    static final int MAX_UNCLICKED_PER_SOURCE = 2;
 
     private final ConsentConfirmationTokenRepository tokens;
     private final ConsentConfirmationTokenSigner signer;
@@ -70,8 +71,8 @@ public class ConsentConfirmationService {
     }
 
     /**
-     * After a door QR / survey capture: stores the email row and queues the send for after commit.
-     * Nothing while the flag is off or when this member was mailed in the last 24 h.
+     * After a door QR, survey or site follow capture: stores the email row and queues the send for after commit.
+     * Nothing while the flag is off, within 24 h of the last email, to a bounced address, or past the unclicked cap.
      */
     @Transactional
     public void requestFor(UUID orgId, UUID membershipId, UUID consentRecordId, String locale) {
@@ -87,6 +88,10 @@ public class ConsentConfirmationService {
         Instant now = clock.instant();
         Optional<ConsentConfirmationToken> last = tokens.findFirstByMembershipIdOrderBySentAtDesc(membershipId);
         if (last.isPresent() && last.get().getSentAt().isAfter(now.minus(RESEND_AFTER))) return;
+        // A bounced or complained address is not mailed again; the sign-up stays pending.
+        if (deliverabilitySuppressed(orgId, membershipId)) return;
+        // Typing someone else's address can earn them at most two unanswered emails per sign-up source, ever.
+        if (tokens.countUnclickedOfSameSource(membershipId, consentRecordId) >= MAX_UNCLICKED_PER_SOURCE) return;
 
         ConsentConfirmationToken t = new ConsentConfirmationToken();
         t.setOrgId(orgId);
@@ -132,7 +137,10 @@ public class ConsentConfirmationService {
         return new ConsentConfirmationResponse(ConsentConfirmationResponse.CONFIRMED, u.organizerName());
     }
 
-    /** The organizer as the accepted consent sentence names it (door/survey check {@code getName()}), single line. */
+    /**
+     * The organizer as the accepted consent sentence names it (door, survey and follow check {@code getName()}),
+     * single line.
+     */
     public static String organizerName(Organization org) {
         return OrganizerIdentity.singleLine(org.getName());
     }
@@ -145,6 +153,13 @@ public class ConsentConfirmationService {
                 .flatMap(t -> memberships.findByIdAndOrgId(t.getMembershipId(), t.getOrgId())
                         .flatMap(m -> orgs.findById(t.getOrgId())
                                 .map(o -> new Usable(t, m, organizerName(o)))));
+    }
+
+    private boolean deliverabilitySuppressed(UUID orgId, UUID membershipId) {
+        return memberships.findByIdAndOrgId(membershipId, orgId)
+                .flatMap(m -> consumers.findByConsumerId(m.getConsumerId()))
+                .map(c -> suppressions.findDeliverabilityByEmail(c.getNormalizedEmail()).isPresent())
+                .orElse(false);
     }
 
     private boolean optedOut(UUID orgId, Membership m) {

@@ -32,6 +32,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.PropertyFlips;
 import com.imin.iminapi.support.RecordingRateLimiter;
@@ -41,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -51,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,6 +97,7 @@ class ConsentConfirmationServiceTest {
     @Autowired MarketingOptOutRepository optOuts;
     @Autowired SuppressionRepository suppressions;
     @Autowired JdbcTemplate jdbc;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
 
     private UUID orgId;
     private String run;
@@ -255,6 +259,38 @@ class ConsentConfirmationServiceTest {
         assertThat(tokenRows(a("fails"))).isEmpty();
         signUpAtDoor(a("fails"), "en");
         assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("fails"));
+    }
+
+    // ── at most two unclicked emails per source ───────────────────────────
+
+    @Test
+    void aThirdUnclickedEmailForTheSameSource_isNotSent_butAnotherSourceStillMails() {
+        String address = a("cap");
+        signUpAtDoor(address, "en");
+        pastTheResendWindow();
+        signUpAtDoor(address, "en");
+        pastTheResendWindow();
+        signUpAtDoor(address, "en");
+
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(address, address);
+        assertThat(consentRows(address)).hasSize(3);
+
+        pastTheResendWindow();
+        survey.submit(surveyToken(), new SurveyResponseRequest(null, null, "friend", null, null, NOTICE, "en", true,
+                address, TEXT, SURVEY_VERSION, null, null));
+        assertThat(ownMail()).hasSize(3);
+    }
+
+    @Test
+    void aClickedEmail_doesNotCountTowardTheCap() {
+        String address = a("clicked");
+        service.confirm(tokenOf(confirmUrlIn(signUpAndMail(address))));
+        pastTheResendWindow();
+        signUpAtDoor(address, "en");
+        pastTheResendWindow();
+        signUpAtDoor(address, "en");
+
+        assertThat(ownMail()).hasSize(3);
     }
 
     // ── preview (GET) ─────────────────────────────────────────────────────
@@ -562,6 +598,7 @@ class ConsentConfirmationServiceTest {
 
     /** Mail to this run's addresses or org contact; late async sends from other classes are ignored. */
     private List<RecordingEmailService.SentEmail> ownMail() {
+        AsyncDrain.drain(ticketEmailExecutor);
         return mail.sent().stream()
                 .filter(m -> m.to().endsWith("-" + run + "@confirm.test") || m.to().equals(orgContact)).toList();
     }
@@ -591,9 +628,18 @@ class ConsentConfirmationServiceTest {
         assertThat(tokenRows(address).get(0).get("used_at")).isNotNull();
     }
 
+    /** Waits for the confirmation email too, which goes out after commit on the mail pool. */
     private boolean signUpAtDoor(String address, String locale) {
-        return door.optIn(event.getId(), new DoorOptInRequest(doorToken, address, true, TEXT, DOOR_VERSION, locale))
-                .received();
+        boolean received = door.optIn(event.getId(),
+                new DoorOptInRequest(doorToken, address, true, TEXT, DOOR_VERSION, locale)).received();
+        AsyncDrain.drain(ticketEmailExecutor);
+        return received;
+    }
+
+    /** Moves every confirmation email of this org past the 24 h resend window. */
+    private void pastTheResendWindow() {
+        jdbc.update("update consent_confirmation_tokens set sent_at = sent_at - interval '25 hours' where org_id = ?",
+                orgId);
     }
 
     /** Signs up in English and returns the email text. */

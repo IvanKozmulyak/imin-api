@@ -1,6 +1,7 @@
 package com.imin.iminapi.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.audienceplan.config.FollowProperties;
 import com.imin.iminapi.buyer.BuyerProperties;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.BuyerRequestGuardFilter;
@@ -9,6 +10,7 @@ import com.imin.iminapi.security.ApiError;
 import com.imin.iminapi.security.BearerTokenAuthFilter;
 import com.imin.iminapi.security.ErrorCode;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -27,6 +29,7 @@ import java.util.List;
 
 @Configuration
 @EnableWebSecurity
+@EnableConfigurationProperties(FollowProperties.class)
 public class SecurityConfig {
 
     /** Standalone mapper for auth-error responses — avoids circular dependency with Jackson auto-config. */
@@ -45,7 +48,7 @@ public class SecurityConfig {
     private String[] previewOriginPatterns;
 
     @Bean
-    public CorsConfigurationSource corsConfigurationSource(BuyerProperties buyerProps) {
+    public CorsConfigurationSource corsConfigurationSource(BuyerProperties buyerProps, FollowProperties followProps) {
         CorsConfiguration config = new CorsConfiguration();
         List<String> patterns = java.util.stream.Stream
                 .concat(Arrays.stream(allowedOriginPatterns), Arrays.stream(previewOriginPatterns))
@@ -74,11 +77,20 @@ public class SecurityConfig {
         buyerConfig.setAllowCredentials(true);
         buyerConfig.setMaxAge(3600L);
 
+        // The imin.wtf "Keep me posted" form posts from the visitor's browser: exact origins, no
+        // credentials, and only this path, so imin.wtf gains nothing else on the API.
+        CorsConfiguration followConfig = new CorsConfiguration();
+        followConfig.setAllowedOrigins(List.copyOf(followProps.getAllowedOrigins()));
+        followConfig.setAllowedMethods(List.of("POST", "OPTIONS"));
+        followConfig.setAllowedHeaders(List.of("Content-Type"));
+        followConfig.setMaxAge(3600L);
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         // Registration ORDER is load-bearing: UrlBasedCorsConfigurationSource
-        // returns the first pattern that matches, so the buyer mapping has to
-        // precede the "/**" catch-all or it never applies.
+        // returns the first pattern that matches, so the buyer and follow mappings
+        // have to precede the "/**" catch-all or they never apply.
         source.registerCorsConfiguration("/api/v1/buyer/**", buyerConfig);
+        source.registerCorsConfiguration("/api/v1/public/orgs/*/follow", followConfig);
         source.registerCorsConfiguration("/**", config);
         return source;
     }
@@ -153,9 +165,12 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/quote").permitAll()
                         // Door QR opt-in — unauthenticated POST; the per-event token is checked server-side.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/door-optin").permitAll()
+                        // imin.wtf "Keep me posted" — unauthenticated POST; the org slug allow-list is checked server-side.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/orgs/*/follow").permitAll()
                         // Post-event survey — unauthenticated POST; the per-event token is checked server-side.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/surveys/*").permitAll()
-                        // Door QR / survey confirmation link — unauthenticated POST; the signed token is checked server-side.
+                        // Door QR / survey / site follow confirmation link — unauthenticated POST;
+                        // the signed token is checked server-side.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/consent/confirm").permitAll()
                         // Lost-email recovery — unauthenticated POST, always 204, rate-limited.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/recover").permitAll()

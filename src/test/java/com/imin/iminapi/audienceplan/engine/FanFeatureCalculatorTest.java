@@ -201,7 +201,7 @@ class FanFeatureCalculatorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"checkout", "door_qr", "survey", "preference_centre_row", "order_confirmation"})
+    @ValueSource(strings = {"checkout", "door_qr", "survey", "site_follow", "preference_centre_row", "order_confirmation"})
     void explicitConsentFromEachPersonSource_refreshesLastContact(String source) {
         paidOrder(event(TECHNO, daysAgo(1096)), daysAgo(1096), 1);
         consent("subscribed", "explicit", source, daysAgo(30));
@@ -209,7 +209,7 @@ class FanFeatureCalculatorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"door_qr", "survey"})
+    @ValueSource(strings = {"door_qr", "survey", "site_follow"})
     void signUpAwaitingConfirmation_doesNotRefreshLastContact_untilConfirmed(String source) {
         paidOrder(event(TECHNO, daysAgo(1096)), daysAgo(1096), 1);
         ConsentRecord c = consent("subscribed", "explicit", source, daysAgo(30));
@@ -286,7 +286,7 @@ class FanFeatureCalculatorTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"door_qr", "survey"})
+    @ValueSource(strings = {"door_qr", "survey", "site_follow"})
     void importRowFollowedByLaterPendingSignUp_keepsImportBasis_untilConfirmed(String source) {
         consent("subscribed", "explicit", "organizer_import_row", daysAgo(50));
         ConsentRecord pending = consent("subscribed", "explicit", source, daysAgo(5));

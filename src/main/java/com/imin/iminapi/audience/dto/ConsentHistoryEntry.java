@@ -35,7 +35,8 @@ public record ConsentHistoryEntry(
         String locale,
         // True for a granting record ConsentGate does not accept as proof (reason legacy_unproven).
         boolean legacy,
-        // Door QR / survey records count only once the address is confirmed; confirmedAt null means still waiting.
+        // Door QR, survey and site follow records count only once the address is confirmed;
+        // confirmedAt null means still waiting.
         boolean confirmationRequired,
         Instant confirmedAt,
         // Event the consent was given at, and its name when the event belongs to the caller's org.
