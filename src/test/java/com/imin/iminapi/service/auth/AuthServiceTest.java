@@ -37,11 +37,13 @@ class AuthServiceTest {
             mock(com.imin.iminapi.service.auth.PasswordResetService.class);
     com.imin.iminapi.email.AccountEmailService accountEmail =
             mock(com.imin.iminapi.email.AccountEmailService.class);
+    com.imin.iminapi.email.TeamAlertService teamAlerts =
+            mock(com.imin.iminapi.email.TeamAlertService.class);
 
     com.imin.iminapi.email.EmailProperties emailProps = makeEmailProps();
 
     AuthService sut = new AuthService(orgs, users, sessions, hasher, tokens,
-            verificationSvc, passwordResetSvc, accountEmail,
+            verificationSvc, passwordResetSvc, accountEmail, teamAlerts,
             emailProps, Duration.ofDays(30));
 
     @Test

@@ -3,6 +3,7 @@ package com.imin.iminapi.oauth;
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.UserDto;
 import com.imin.iminapi.dto.auth.AuthResponse;
+import com.imin.iminapi.email.TeamAlertService;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -25,6 +26,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -64,6 +66,7 @@ public class OAuthAccountService {
     private final UserRepository users;
     private final AuthSessionRepository sessions;
     private final UserIdentityRepository identities;
+    private final TeamAlertService teamAlerts;
     private final TokenService tokens;
     private final Duration sessionTtl;
     private final String defaultCountry;
@@ -73,10 +76,11 @@ public class OAuthAccountService {
                                UserRepository users,
                                AuthSessionRepository sessions,
                                UserIdentityRepository identities,
+                               TeamAlertService teamAlerts,
                                TokenService tokens,
                                OAuthProperties props,
                                @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
-        this(orgs, users, sessions, identities, tokens,
+        this(orgs, users, sessions, identities, teamAlerts, tokens,
                 Duration.ofDays(sessionTtlDays), props.getDefaultCountry());
     }
 
@@ -85,6 +89,7 @@ public class OAuthAccountService {
                                UserRepository users,
                                AuthSessionRepository sessions,
                                UserIdentityRepository identities,
+                               TeamAlertService teamAlerts,
                                TokenService tokens,
                                Duration sessionTtl,
                                String defaultCountry) {
@@ -92,6 +97,7 @@ public class OAuthAccountService {
         this.users = users;
         this.sessions = sessions;
         this.identities = identities;
+        this.teamAlerts = teamAlerts;
         this.tokens = tokens;
         this.sessionTtl = sessionTtl;
         this.defaultCountry = defaultCountry;
@@ -127,6 +133,11 @@ public class OAuthAccountService {
             linkIdentity(user, info);
             if (user.getVerifiedAt() == null) {
                 user.setVerifiedAt(Times.nowMicros());
+                // A password owner who never entered the emailed code becomes real here, so this is their one alert.
+                if (user.getRole() == UserRole.OWNER) {
+                    teamAlerts.newOrganizer(user, orgOf(user), TeamAlertService.EMAIL_PASSWORD
+                            + " (verified with " + StringUtils.capitalize(info.provider()) + ")");
+                }
             }
             log.info("OAuth link: provider={} linked to existing user {}", info.provider(), user.getId());
             return loginExisting(user);
@@ -167,10 +178,14 @@ public class OAuthAccountService {
     }
 
     private AuthResponse finish(User user) {
-        Organization org = orgs.findById(user.getOrgId())
-                .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
+        Organization org = orgOf(user);
         String token = issueSession(user);
         return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
+    }
+
+    private Organization orgOf(User user) {
+        return orgs.findById(user.getOrgId())
+                .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
     }
 
     private void linkIdentity(User user, OAuthUserInfo info) {

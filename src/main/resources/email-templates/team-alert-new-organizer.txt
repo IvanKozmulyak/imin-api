@@ -1,0 +1,9 @@
+[imin] NEW ORGANIZER
+
+Name:           {{name}}
+Email:          {{email}}
+Organization:   {{organization}}
+Country:        {{country}}
+Sign-up method: {{method}}
+Signed up:      {{signedUp}}
+Time:           {{when}}
