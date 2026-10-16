@@ -3,6 +3,7 @@ package com.imin.iminapi.controller.org;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.auth.AuthResponse;
 import com.imin.iminapi.email.RecordingEmailService;
+import com.imin.iminapi.email.TeamAlertProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
@@ -14,14 +15,17 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.auth.OrganizerTerms;
+import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import com.imin.iminapi.util.Slugger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -35,6 +39,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -63,6 +68,9 @@ class OrgSetupTest {
     @Autowired EventRepository events;
     @Autowired RecordingEmailService mail;
     @Autowired JdbcTemplate jdbc;
+    @Autowired TeamAlertProperties alertProps;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
 
     private final ObjectMapper om = new ObjectMapper();
 
@@ -124,6 +132,26 @@ class OrgSetupTest {
         mvc.perform(get("/api/v1/auth/me").with(as(owner(signedIn))))
                 .andExpect(jsonPath("$.org.setupRequired").value(false))
                 .andExpect(jsonPath("$.org.country").value("FR"));
+    }
+
+    @Test
+    void finishingSetup_alertsTheTeamOnce_andARefusedSecondSetupAddsNothing() throws Exception {
+        String inbox = fx.email("team");
+        flips.set(alertProps, "emails", List.of(inbox));
+        AuthResponse signedIn = googleSignUp();
+        assertThat(mailTo(inbox)).as("a first Google sign-in is not a new organizer yet").isEmpty();
+        String orgName = "Night Owls " + UUID.randomUUID().toString().substring(0, 8);
+
+        setup(owner(signedIn), validBody(Map.of("orgName", orgName, "country", "FR"))).andExpect(status().isOk());
+
+        assertThat(mailTo(inbox)).singleElement().satisfies(alert -> {
+            assertThat(alert.subject()).isEqualTo("New organizer: " + orgName + " (FR)");
+            assertThat(alert.text()).contains("Name:           Ada Lovelace", "Country:        FR",
+                    "Sign-up method: Google");
+        });
+
+        setup(owner(signedIn), validBody(Map.of("country", "DE"))).andExpect(status().isConflict());
+        assertThat(mailTo(inbox)).as("the refused second setup sends nothing").hasSize(1);
     }
 
     @Test
@@ -244,6 +272,12 @@ class OrgSetupTest {
     private Map<String, Object> orgRow(AuthResponse signedIn) {
         return jdbc.queryForMap("select name, country, setup_completed_at from organizations where id = ?",
                 signedIn.org().id());
+    }
+
+    /** Waits for the after-commit send, then every mail to {@code address}. */
+    private List<RecordingEmailService.SentEmail> mailTo(String address) {
+        AsyncDrain.drain(ticketEmailExecutor);
+        return mail.sent().stream().filter(m -> address.equalsIgnoreCase(m.to())).toList();
     }
 
     private String codeSentTo(String email) {

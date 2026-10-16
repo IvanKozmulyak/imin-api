@@ -7,6 +7,7 @@ import com.imin.iminapi.model.User;
 import com.imin.iminapi.oauth.OAuthAccountService;
 import com.imin.iminapi.oauth.OAuthUserInfo;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.service.auth.OrganizerTerms;
 import com.imin.iminapi.service.auth.verification.EmailVerificationService;
 import com.imin.iminapi.service.org.TeamService;
 import com.imin.iminapi.support.AsyncDrain;
@@ -72,7 +73,8 @@ class NewOrganizerAlertTest {
 
     private void signUp(String email, String orgName) throws Exception {
         postJson("/api/v1/auth/signup", Map.of("email", email, "password", PASSWORD, "firstName", "Ada",
-                "lastName", "Lovelace", "orgName", orgName, "country", "GB")).andExpect(status().isOk());
+                "lastName", "Lovelace", "orgName", orgName, "country", "GB",
+                "acceptedTerms", true, "termsVersion", OrganizerTerms.CURRENT_VERSION)).andExpect(status().isOk());
     }
 
     private ResultActions verifyEmail(String email, String code) throws Exception {

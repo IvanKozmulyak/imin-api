@@ -65,13 +65,13 @@ class SignupTermsTest {
         String email = fx.email("signup");
         Instant before = Instant.now();
         Map<String, Object> body = validBody(email);
-        body.put("termsVersion", " 0.1 ");
+        body.put("termsVersion", " 1.0 ");
 
         signup(body).andExpect(status().isOk());
 
         Map<String, Object> user = jdbc.queryForMap(
                 "select terms_accepted_at, terms_version from users where email_lower = ?", email.toLowerCase());
-        assertThat(user.get("terms_version")).as("the matched, trimmed id is stored").isEqualTo("0.1");
+        assertThat(user.get("terms_version")).as("the matched, trimmed id is stored").isEqualTo("1.0");
         assertThat(((java.sql.Timestamp) user.get("terms_accepted_at")).toInstant())
                 .isAfterOrEqualTo(before.minusSeconds(1));
     }

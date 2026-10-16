@@ -29,7 +29,7 @@ public final class BuyerTerms {
      * terms change; existing acceptances keep the version they were taken under,
      * because {@code completeOnboarding} stamps once and never rewrites.
      */
-    public static final String CURRENT_VERSION = "2026-09-08";
+    public static final String CURRENT_VERSION = "1.0";
 
     /**
      * The sentence shown next to the mandatory checkbox on the finish-registration
