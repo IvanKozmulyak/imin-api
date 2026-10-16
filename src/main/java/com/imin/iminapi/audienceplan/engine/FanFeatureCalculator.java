@@ -34,7 +34,7 @@ public final class FanFeatureCalculator {
 
     /** Consent sources the person creates themselves; only these count as contact from the person. */
     static final Set<String> PERSON_CONSENT_SOURCES =
-            Set.of("checkout", "door_qr", "survey", "preference_centre_row", "order_confirmation");
+            Set.of("checkout", "door_qr", "survey", "site_follow", "preference_centre_row", "order_confirmation");
 
     /** Source of the retention job's unsubscribe; profiling stays empty until the person makes contact again. */
     public static final String RETENTION_SOURCE = "retention_3y";
@@ -122,7 +122,7 @@ public final class FanFeatureCalculator {
             if (!ClassRules.STATUS_SUBSCRIBED.equals(c.getStatus())) continue;
             if (!ClassRules.BASIS_EXPLICIT.equals(c.getLawfulBasis())) continue;
             if (!PERSON_CONSENT_SOURCES.contains(c.getSource())) continue;
-            // Anyone can type an address at the door; only a confirmed one is contact from the person.
+            // Anyone can type an address at the door or on imin.wtf; only a confirmed one is contact from the person.
             if (c.isAwaitingConfirmation()) continue;
             latest = later(latest, c.getOccurredAt());
         }

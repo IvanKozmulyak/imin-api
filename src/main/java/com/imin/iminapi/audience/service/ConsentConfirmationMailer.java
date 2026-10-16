@@ -15,6 +15,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.util.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -25,8 +26,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import java.util.Map;
 
 /**
- * Sends the confirmation email after the sign-up commits, From {@code "<Organizer> via IMIN"}, no tracking.
- * A failed send never fails the sign-up; its row is removed so a later sign-up can retry.
+ * Sends the confirmation email after commit, From {@code "<Organizer> via IMIN"}, no tracking; normally off the request
+ * thread, but a full {@code ticketEmailExecutor} sends on it (CallerRunsPolicy, {@code AsyncConfig}). A failed send
+ * never fails the sign-up; its row is removed so a later sign-up can retry.
  */
 @Component
 public class ConsentConfirmationMailer {
@@ -43,7 +45,8 @@ public class ConsentConfirmationMailer {
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
     private final EmailProperties props;
-    // AFTER_COMMIT still sees the finished transaction bound, so the cleanup write needs its own.
+    // After commit the send normally runs on the mail pool; when the pool is full, CallerRunsPolicy runs it on the
+    // request thread, where the finished transaction is still bound. Either way the cleanup write opens its own.
     private final TransactionTemplate requiresNew;
 
     public ConsentConfirmationMailer(ConsentConfirmationTokenRepository tokens, ConsentConfirmationTokenSigner signer,
@@ -64,6 +67,7 @@ public class ConsentConfirmationMailer {
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("ticketEmailExecutor")
     public void onRequested(ConsentConfirmationRequested e) {
         try {
             send(e);

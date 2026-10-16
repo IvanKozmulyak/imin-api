@@ -38,7 +38,7 @@ public final class ConsentGateSql {
             + " WHERE p2.membership_id = m.membership_id AND p2.accepted = TRUE"
             + " AND p2.last_purchase_date IS NOT NULL AND p2.last_purchase_date >= :cutoffDate))";
 
-    // A door/survey sign-up whose address is not yet confirmed grants nothing, so it never ranks.
+    // A door QR, survey or site follow sign-up whose address is not yet confirmed grants nothing, so it never ranks.
     static final String CONFIRMED_R = "(r.confirmation_required = FALSE OR r.confirmed_at IS NOT NULL)";
     static final String CONFIRMED_LO = "(lo.confirmation_required = FALSE OR lo.confirmed_at IS NOT NULL)";
 

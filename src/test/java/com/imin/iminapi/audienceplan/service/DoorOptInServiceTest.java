@@ -4,10 +4,8 @@ import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.model.MarketingOptOut;
 import com.imin.iminapi.audience.model.SuppressionEntry;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
-import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
-import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.dto.ExclusionReason;
@@ -80,15 +78,13 @@ class DoorOptInServiceTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
-    @Autowired ConsumerRepository consumers;
-    @Autowired MembershipRepository memberships;
     @Autowired ErasedAddressRepository erased;
     @Autowired MarketingOptOutRepository optOuts;
     @Autowired SuppressionRepository suppressions;
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired AudienceOrderProjector projector;
     @Autowired ConsentService consentService;
-    @Autowired com.imin.iminapi.audience.service.ConsentConfirmationService confirmations;
+    @Autowired PublicOptInGrant grant;
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
@@ -562,8 +558,7 @@ class DoorOptInServiceTest {
     // ── plumbing ──────────────────────────────────────────────────────────
 
     private DoorOptInService serviceWith(AudiencePlanProperties props) {
-        return new DoorOptInService(events, orgs, consumers, memberships, erased, optOuts, suppressions, consentRecords,
-                projector, consentService, new AudiencePlanAccess(props), logic, emailProps, confirmations);
+        return new DoorOptInService(events, orgs, consentRecords, new AudiencePlanAccess(props), logic, emailProps, grant);
     }
 
     /** Addresses are keyed across orgs, so every test writes its own. */

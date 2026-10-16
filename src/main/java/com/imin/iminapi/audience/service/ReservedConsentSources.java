@@ -18,6 +18,7 @@ public final class ReservedConsentSources {
             "organizer_import_row",   // CSV import with a provenance row
             "door_qr",                // door QR opt-in
             "survey",                 // post-event survey opt-in
+            "site_follow",            // imin.wtf "Keep me posted" (FollowOptInService)
             "preference_centre_row",  // BuyerPreferencesService
             "order_confirmation",     // SmsConsentService
             "one_click",              // PublicUnsubscribeController (RFC 8058)

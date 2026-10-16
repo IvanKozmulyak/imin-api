@@ -1,19 +1,6 @@
 package com.imin.iminapi.audienceplan.service;
 
-import com.imin.iminapi.audience.model.Consumer;
-import com.imin.iminapi.audience.model.MarketingOptOutId;
-import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
-import com.imin.iminapi.audience.repository.ConsumerRepository;
-import com.imin.iminapi.audience.repository.ErasedAddressRepository;
-import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
-import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.audience.repository.SuppressionRepository;
-import com.imin.iminapi.audience.service.AudienceOrderProjector;
-import com.imin.iminapi.audience.service.ConsentOrigin;
-import com.imin.iminapi.audience.service.ConsentConfirmationService;
-import com.imin.iminapi.audience.service.ConsentService;
-import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.dto.DoorOptInPageResponse;
@@ -29,24 +16,14 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RoleGuard;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.constraints.Email;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
 import java.util.Base64;
-import java.util.LinkedHashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -58,49 +35,26 @@ public class DoorOptInService {
 
     public static final String SOURCE = "door_qr";
 
-    static final int EMAIL_MAX = 254;
-    static final int CONSENT_TEXT_MAX = 2000;
-    static final Set<String> LOCALES = Set.of("en", "es", "fr", "uk");
-
     private static final SecureRandom RANDOM = new SecureRandom();
-    private static final Validator VALIDATOR = Validation.buildDefaultValidatorFactory().getValidator();
 
     private final EventRepository events;
     private final OrganizationRepository orgs;
-    private final ConsumerRepository consumers;
-    private final MembershipRepository memberships;
-    private final ErasedAddressRepository erased;
-    private final MarketingOptOutRepository optOuts;
-    private final SuppressionRepository suppressions;
     private final ConsentRecordRepository consentRecords;
-    private final AudienceOrderProjector projector;
-    private final ConsentService consentService;
     private final AudiencePlanAccess access;
     private final AudiencePlanLogic logic;
     private final EmailProperties emailProps;
-    private final ConsentConfirmationService confirmations;
+    private final PublicOptInGrant grant;
 
-    public DoorOptInService(EventRepository events, OrganizationRepository orgs, ConsumerRepository consumers,
-                            MembershipRepository memberships, ErasedAddressRepository erased,
-                            MarketingOptOutRepository optOuts, SuppressionRepository suppressions,
-                            ConsentRecordRepository consentRecords,
-                            AudienceOrderProjector projector, ConsentService consentService,
+    public DoorOptInService(EventRepository events, OrganizationRepository orgs, ConsentRecordRepository consentRecords,
                             AudiencePlanAccess access, AudiencePlanLogic logic, EmailProperties emailProps,
-                            ConsentConfirmationService confirmations) {
+                            PublicOptInGrant grant) {
         this.events = events;
         this.orgs = orgs;
-        this.consumers = consumers;
-        this.memberships = memberships;
-        this.erased = erased;
-        this.optOuts = optOuts;
-        this.suppressions = suppressions;
         this.consentRecords = consentRecords;
-        this.projector = projector;
-        this.consentService = consentService;
         this.access = access;
         this.logic = logic;
         this.emailProps = emailProps;
-        this.confirmations = confirmations;
+        this.grant = grant;
     }
 
     // ---- organizer ----
@@ -151,32 +105,17 @@ public class DoorOptInService {
     public DoorOptInResponse optIn(UUID eventId, DoorOptInRequest body) {
         Event e = requireOpen(eventId, body == null ? null : body.token());
         Organization org = requireOrg(e);
-        String email = validEmail(body);
-        requireTicked(body);
-        String version = validVersion(body);
-        String text = validText(body, org);
+        String email = PublicOptInGrant.validEmail(body == null ? null : body.email());
+        PublicOptInGrant.requireTicked(body.consentGiven());
+        String version = PublicOptInGrant.validVersion(body.consentTextVersion(),
+                logic.logic().legal().doorQrTextVersions(), "door");
+        String text = PublicOptInGrant.validText(body.consentText(), org);
         String locale = locale(body.locale());
 
-        UUID orgId = e.getOrgId();
-        // Accepted without storing, same answer as a stored sign-up: an erasure is never undone here.
-        if (erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)) return DoorOptInResponse.ok();
-        // Unsubscribed or marketing-suppressed always wins, as at checkout.
-        if (optOuts.existsById(new MarketingOptOutId(email, orgId, "email"))) return DoorOptInResponse.ok();
-        Membership existing = findMembership(orgId, email);
-        if (existing != null && ("unsubscribed".equals(existing.getConsentStatus())
-                || "erase_pending".equals(existing.getStatus())
-                || suppressions.findMarketingByOrgAndMembership(orgId, existing.getMembershipId()).isPresent())) {
-            return DoorOptInResponse.ok();
-        }
-
-        projector.upsertMembership(orgId, email, null);
-        Membership m = findMembership(orgId, email);
-        if (m == null) throw new IllegalStateException("Membership missing after door upsert");
-        UUID recordId = consentService.capture(orgId, m.getMembershipId(), "explicit", SOURCE,
+        grant.grant(e.getOrgId(), email, SOURCE,
                 "Ticked the door QR sign-up at event " + e.getId() + " (locale " + locale + ") next to: \""
                         + text + "\"",
-                "email", version, null, e.getId(), ConsentOrigin.DATA_SUBJECT, null);
-        confirmations.requestFor(orgId, m.getMembershipId(), recordId, locale);
+                version, e.getId(), locale);
         return DoorOptInResponse.ok();
     }
 
@@ -195,12 +134,6 @@ public class DoorOptInService {
         return orgs.findById(e.getOrgId()).orElseThrow(() -> ApiException.notFound("Event"));
     }
 
-    /** Row-locked from this first read, so the opt-out checks and the grant see the same row. */
-    private Membership findMembership(UUID orgId, String email) {
-        Consumer c = consumers.findByNormalizedEmail(email).orElse(null);
-        return c == null ? null : memberships.lockByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElse(null);
-    }
-
     private static boolean tokenMatches(String expected, String given) {
         if (expected == null || given == null) return false;
         return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), given.getBytes(StandardCharsets.UTF_8));
@@ -212,52 +145,7 @@ public class DoorOptInService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
     }
 
-    // ---- validation (400 INVALID_REQUEST with a fields map, as the other public endpoints) ----
-
-    private static String validEmail(DoorOptInRequest body) {
-        String raw = body == null || body.email() == null ? "" : body.email().trim();
-        if (raw.isEmpty()) throw invalid("email", "is required");
-        if (raw.length() > EMAIL_MAX) throw invalid("email", "must be at most " + EMAIL_MAX + " characters");
-        String email = EmailNormalizer.normalize(raw);
-        if (!VALIDATOR.validate(new EmailHolder(email)).isEmpty()) throw invalid("email", "must be a valid email address");
-        return email;
-    }
-
-    private static void requireTicked(DoorOptInRequest body) {
-        if (!Boolean.TRUE.equals(body.consentGiven())) throw invalid("consentGiven", "the consent box must be ticked");
-    }
-
-    private String validVersion(DoorOptInRequest body) {
-        String v = body.consentTextVersion() == null ? "" : body.consentTextVersion().trim();
-        if (!logic.logic().legal().doorQrTextVersions().contains(v)) {
-            throw invalid("consentTextVersion", "is not a known door consent text version");
-        }
-        return v;
-    }
-
-    private static String validText(DoorOptInRequest body, Organization org) {
-        String t = body.consentText() == null ? "" : body.consentText().trim();
-        if (t.isEmpty()) throw invalid("consentText", "is required");
-        if (t.length() > CONSENT_TEXT_MAX) throw invalid("consentText", "must be at most " + CONSENT_TEXT_MAX + " characters");
-        String name = org.getName() == null ? "" : org.getName().trim();
-        if (name.isEmpty() || !fold(t).contains(fold(name))) throw invalid("consentText", "must name the organizer");
-        return t;
-    }
-
     static String locale(String raw) {
-        String l = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        return LOCALES.contains(l) ? l : "en";
+        return PublicOptInGrant.locale(raw);
     }
-
-    private static String fold(String s) {
-        return Normalizer.normalize(s, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
-    }
-
-    private static ApiException invalid(String field, String message) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put(field, message);
-        return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "Invalid request body", fields);
-    }
-
-    private record EmailHolder(@Email String email) {}
 }

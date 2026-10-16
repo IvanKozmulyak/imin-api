@@ -32,6 +32,7 @@ legal:
     organizer_import_row: provenance_row
     door_qr: text_version
     survey: text_version
+    site_follow: text_version
   # Checkout label versions that name the organizer; add one only with a reviewed change.
   # checkout-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public + fan-app, en/es/fr/uk).
   organizer_named_text_versions: [checkout-org-named-2026-09]
@@ -47,3 +48,6 @@ legal:
   survey_notice_versions: [survey-notice-2026-10, survey-notice-2026-10-linked]
   # Notice versions whose answers may write the recommendation score to the membership; each must be listed above.
   survey_linking_notice_versions: [survey-notice-2026-10-linked]
+  # imin.wtf "Keep me posted" sentence versions the public follow endpoint accepts; add one only with a reviewed change.
+  # site-follow-2026-10: "Send me {organizer} news. Unsubscribe anytime." (imin.wtf guest page, en/es/fr/uk).
+  follow_text_versions: [site-follow-2026-10]

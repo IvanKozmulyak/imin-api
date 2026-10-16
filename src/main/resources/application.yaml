@@ -297,7 +297,7 @@ imin:
       send-window-end-local: ${IMIN_MARKETING_SMS_WINDOW_END:20:00}
       unlock-threshold-phones: ${IMIN_MARKETING_SMS_UNLOCK_THRESHOLD:500}
   consent-confirmation:
-    # HMAC key for the door QR / survey confirmation link; blank falls back to imin.ticket.signing-secret.
+    # HMAC key for the door QR / survey / site follow confirmation link; blank falls back to imin.ticket.signing-secret.
     secret: ${IMIN_CONSENT_CONFIRMATION_SECRET:}
   sms:
     # SMS provider CONNECTION (Bird / MessageBird). Separate from marketing.sms above,
@@ -718,12 +718,17 @@ imin:
       # queue on the venue's Wi-Fi shares one IP; every stored row is a real marketing consent.
       capacity: 60
       window-minutes: 15
+    follow-optin:
+      # Public imin.wtf "Keep me posted" sign-up, keyed per client IP (the browser calls the API directly).
+      # Sized for one person on one device: a few tries, not a queue sharing venue Wi-Fi as at the door.
+      capacity: 5
+      window-minutes: 15
     survey:
       # Public post-event survey, keyed per client IP; same reasoning and size as door-optin.
       capacity: 60
       window-minutes: 15
     consent-confirm:
-      # Public door QR / survey confirmation link, keyed per client IP. A person opens it once or twice;
+      # Public door QR / survey / site follow confirmation link, keyed per client IP. A person opens it once or twice;
       # the cap stops a loop guessing tokens (they are HMAC-signed, so guessing cannot succeed anyway).
       capacity: 30
       window-minutes: 15
@@ -1002,8 +1007,14 @@ imin:
     portrait-daily-cap-global: ${IMIN_AUDIENCE_PORTRAIT_DAILY_CAP_GLOBAL:100}
     # Portraits the weekly refresh renews per run.
     portrait-refresh-batch: ${IMIN_AUDIENCE_PORTRAIT_REFRESH_BATCH:20}
-    # Door QR / survey confirmation emails. Off until legal D9 (entity, privacy policy, DPA) clears; sign-ups stay pending.
+    # Door QR, survey and site follow confirmation emails. Off by default; while off, sign-ups stay pending.
     consent-confirmation-emails-enabled: ${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}
+  follow:
+    # imin.wtf "Keep me posted" (POST /api/v1/public/orgs/{slug}/follow). Comma-separated org slugs that take
+    # sign-ups; blank = every slug answers 404.
+    org-slugs: ${IMIN_FOLLOW_ORG_SLUGS:}
+    # EXACT origins (no wildcards) given CORS on the follow path only; no credentials.
+    allowed-origins: ${IMIN_FOLLOW_ALLOWED_ORIGINS:https://imin.wtf}
   moderation:
     # imin staff (users.id, comma-separated) who may place/lift moderation holds; blank = endpoints 404 for everyone.
     staff-user-ids: ${IMIN_MODERATION_STAFF_USER_IDS:}

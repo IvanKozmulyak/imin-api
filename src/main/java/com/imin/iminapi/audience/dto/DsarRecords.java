@@ -49,7 +49,7 @@ public record DsarRecords(
                 fanFeatures, importProvenance, engagement, consentConfirmations);
     }
 
-    /** The same records with the door QR / survey confirmation emails sent to this person. */
+    /** The same records with the door QR, survey and site follow confirmation emails sent to this person. */
     public DsarRecords withConsentConfirmations(List<ConsentConfirmationRecord> rows) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
                 fanFeatures, importProvenance, emailEngagement, rows);
@@ -131,8 +131,8 @@ public record DsarRecords(
     public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt) {}
 
     /**
-     * One confirmation email for a door QR / survey sign-up: when it went, until when it worked, when it was used,
-     * and the survey score it holds until then (null when none).
+     * One confirmation email for a door QR, survey or site follow sign-up: when it went, until when it worked,
+     * when it was used, and the survey score it holds until then (null when none).
      */
     public record ConsentConfirmationRecord(
             UUID consentRecordId,

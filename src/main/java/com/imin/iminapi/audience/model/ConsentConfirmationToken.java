@@ -7,7 +7,10 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
-/** One confirmation email sent for a door QR / survey sign-up; the emailed token is a signature over {@link #id}. */
+/**
+ * One confirmation email sent for a door QR, survey or site follow sign-up; the emailed token is a signature over
+ * {@link #id}.
+ */
 @Entity
 @Table(name = "consent_confirmation_tokens")
 @Getter
