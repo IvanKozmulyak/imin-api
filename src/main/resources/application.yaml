@@ -236,6 +236,10 @@ imin:
     # mail every buyer holding a ticket for anything in the next 24 hours, with
     # no operator having chosen that moment. Turning it on is a deliberate act.
     reminders-enabled: ${IMIN_REMINDERS_ENABLED:false}
+  team-alerts:
+    # Comma-separated imin team inboxes told when a new organizer account becomes real; blank = no alert.
+    # An entry that is not one address (no @, two @, spaces, ';') stops startup.
+    emails: ${IMIN_TEAM_ALERT_EMAILS:}
   marketing:
     # Bulk-email sending identity — a marketing subdomain (e.g. news.imin.wtf)
     # with its OWN SPF/DKIM so bulk sends never touch the transactional auth-email

@@ -1,6 +1,7 @@
 package com.imin.iminapi.oauth;
 
 import com.imin.iminapi.dto.auth.AuthResponse;
+import com.imin.iminapi.email.TeamAlertService;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -38,7 +39,9 @@ class OAuthAccountServiceTest {
     UserIdentityRepository identities = mock(UserIdentityRepository.class);
     TokenService tokens = new TokenService();
 
-    OAuthAccountService sut = new OAuthAccountService(orgs, users, sessions, identities, tokens,
+    TeamAlertService teamAlerts = mock(TeamAlertService.class);
+
+    OAuthAccountService sut = new OAuthAccountService(orgs, users, sessions, identities, teamAlerts, tokens,
             Duration.ofDays(30), "NL");
 
     private OAuthUserInfo google(String sub, String email, boolean verified) {

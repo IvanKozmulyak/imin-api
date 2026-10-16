@@ -10,6 +10,7 @@ import com.imin.iminapi.dto.auth.SignupRequest;
 import com.imin.iminapi.dto.auth.VerificationPendingResponse;
 import com.imin.iminapi.email.AccountEmailService;
 import com.imin.iminapi.email.EmailProperties;
+import com.imin.iminapi.email.TeamAlertService;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -53,6 +54,7 @@ public class AuthService {
     private final EmailVerificationService verificationSvc;
     private final PasswordResetService passwordResetSvc;
     private final AccountEmailService accountEmail;
+    private final TeamAlertService teamAlerts;
     private final EmailProperties props;
     private final Duration sessionTtl;
 
@@ -65,10 +67,11 @@ public class AuthService {
                        EmailVerificationService verificationSvc,
                        PasswordResetService passwordResetSvc,
                        AccountEmailService accountEmail,
+                       TeamAlertService teamAlerts,
                        EmailProperties emailProperties,
                        @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
         this(orgs, users, sessions, hasher, tokens, verificationSvc, passwordResetSvc, accountEmail,
-                emailProperties, Duration.ofDays(sessionTtlDays));
+                teamAlerts, emailProperties, Duration.ofDays(sessionTtlDays));
     }
 
     /** Constructor used by tests. */
@@ -80,6 +83,7 @@ public class AuthService {
                        EmailVerificationService verificationSvc,
                        PasswordResetService passwordResetSvc,
                        AccountEmailService accountEmail,
+                       TeamAlertService teamAlerts,
                        EmailProperties emailProperties,
                        Duration sessionTtl) {
         this.orgs = orgs;
@@ -90,6 +94,7 @@ public class AuthService {
         this.verificationSvc = verificationSvc;
         this.passwordResetSvc = passwordResetSvc;
         this.accountEmail = accountEmail;
+        this.teamAlerts = teamAlerts;
         this.props = emailProperties;
         this.sessionTtl = sessionTtl;
     }
@@ -191,6 +196,11 @@ public class AuthService {
 
     @Transactional
     public AuthResponse verifyEmail(com.imin.iminapi.dto.auth.VerifyEmailRequest req) {
+        // verify() stamps verifiedAt, so decide first: only an owner's first verification is a new organizer.
+        // ponytail: two concurrent submits of one code can each alert; a duplicate team email is the ceiling.
+        boolean newOrganizer = users.findByEmailLower(req.email().toLowerCase())
+                .filter(u -> u.getVerifiedAt() == null && u.getRole() == UserRole.OWNER)
+                .isPresent();
         User user = verificationSvc.verify(req.email(), req.code());
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
@@ -202,6 +212,9 @@ public class AuthService {
             accountEmail.sendWelcome(user);
         } catch (RuntimeException e) {
             log.warn("Welcome email send failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
+        }
+        if (newOrganizer) {
+            teamAlerts.newOrganizer(user, org, TeamAlertService.EMAIL_PASSWORD);
         }
         return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
     }
