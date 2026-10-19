@@ -8,7 +8,9 @@ import com.imin.iminapi.security.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.HtmlUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
 /**
@@ -98,25 +101,27 @@ public class PublicUnsubscribeController {
     }
 
     /**
-     * The confirm page. Verifies the token so a bad link still 404s without
-     * pretending, then renders a single POST button back to this same URL.
+     * The confirm page: one POST button back to this URL. Bad or over-limit links get an HTML page
+     * with their status; the JSON envelope would show raw in a browser and 500 for a strict text/html client.
      */
     @GetMapping(value = "/{token}", produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody
-    public String confirmPage(@PathVariable String token, HttpServletRequest http) {
-        rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
-        tokens.verify(token).orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
+    public ResponseEntity<String> confirmPage(@PathVariable String token, HttpServletRequest http) {
+        try {
+            rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
+        } catch (ApiException e) {
+            if (e.status() != HttpStatus.TOO_MANY_REQUESTS) throw e;
+            return page(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", "Too many requests",
+                    "Too many unsubscribe requests came from your network. Wait a few minutes, then open the link again.",
+                    "");
+        }
+        if (tokens.verify(token).isEmpty()) {
+            return page(HttpStatus.NOT_FOUND, "Link not valid", "This unsubscribe link isn't valid",
+                    "It may be incomplete or changed. Use the unsubscribe link in the most recent message from the same sender.",
+                    "");
+        }
         String action = HtmlUtils.htmlEscape("/api/v1/public/unsubscribe/" + token);
-        return """
-                <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-                <meta name="viewport" content="width=device-width,initial-scale=1">
-                <meta name="robots" content="noindex">
-                <title>Unsubscribe</title></head>
-                <body style="font-family:sans-serif;text-align:center;padding:48px;color:#11091f;">
-                <h1 style="font-size:24px;margin:0 0 12px;">Unsubscribe?</h1>
-                <p style="margin:0 0 24px;color:#4a4458;">
-                  Confirm and you will stop receiving marketing messages from this organizer.
-                </p>
+        String form = """
                 <form method="post" action="%s">
                   <button type="submit"
                           style="font:inherit;font-weight:700;padding:12px 24px;border:0;border-radius:8px;
@@ -124,7 +129,28 @@ public class PublicUnsubscribeController {
                     Yes, unsubscribe me
                   </button>
                 </form>
-                </body></html>
                 """.formatted(action);
+        return page(HttpStatus.OK, "Unsubscribe", "Unsubscribe?",
+                "Confirm and you will stop receiving marketing messages from this organizer.", form);
+    }
+
+    /** Static strings only for the error pages, so no token is echoed. */
+    private static ResponseEntity<String> page(HttpStatus status, String title, String heading, String body,
+                                               String extraHtml) {
+        String html = """
+                <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1">
+                <meta name="robots" content="noindex">
+                <title>%s</title></head>
+                <body style="font-family:sans-serif;text-align:center;padding:48px;color:#11091f;">
+                <h1 style="font-size:24px;margin:0 0 12px;">%s</h1>
+                <p style="margin:0 0 24px;color:#4a4458;">
+                  %s
+                </p>
+                %s</body></html>
+                """.formatted(title, heading, body, extraHtml);
+        return ResponseEntity.status(status)
+                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
+                .body(html);
     }
 }

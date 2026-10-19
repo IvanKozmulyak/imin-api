@@ -14,6 +14,7 @@ import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.RecordingRateLimiter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,8 +31,11 @@ import java.util.UUID;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** The owned opt-out URL over the real ConsentService: GET only confirms, POST unsubscribes and projects the row. */
@@ -46,6 +50,7 @@ class PublicUnsubscribeControllerTest {
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
     @Autowired IminFixtures fx;
+    @Autowired RecordingRateLimiter limiter;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
@@ -175,5 +180,31 @@ class PublicUnsubscribeControllerTest {
 
         assertThat(recipients.findById(f.recipientId()).orElseThrow().getStatus()).isEqualTo("complained");
         assertThat(membership(f).getConsentStatus()).isEqualTo("unsubscribed");
+    }
+
+    /** A broken or old link must show a 404 page, not a server error, for a browser Accept and for strict text/html. */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "text/html"})
+    void confirmationPageGet_withHtmlAcceptAndBadToken_is404Html(String accept) throws Exception {
+        mvc.perform(get("/api/v1/public/unsubscribe/{token}", "not-a-valid-token").accept(accept))
+                .andExpect(status().isNotFound())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().contentTypeCompatibleWith(org.springframework.http.MediaType.TEXT_HTML))
+                .andExpect(content().string(not(containsString("<form"))))
+                .andExpect(content().string(not(containsString("not-a-valid-token"))));
+    }
+
+    /** A recipient on a busy shared IP gets a "wait, then retry" page, not raw JSON, so the opt-out stays completable. */
+    @Test
+    void confirmationPageGet_overRateLimit_is429Html() throws Exception {
+        limiter.limit("unsubscribe", 0);
+        mvc.perform(get("/api/v1/public/unsubscribe/{token}", "not-a-valid-token")
+                        .accept("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .content().contentTypeCompatibleWith(org.springframework.http.MediaType.TEXT_HTML))
+                .andExpect(content().string(not(containsString("<form"))));
     }
 }
