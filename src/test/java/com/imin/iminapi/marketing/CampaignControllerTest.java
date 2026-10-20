@@ -1,6 +1,12 @@
 package com.imin.iminapi.marketing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.audience.model.Consumer;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
@@ -57,6 +63,9 @@ class CampaignControllerTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired PropertyFlips flips;
     @Autowired MarketingEmailProperties marketingProps;
+    @Autowired ConsumerRepository consumers;
+    @Autowired MembershipRepository memberships;
+    @Autowired SegmentRepository segments;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -204,9 +213,56 @@ class CampaignControllerTest {
                 .andExpect(jsonPath("$.error.code").value(code));
     }
 
+    /** One click must not mail a footer-only shell, nobody, or a segment that no longer resolves. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "blank subject, subject",
+            "blank body,    bodyMd",
+            "no segment,    segmentId",
+            "segment deleted after it was chosen, segmentId",
+            "nobody in the segment can be emailed (unsubscribed), audience"})
+    void send_refusesADraftThatIsNotReady(String label, String field) throws Exception {
+        UUID segmentId = "no segment".equals(label) ? null
+                : "segmentId".equals(field) ? segmentOf(owner.orgId(), "subscribed")
+                : segmentOf(owner.orgId(), "audience".equals(field) ? "unsubscribed" : "subscribed");
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Launch night", segmentId, null,
+                "subject".equals(field) ? " " : "Subject", null,
+                "bodyMd".equals(field) ? " " : "Body", null)).id();
+        if (label.startsWith("segment deleted")) jdbc.update("DELETE FROM segments WHERE id = ?", segmentId);
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(owner))
+                        .header("Idempotency-Key", "key-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields." + field).exists());
+
+        assertThat(campaigns.findByIdAndOrgId(id, owner.orgId())).get()
+                .extracting(Campaign::getStatus).isEqualTo("draft");
+    }
+
+    private UUID segmentOf(UUID orgId, String consentStatus) {
+        Consumer cn = new Consumer();
+        cn.setNormalizedEmail(fx.email("ready"));
+        cn = consumers.save(cn);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(cn.getConsumerId());
+        m.setConsentStatus(consentStatus);
+        m.setConsentBasis("explicit");
+        m = memberships.save(m);
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        seg.setName("Ready " + UUID.randomUUID());
+        seg.setKind("static");
+        seg.setSnapshotIds("[\"" + m.getMembershipId() + "\"]");
+        return segments.save(seg).getId();
+    }
+
     @Test
     void send_valid_returns202_withTheStoredSendTime() throws Exception {
-        UUID id = draft(owner, null, null).id();
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Launch night",
+                segmentOf(owner.orgId(), "subscribed"), null, "Subject", null, "Body", null)).id();
 
         mvc.perform(post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(owner))
                         .header("Idempotency-Key", "key-" + UUID.randomUUID())

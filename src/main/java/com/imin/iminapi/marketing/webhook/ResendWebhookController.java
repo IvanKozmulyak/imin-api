@@ -29,6 +29,10 @@ import java.util.UUID;
  * keep retrying a valid delivery), 401 on signature failure (never silently
  * accept a forgery), 200 (no-op) when the message id can't be resolved to a
  * recipient (out-of-band or already-purged row — nothing to project).
+ *
+ * <p>Opens and clicks are not tracked: such an event is acked and kept only as a
+ * {@code provider_events} row with no message, campaign or recipient id, which the
+ * tracking guard counts as evidence that Resend tracking is still on.
  */
 @RestController
 @RequestMapping("/api/v1/public/webhooks")
@@ -91,6 +95,12 @@ public class ResendWebhookController {
         } catch (Exception e) {
             log.warn("[resend-webhook] unparseable body — acking to stop retries: {}", e.getMessage());
             return ResponseEntity.ok().build(); // malformed but signed — don't loop Resend
+        }
+
+        if (ProviderEvent.TYPE_OPENED.equals(type) || ProviderEvent.TYPE_CLICKED.equals(type)) {
+            // Not linked to anyone: only the fact that one arrived, for the tracking guard.
+            dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, null, null, null, type);
+            return ResponseEntity.ok().build();
         }
 
         CampaignRecipient r = messageId == null ? null

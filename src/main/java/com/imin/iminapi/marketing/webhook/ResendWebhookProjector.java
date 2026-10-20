@@ -36,6 +36,9 @@ import java.util.UUID;
  * distinct {@code email.unsubscribed} type; the {@code unsubscribed} status
  * comes from the owned RFC-8058 one-click endpoint (Phase 2), which is why
  * {@code ConsentService} is not a dependency of this projector.
+ *
+ * <p>Opens and clicks never reach it: the controller keeps them as anonymous evidence
+ * only, so nothing stamps {@code opened_at}/{@code clicked_at} on a recipient row.
  */
 @Service
 public class ResendWebhookProjector {
@@ -146,13 +149,6 @@ public class ResendWebhookProjector {
                 // After the membership lock, so this transaction locks membership then recipient.
                 if (recipientId != null) recipientRepo.markComplained(recipientId, occurredAt);
                 complaintRateBreaker.evaluate(campaignId, orgId);
-            }
-            case ProviderEvent.TYPE_OPENED -> {
-                // Tracking is off for everyone: only the recipient row, never the membership.
-                if (recipientId != null) recipientRepo.markOpened(recipientId, occurredAt);
-            }
-            case ProviderEvent.TYPE_CLICKED -> {
-                if (recipientId != null) recipientRepo.markClicked(recipientId, occurredAt);
             }
             default -> { /* unknown type — logged and deduped upstream, no projection */ }
         }

@@ -5,6 +5,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "imin.email")
 public class EmailProperties {
     private String apiKey = "";
+    // Read-only use: the tracking guard's GET /domains. Blank falls back to apiKey.
+    private String resendTrackingReadKey = "";
     private String fromAddress = "";
     private String fromName = "";
     private String replyTo = "";
@@ -35,6 +37,8 @@ public class EmailProperties {
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public String getResendTrackingReadKey() { return resendTrackingReadKey; }
+    public void setResendTrackingReadKey(String resendTrackingReadKey) { this.resendTrackingReadKey = resendTrackingReadKey; }
     public String getFromAddress() { return fromAddress; }
     public void setFromAddress(String fromAddress) { this.fromAddress = fromAddress; }
     public String getFromName() { return fromName; }

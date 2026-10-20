@@ -65,7 +65,6 @@ class ResendWebhookOutOfOrderTest {
     private static final Instant SENT = Instant.parse("2026-07-11T10:00:00Z");
     private static final Instant DELIVERED = Instant.parse("2026-07-11T10:00:05Z");
     private static final Instant BOUNCED = Instant.parse("2026-07-11T10:00:30Z");
-    private static final Instant OPENED = Instant.parse("2026-07-11T10:05:00Z");
     private static final Instant COMPLAINED = Instant.parse("2026-07-11T10:10:00Z");
     private static final Instant UNSUBSCRIBED = Instant.parse("2026-07-11T10:20:00Z");
     /** Not a Resend event: the owned one-click opt-out, written through the repository the endpoint uses. */
@@ -108,44 +107,37 @@ class ResendWebhookOutOfOrderTest {
         }
     }
 
-    record Expected(String status, String errorCode, Instant deliveredAt, Instant openedAt) {}
+    record Expected(String status, String errorCode, Instant deliveredAt) {}
 
     private record Seeded(UUID orgId, UUID membershipId, CampaignRecipient recipient, String email) {}
 
     static Stream<Arguments> eventPairsInBothOrders() {
         Event sent = Event.of("email.sent", SENT);
         Event delivered = Event.of("email.delivered", DELIVERED);
-        Event opened = Event.of("email.opened", OPENED);
         Event complained = Event.of("email.complained", COMPLAINED);
         Event bounced = Event.permanentBounce();
         Event softBounced = Event.transientBounce();
         Event unsubscribed = Event.of(UNSUBSCRIBE, UNSUBSCRIBED);
 
-        Expected deliveredAndOpened = new Expected("delivered", null, DELIVERED, OPENED);
-        Expected deliveredOnly = new Expected("delivered", null, DELIVERED, null);
-        Expected hardBounced = new Expected("bounced", "hard_bounce", DELIVERED, null);
-        Expected complaint = new Expected("complained", null, DELIVERED, null);
-        Expected openedComplaint = new Expected("complained", null, null, OPENED);
-        Expected optedOut = new Expected("unsubscribed", null, DELIVERED, null);
+        Expected deliveredOnly = new Expected("delivered", null, DELIVERED);
+        Expected hardBounced = new Expected("bounced", "hard_bounce", DELIVERED);
+        Expected complaint = new Expected("complained", null, DELIVERED);
+        Expected optedOut = new Expected("unsubscribed", null, DELIVERED);
         // A transient bounce is not terminal: a later delivery wins, a later bounce wins too.
-        Expected softThenDelivered = new Expected("delivered", "soft_bounce", DELIVERED, null);
-        Expected deliveredThenSoft = new Expected("bounced", "soft_bounce", DELIVERED, null);
+        Expected softThenDelivered = new Expected("delivered", "soft_bounce", DELIVERED);
+        Expected deliveredThenSoft = new Expected("bounced", "soft_bounce", DELIVERED);
         // A complaint outranks a bounce; a transient bounce never downgrades a permanent one.
-        Expected complaintOverBounce = new Expected("complained", "hard_bounce", null, null);
-        Expected hardOverSoft = new Expected("bounced", "hard_bounce", null, null);
+        Expected complaintOverBounce = new Expected("complained", "hard_bounce", null);
+        Expected hardOverSoft = new Expected("bounced", "hard_bounce", null);
 
         // The third argument is last_event_at: the last arrival's instant, even when its CASE keeps the status.
         return Stream.of(
-                arguments(List.of(delivered, opened), deliveredAndOpened, OPENED),
-                arguments(List.of(opened, delivered), deliveredAndOpened, DELIVERED),
                 arguments(List.of(sent, delivered), deliveredOnly, DELIVERED),
                 arguments(List.of(delivered, sent), deliveredOnly, DELIVERED),
                 arguments(List.of(delivered, bounced), hardBounced, BOUNCED),
                 arguments(List.of(bounced, delivered), hardBounced, DELIVERED),
                 arguments(List.of(delivered, complained), complaint, COMPLAINED),
                 arguments(List.of(complained, delivered), complaint, DELIVERED),
-                arguments(List.of(opened, complained), openedComplaint, COMPLAINED),
-                arguments(List.of(complained, opened), openedComplaint, OPENED),
                 arguments(List.of(delivered, unsubscribed), optedOut, UNSUBSCRIBED),
                 arguments(List.of(unsubscribed, delivered), optedOut, DELIVERED),
                 arguments(List.of(softBounced, delivered), softThenDelivered, DELIVERED),
@@ -167,40 +159,12 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getStatus()).as("status").isEqualTo(expected.status());
         assertThat(after.getErrorCode()).as("error_code").isEqualTo(expected.errorCode());
         assertThat(after.getDeliveredAt()).as("delivered_at").isEqualTo(expected.deliveredAt());
-        assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(expected.openedAt());
-        assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
-    }
-
-    private static final Instant OPENED_AGAIN = Instant.parse("2026-07-11T10:15:00Z");
-
-    static Stream<Arguments> repeatedEngagementInBothOrders() {
-        // opened_at / clicked_at keep the earliest instant; last_event_at is the last arrival's instant.
-        return Stream.of(
-                arguments("email.opened", List.of(OPENED, OPENED_AGAIN), OPENED, OPENED_AGAIN),
-                arguments("email.opened", List.of(OPENED_AGAIN, OPENED), OPENED, OPENED),
-                arguments("email.clicked", List.of(OPENED, OPENED_AGAIN), OPENED, OPENED_AGAIN),
-                arguments("email.clicked", List.of(OPENED_AGAIN, OPENED), OPENED, OPENED));
-    }
-
-    @ParameterizedTest(name = "{0} arriving {1}")
-    @MethodSource("repeatedEngagementInBothOrders")
-    void aRepeatedOpenOrClickKeepsTheFirstInstant(String type, List<Instant> arrivals, Instant first, Instant lastEventAt)
-            throws Exception {
-        Seeded s = seed(fx.email("ooo-repeat"));
-        for (Instant at : arrivals) deliver(s, Event.of(type, at));
-
-        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
-        Instant stamped = type.equals("email.opened") ? after.getOpenedAt() : after.getClickedAt();
-        Instant other = type.equals("email.opened") ? after.getClickedAt() : after.getOpenedAt();
-        assertThat(stamped).as(type + " stamp").isEqualTo(first);
-        assertThat(other).as("the other engagement stamp").isNull();
         assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
     }
 
     static Stream<Arguments> eventsCommittedWhileAComplaintIsInFlight() {
         return Stream.of(
-                arguments(Event.of("email.delivered", DELIVERED), new Expected("complained", null, DELIVERED, null)),
-                arguments(Event.of("email.opened", OPENED), new Expected("complained", null, null, OPENED)));
+                arguments(Event.of("email.delivered", DELIVERED), new Expected("complained", null, DELIVERED)));
     }
 
     /**
@@ -246,7 +210,6 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getStatus()).as("status").isEqualTo(expected.status());
         assertThat(after.getErrorCode()).as("error_code").isEqualTo(expected.errorCode());
         assertThat(after.getDeliveredAt()).as("delivered_at").isEqualTo(expected.deliveredAt());
-        assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(expected.openedAt());
         // The held complaint writes last, so its own instant is the one left on the row.
         assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(COMPLAINED);
     }

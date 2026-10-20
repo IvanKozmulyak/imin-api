@@ -1,6 +1,8 @@
 package com.imin.iminapi.audienceplan.service;
 
+import com.imin.iminapi.audienceplan.PlanPopulation;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
@@ -31,12 +33,14 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -65,6 +69,8 @@ class TimingArmRaceTest {
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final List<ExecutorService> executors = new ArrayList<>();
@@ -192,11 +198,21 @@ class TimingArmRaceTest {
         c.setStatus("draft");
         c.setOrigin(AudiencePlanAccess.CAMPAIGN_ORIGIN);
         c.setEventId(event.getId());
+        c.setSegmentId(sendableSegment());
         c.setSubject("Original");
         c.setBodyMd("B");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         return campaigns.save(c).getId();
+    }
+
+    /** A segment of one member every gate mails, ConsentGate included, so the approval passes readiness. */
+    private UUID sendableSegment() {
+        UUID member = PlanPopulation.mailable(jdbc, logic, clock, org.getId(), "loyal", Map.of(), 1).get(0);
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, org.getId(), "Slump " + segment, "[\"" + member + "\"]");
+        return segment;
     }
 
     private UUID arm(UUID campaign) {

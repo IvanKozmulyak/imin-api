@@ -13,10 +13,10 @@ import java.util.List;
  *       (same candidate selection as {@code MomentumEvaluator.runOnce}).</li>
  *   <li>{@code waiting} — the org's live {@code suggested} suggestions.</li>
  *   <li>{@code approved30d} / {@code dismissed30d} — acted-on in the last 30 days.</li>
- *   <li>{@code attributedMinor} — 30-day attributed revenue in minor units for momentum
- *       campaigns; {@code 0} because per-campaign revenue-minor has no source today
- *       (orders carry no utm key — see {@code MarketingHubService.attributedRevMinor} and
- *       {@code CampaignAttributionService}). Never faked.</li>
+ *   <li>{@code attributedMinor} — ticket sales in minor units from the org's {@code origin='momentum'}
+ *       campaigns created (= approved) in the last 30 days: per campaign, the lifetime sum of live orders
+ *       tagged with it, each less succeeded refunds and lost chargebacks, floored at 0
+ *       ({@code CampaignAttributionService.attributedRevenueMinorByCampaign}). {@code 0} when none.</li>
  *   <li>{@code minAudienceFloor} / {@code cooldownDays} — from {@code MomentumThresholds}.</li>
  *   <li>{@code log} — the 10 most recent non-{@code suggested} suggestions, newest first.</li>
  * </ul>

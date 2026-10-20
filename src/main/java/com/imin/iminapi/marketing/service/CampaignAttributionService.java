@@ -94,6 +94,18 @@ public class CampaignAttributionService {
     }
 
     /**
+     * The org's live orders behind {@link #attributedRevenueMinor} for ONE campaign, same rows: each counted while
+     * its net is above zero or it was free ({@link NetOrderRevenue#keptOrdersByKey}).
+     */
+    @Transactional(readOnly = true)
+    public long attributedOrderCount(UUID orgId, UUID campaignId) {
+        if (orgId == null || campaignId == null) return 0;
+        String key = campaignId.toString();
+        return NetOrderRevenue.keptOrdersByKey(orders.revenueRowsByUtmCampaignIn(orgId, List.of(key)))
+                .getOrDefault(key, 0L);
+    }
+
+    /**
      * Batched {@link #attributedRevenueMinor} — ONE query for many campaigns so the campaign
      * list doesn't N+1. Campaigns with no attributed revenue map to 0 rather than being
      * omitted, so callers can read every id back without a null check.

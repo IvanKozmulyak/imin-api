@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.marketing.MomentumTestSupport;
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
@@ -50,7 +51,7 @@ class MomentumEvaluatorTest {
     @Autowired MomentumTestSupport support;
     @Autowired MomentumThresholds thresholds;
     @Autowired PropertyFlips flips;
-    @Autowired ChatClient chatClient;
+    @Autowired @Qualifier(MarketingChatClient.NAME) ChatClient chatClient;
     @Autowired EventRepository events;
     @Autowired UserRepository users;
     @Autowired NotificationRepository notifications;

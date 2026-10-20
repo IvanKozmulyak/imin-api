@@ -21,13 +21,18 @@ package com.imin.iminapi.marketing.dto;
  *       campaigns from the last 30 days (utm_campaign funnel read-model). A visit-based
  *       proxy: a session that starts checkout but never pays still counts. It is therefore
  *       normal for this to exceed the paid orders behind {@code attributedRevMinor} — the
- *       two measure different things and neither is derived from the other.</li>
+ *       two measure different things and neither is derived from the other. Not purchases:
+ *       the webapp does not render it.</li>
  *   <li>{@code momentumWaiting} — live 'suggested' Momentum suggestions for the org.</li>
  *   <li>{@code momentumWatching} — on-sale events for the org currently eligible for
  *       Momentum evaluation.</li>
  *   <li>{@code smsPhones} — memberships for the org with an SMS opt-in captured.</li>
  *   <li>{@code emailFrom}/{@code emailFromName} — the configured marketing sender identity
  *       (empty string when unset).</li>
+ *   <li>{@code emailFromDisplayName} — the display name inside this org's real From header
+ *       ({@code MarketingEmailProperties.displayName}, the code {@code fromHeader} builds on):
+ *       {@code "<organizer> via IMIN"}, else {@code emailFromName}, else null.</li>
+ *   <li>{@code organizerName} — the org's brand name, else its name; null when the org is not found.</li>
  *   <li>{@code sendingEnabled} — whether the marketing sender is configured well enough to
  *       send (a from-address is present).</li>
  * </ul>
@@ -42,5 +47,7 @@ public record MarketingHubMetricsDto(
         int smsPhones,
         String emailFrom,
         String emailFromName,
+        String emailFromDisplayName,
+        String organizerName,
         boolean sendingEnabled
 ) {}

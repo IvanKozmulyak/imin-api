@@ -44,16 +44,25 @@ public record CampaignDetailDto(
         /** IANA zone of the linked active event, for showing its send times; null without one. */
         String eventTimezone,
         /** Momentum trigger (launch_push|slump|urgency_72h|sold_out) of the suggestion this campaign was approved from; null for manual campaigns. */
-        String triggerType
+        String triggerType,
+        /** Failed sends so far (0..3); Retry is accepted while it is below 3. */
+        int attempts,
+        /** Why the last send failed: legal_identity_missing|segment_missing|nothing_sent|send_failed; null when none is stored. */
+        String failureReason,
+        /** Name of the linked active event of this org; null without one. */
+        String eventName,
+        /** Attributed revenue in minor units, as {@link CampaignDto#revMinor}: null until the campaign has sent. */
+        Long revMinor
 ) {
     public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
-                                         String triggerType) {
+                                         String triggerType, String failureReason, String eventName, Long revMinor) {
         return new CampaignDetailDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
-                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType);
+                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType,
+                c.getAttempts(), failureReason, eventName, revMinor);
     }
 }

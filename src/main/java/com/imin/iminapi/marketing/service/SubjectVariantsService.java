@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.SubjectVariantsLlm;
 import com.imin.iminapi.marketing.dto.SubjectVariantsResponse;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -12,8 +13,10 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -35,8 +38,9 @@ import java.util.UUID;
  * the composer reveals them one-by-one client-side.
  *
  * <p><b>One paid call per request.</b> The endpoint is authenticated and rate-limited on the
- * shared {@code ai-concept} bucket; internally there is exactly one LLM call — no retry loop —
- * so it can never fan out into repeated model hits.
+ * shared {@code ai-concept} bucket; internally there is exactly one LLM call — no retry loop (the
+ * marketing client retries a provider 5xx once, never a timeout) — so it can never fan out into
+ * repeated model hits.
  *
  * <p><b>Always three, never a 5xx from bad output.</b> A model that returns fewer than three
  * usable lines (or unparseable output) is not an error for a convenience helper: the result is
@@ -57,35 +61,45 @@ public class SubjectVariantsService {
     private final EventRepository events;
     private final TicketTierRepository tiers;
     private final CampaignAiSuggestions aiSuggestions;
+    private final TransactionTemplate readOnly;
 
-    public SubjectVariantsService(ChatClient chat, CampaignRepository campaigns,
+    public SubjectVariantsService(@Qualifier(MarketingChatClient.NAME) ChatClient chat,
+                                  CampaignRepository campaigns,
                                   EventRepository events, TicketTierRepository tiers,
-                                  CampaignAiSuggestions aiSuggestions) {
+                                  CampaignAiSuggestions aiSuggestions,
+                                  PlatformTransactionManager transactionManager) {
         this.chat = chat;
         this.campaigns = campaigns;
         this.events = events;
         this.tiers = tiers;
         this.aiSuggestions = aiSuggestions;
+        this.readOnly = new TransactionTemplate(transactionManager);
+        this.readOnly.setReadOnly(true);
     }
 
+    /** The campaign id, the fallback name and the prompt facts; read in one transaction, used after it closes. */
+    private record Grounding(UUID campaignId, String baseName, String facts) {}
+
     /**
+     * Facts are read in a read-only transaction that closes before the model call, so a slow provider
+     * holds no database connection; the fingerprints are then written in their own transaction.
+     *
      * @param currentSubject optional: the subject currently typed in the composer, so the model
      *                       is told to write DIFFERENT alternatives instead of repeating it.
      */
-    @Transactional(readOnly = true)
     public SubjectVariantsResponse generate(AuthPrincipal p, UUID campaignId, String currentSubject) {
-        // Org-scoped load: another org's (or a missing) campaign is an indistinguishable 404 no-leak,
-        // exactly like CampaignService.
-        Campaign campaign = campaigns.findByIdAndOrgId(campaignId, p.orgId())
-                .orElseThrow(() -> ApiException.notFound("Campaign"));
+        Grounding g = readOnly.execute(status -> {
+            // Org-scoped load: another org's (or a missing) campaign is an indistinguishable 404 no-leak,
+            // exactly like CampaignService.
+            Campaign campaign = campaigns.findByIdAndOrgId(campaignId, p.orgId())
+                    .orElseThrow(() -> ApiException.notFound("Campaign"));
+            Event event = loadEvent(p.orgId(), campaign.getEventId());
+            return new Grounding(campaign.getId(), baseName(event, campaign), facts(event, campaign, currentSubject));
+        });
 
-        Event event = loadEvent(p.orgId(), campaign.getEventId());
-        String baseName = baseName(event, campaign);
-        String facts = facts(event, campaign, currentSubject);
-
-        List<String> modelVariants = callModel(facts);
-        List<String> result = cleanAndPad(modelVariants, baseName);
-        recordOffered(campaign.getId(), modelVariants, result);
+        List<String> modelVariants = callModel(g.facts());
+        List<String> result = cleanAndPad(modelVariants, g.baseName());
+        recordOffered(g.campaignId(), modelVariants, result);
         return new SubjectVariantsResponse(result);
     }
 

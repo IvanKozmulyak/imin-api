@@ -54,3 +54,8 @@ sentry:
   logging:
     minimum-event-level: error
     minimum-breadcrumb-level: info
+
+# ConsentGate for every campaign is pinned on in prod, so a lost Railway variable cannot widen who gets mailed.
+imin:
+  audience-plan:
+    consent-gate-all-campaigns: true

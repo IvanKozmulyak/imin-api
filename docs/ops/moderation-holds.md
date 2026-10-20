@@ -88,14 +88,12 @@ pass, with no check of their date, so a "last chance" email scheduled for a date
 ```sql
 select id, name, status, scheduled_at, event_id from campaigns
  where org_id = '<org uuid>' and channel = 'email'
-   and (status in ('scheduled', 'sending') or (status = 'failed' and attempts < 3)) order by scheduled_at;
+   and status in ('scheduled', 'sending') order by scheduled_at;
 ```
 
 Ask the organizer to cancel or reschedule stale `scheduled` ones first (the lift notice also asks them to check).
 Organizers can cancel only `scheduled` and `sending` campaigns (`POST /api/v1/marketing/campaigns/{id}/cancel`,
-409 from any other status). A `failed` campaign with fewer than 3 attempts is retried by the dispatcher after the lift
-and the organizer cannot cancel it: staff handle those (decide with the organizer, then set it to `canceled` in the
-database before lifting). A `failed` one with 3 or more attempts never sends again and needs nothing. Lifting closes
+409 from any other status). A `failed` campaign is never retried by the dispatcher; it waits for the organizer's Retry and needs nothing here. Lifting closes
 that one hold only: other holds, open disputes, open refunds and a cancelled event keep blocking as before.
 Payouts restart from the next 03:00 run if the usual payout conditions are met.
 

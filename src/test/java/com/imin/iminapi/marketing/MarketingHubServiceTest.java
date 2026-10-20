@@ -13,6 +13,7 @@ import com.imin.iminapi.marketing.service.CampaignAttributionService;
 import com.imin.iminapi.marketing.service.MarketingHubService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.junit.jupiter.api.Test;
 
@@ -53,7 +54,8 @@ class MarketingHubServiceTest {
         when(events.findMomentumCandidates(any())).thenReturn(List.of());
         when(campaigns.findByOrgCreatedSince(eq(orgId), any())).thenReturn(List.of());
         return new MarketingHubService(memberships, sendGate, suggestions, events,
-                campaigns, attribution, props, new AllCampaignsConsent(planProps, consentGate));
+                campaigns, attribution, props, new AllCampaignsConsent(planProps, consentGate),
+                mock(OrganizationRepository.class));
     }
 
     private final AudiencePlanProperties planProps = new AudiencePlanProperties();
@@ -104,12 +106,11 @@ class MarketingHubServiceTest {
 
     @Test
     void sendingDisabledWhenFromAddressBlank() {
-        MarketingEmailProperties props = new MarketingEmailProperties(); // defaults: "" / ""
+        MarketingEmailProperties props = new MarketingEmailProperties(); // defaults: "" / "IMIN"
 
         MarketingHubMetricsDto dto = serviceWith(props).metrics(principal);
 
         assertThat(dto.emailFrom()).isEmpty();
-        assertThat(dto.emailFromName()).isEmpty();
         assertThat(dto.sendingEnabled()).isFalse();
         // number fields degrade to 0 with empty sources — never null, never faked.
         assertThat(dto.totalContacts()).isZero();

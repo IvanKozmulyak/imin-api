@@ -84,7 +84,7 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
            + "WHERE id = :id AND org_id = :orgId AND status IN ('scheduled', 'sending')", nativeQuery = true)
     int cancelIfActive(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
 
-    /** Guarded failed→scheduled while attempts remain; 0 rows means the dispatcher (or another retry) got there first. */
+    /** Guarded failed→scheduled while attempts remain; 0 rows means another retry got there first. */
     @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
     @org.springframework.transaction.annotation.Transactional
     @Query("UPDATE Campaign c SET c.status='scheduled', c.scheduledAt=:now, c.updatedAt=:now "
@@ -204,12 +204,13 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                             AND (h.event_id IS NULL OR h.event_id = campaigns.event_id))
         """;
 
-    /** Waiting to send whatever the time: the statuses {@link #claimDue} picks up once due (a failed one until its 3rd attempt). */
-    String WAITING = " (status = 'scheduled' OR (status = 'failed' AND attempts < 3) OR status = 'sending') ";
+    /** Waiting to send whatever the time: the statuses {@link #claimDue} picks up once due. A failed one waits for a Retry. */
+    String WAITING = " (status = 'scheduled' OR status = 'sending') ";
 
     /**
-     * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
-     * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
+     * Spec §2.5: claim due campaigns — scheduled+due, or stale sending (heartbeat > 5 min old,
+     * orphaned by a mid-send crash). A failed campaign is never claimed: it stays failed until the
+     * organizer's Retry ({@link #retryIfFailed}) schedules it again. SKIP LOCKED
      * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
      * out while their sends switch is off, even if already scheduled, and while their org
      * lacks a legal name or legal contact (every origin while legalIdentityAllCampaigns is on),
@@ -220,7 +221,6 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query(value = "SELECT * FROM campaigns WHERE " + SENDABLE + """
           AND (
             (status = 'scheduled' AND scheduled_at <= :now)
-            OR (status = 'failed' AND attempts < 3)
             OR (status = 'sending' AND updated_at < :staleBefore)
           )
         ORDER BY scheduled_at NULLS FIRST

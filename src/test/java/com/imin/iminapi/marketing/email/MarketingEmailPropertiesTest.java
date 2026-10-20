@@ -45,7 +45,7 @@ class MarketingEmailPropertiesTest {
     void fromHeaderForOrganizer(String name, String fromAddress, String organizer, String expected) {
         MarketingEmailProperties p = new MarketingEmailProperties();
         p.setFromAddress(fromAddress);
-        if (!fromAddress.isEmpty()) p.setFromName("imin");
+        p.setFromName(fromAddress.isEmpty() ? "" : "imin");
         assertThat(p.fromHeader(organizer)).isEqualTo(expected);
     }
 
@@ -63,5 +63,38 @@ class MarketingEmailPropertiesTest {
                 Arguments.of("unicode separators and bidi overrides stripped", imin, "Night\u2028Bcc\u2029x\u202E\u200F",
                         "\"Night Bcc x via IMIN\" <hello@imin.support>"),
                 Arguments.of("only format characters falls back", imin, "\u202E\u200B", "imin <hello@imin.support>"));
+    }
+
+    /** The sender the composer previews is the name fans see inside the From header, in every branch. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("displayNames")
+    void displayNameIsTheNameInsideTheFromHeader(String label, String fromAddress, String fromName,
+                                                 String organizer, String expected) {
+        MarketingEmailProperties p = new MarketingEmailProperties();
+        p.setFromAddress(fromAddress);
+        p.setFromName(fromName);
+
+        assertThat(p.displayName(organizer)).isEqualTo(expected);
+        assertThat(nameIn(p.fromHeader(organizer))).isEqualTo(expected);
+    }
+
+    static Stream<Arguments> displayNames() {
+        String imin = "contact@imin.support";
+        return Stream.of(
+                Arguments.of("org name", imin, "IMIN", "Night \"Org\"", "Night \"Org\" via IMIN"),
+                Arguments.of("blank org, configured name", imin, "IMIN", " ", "IMIN"),
+                Arguments.of("blank org, blank name", imin, "", null, null),
+                Arguments.of("blank address", "", "IMIN", "Night Org", "IMIN"));
+    }
+
+    /** The display name of a From header: unquoted and unescaped, or null for a bare address. */
+    private static String nameIn(String header) {
+        int lt = header.lastIndexOf(" <");
+        if (lt < 0) return null;
+        String phrase = header.substring(0, lt);
+        if (phrase.length() >= 2 && phrase.startsWith("\"") && phrase.endsWith("\"")) {
+            phrase = phrase.substring(1, phrase.length() - 1).replaceAll("\\\\(.)", "$1");
+        }
+        return phrase;
     }
 }

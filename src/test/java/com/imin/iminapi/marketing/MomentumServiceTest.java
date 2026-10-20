@@ -2,11 +2,14 @@ package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
+import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.marketing.service.MomentumService;
 import com.imin.iminapi.marketing.service.MomentumThresholds;
 import com.imin.iminapi.marketing.repository.CampaignRepository; // Phase 2
+import com.imin.iminapi.model.Order;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.CampaignRows;
@@ -35,6 +38,7 @@ class MomentumServiceTest {
     @Autowired CampaignRepository campaigns;
     @Autowired MomentumTestSupport support; // reused seeder from Task 6
     @Autowired MomentumThresholds thresholds;
+    @Autowired OrderRepository orders;
     @Autowired JdbcTemplate jdbc;
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -83,6 +87,34 @@ class MomentumServiceTest {
         return suggestions.save(s);
     }
 
+    private UUID campaign(UUID orgId, String origin, Instant createdAt) {
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("Camp " + origin);
+        c.setStatus("sent");
+        c.setOrigin(origin);
+        c.setCreatedAt(createdAt);
+        c.setUpdatedAt(createdAt);
+        return campaigns.save(c).getId();
+    }
+
+    /** A live order carrying the campaign's utm tag, as UtmLinkRewriter writes it. */
+    private void taggedOrder(UUID orgId, UUID eventId, UUID campaignId, long totalMinor) {
+        Order o = new Order();
+        o.setToken("tok-" + UUID.randomUUID());
+        o.setEventId(eventId);
+        o.setOrgId(orgId);
+        o.setEmail("buyer-" + UUID.randomUUID() + "@example.com");
+        o.setTotalMinor(totalMinor);
+        o.setCurrency("EUR");
+        o.setPaymentMethod("stripe");
+        o.setUtmCampaign(campaignId.toString());
+        o.setCreatedAt(Instant.now());
+        orders.save(o);
+    }
+
     @Test
     void stateReturnsRealCountersAndThresholds() {
         UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600),
@@ -96,6 +128,14 @@ class MomentumServiceTest {
         seedActed(org, event, "urgency_72h", "dismissed", Instant.now().minusSeconds(5L * 86400));
         // acted 40d ago → outside the 30d window, excluded from the counters
         seedActed(org, event, "sold_out", "approved", Instant.now().minusSeconds(40L * 86400));
+        // Ticket sales: only the Momentum campaign created in the last 30 days counts.
+        taggedOrder(org, event, campaign(org, "momentum", Instant.now().minusSeconds(2L * 86400)), 5_000);
+        taggedOrder(org, event, campaign(org, "manual", Instant.now().minusSeconds(2L * 86400)), 7_000);
+        taggedOrder(org, event, campaign(org, "momentum", Instant.now().minusSeconds(40L * 86400)), 9_000);
+        UUID otherEvent = liveEvent(5, 100, Instant.now().minusSeconds(3600), Instant.now().plusSeconds(864000));
+        UUID otherOrg = support.orgIdOf(otherEvent);
+        taggedOrder(otherOrg, otherEvent,
+                campaign(otherOrg, "momentum", Instant.now().minusSeconds(2L * 86400)), 11_000);
 
         AuthPrincipal principal = support.principalFor(org);
         MomentumEngineStateDto state = service.state(principal);
@@ -104,7 +144,7 @@ class MomentumServiceTest {
         assertThat(state.waiting()).isEqualTo(1);
         assertThat(state.approved30d()).isEqualTo(1);   // the 40d-old approved is excluded
         assertThat(state.dismissed30d()).isEqualTo(1);
-        assertThat(state.attributedMinor()).isEqualTo(0L); // never faked — no source today
+        assertThat(state.attributedMinor()).isEqualTo(5_000L);
         assertThat(state.minAudienceFloor()).isEqualTo(thresholds.getMinAudienceFloor());
         assertThat(state.cooldownDays()).isEqualTo(thresholds.getCooldownDays());
     }

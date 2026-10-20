@@ -57,17 +57,20 @@ public class MomentumService {
     private final SegmentRepository segmentRepo;
     private final MembershipRepository memberships;
     private final MomentumThresholds thresholds;
+    private final CampaignAttributionService attribution;
     private final ObjectMapper json = new ObjectMapper();
 
     public MomentumService(MomentumSuggestionRepository suggestions, CampaignRepository campaigns,
                            EventRepository events, SegmentRepository segmentRepo,
-                           MembershipRepository memberships, MomentumThresholds thresholds) {
+                           MembershipRepository memberships, MomentumThresholds thresholds,
+                           CampaignAttributionService attribution) {
         this.suggestions = suggestions;
         this.campaigns = campaigns;
         this.events = events;
         this.segmentRepo = segmentRepo;
         this.memberships = memberships;
         this.thresholds = thresholds;
+        this.attribution = attribution;
     }
 
     /**
@@ -218,10 +221,13 @@ public class MomentumService {
         int approved30d = (int) suggestions.countByOrgIdAndStatusAndActedAtAfter(orgId, "approved", since);
         int dismissed30d = (int) suggestions.countByOrgIdAndStatusAndActedAtAfter(orgId, "dismissed", since);
 
-        // attributedMinor: 30-day attributed REVENUE in minor units for momentum campaigns.
-        // Per-campaign revenue exists (orders.utm_campaign, CampaignAttributionService) but is
-        // not wired to momentum suggestions yet, so this stays a literal 0, never faked.
-        long attributedMinor = 0L;
+        // attributedMinor: lifetime ticket sales of the org's Momentum campaigns created (approved) in the window.
+        List<UUID> momentumCampaigns = campaigns.findByOrgCreatedSince(orgId, since).stream()
+                .filter(c -> "momentum".equals(c.getOrigin()))
+                .map(Campaign::getId)
+                .toList();
+        long attributedMinor = attribution.attributedRevenueMinorByCampaign(orgId, momentumCampaigns)
+                .values().stream().mapToLong(Long::longValue).sum();
 
         // log: 10 most recent non-'suggested' suggestions, newest first.
         List<MomentumEngineStateDto.LogEntry> log = new ArrayList<>();

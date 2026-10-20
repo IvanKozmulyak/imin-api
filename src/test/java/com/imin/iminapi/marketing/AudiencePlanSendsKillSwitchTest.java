@@ -1,5 +1,7 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
@@ -25,10 +27,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -53,6 +57,8 @@ class AudiencePlanSendsKillSwitchTest {
     @Autowired IminFixtures fx;
     @Autowired AuditRows audit;
     @Autowired PropertyFlips flips;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
 
     private Organization org;
     private final List<UUID> orgIds = new ArrayList<>();
@@ -91,6 +97,16 @@ class AudiencePlanSendsKillSwitchTest {
         c.setScheduledAt(scheduledAt);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
+        return campaigns.save(c);
+    }
+
+    /** Gives the draft a segment of one member every gate mails, ConsentGate included, so its send passes readiness. */
+    private Campaign withSendableSegment(Campaign c) {
+        UUID member = PlanPopulation.mailable(jdbc, logic, clock, org.getId(), "loyal", Map.of(), 1).get(0);
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, org.getId(), "Ready " + segment, "[\"" + member + "\"]");
+        c.setSegmentId(segment);
         return campaigns.save(c);
     }
 
@@ -156,7 +172,7 @@ class AudiencePlanSendsKillSwitchTest {
     @Test
     void flagOn_sendSchedulesNormally() {
         flips.set(props, "sendsEnabled", true);
-        Campaign c = campaign("audience_plan", "draft", null);
+        Campaign c = withSendableSegment(campaign("audience_plan", "draft", null));
 
         service.send(c.getId(), owner(), "idem-" + UUID.randomUUID(), null);
 
@@ -176,8 +192,8 @@ class AudiencePlanSendsKillSwitchTest {
 
     @Test
     void flagOff_manualAndMomentumSendNormally() {
-        Campaign manual = campaign("manual", "draft", null);
-        Campaign momentum = campaign("momentum", "draft", null);
+        Campaign manual = withSendableSegment(campaign("manual", "draft", null));
+        Campaign momentum = withSendableSegment(campaign("momentum", "draft", null));
 
         service.send(manual.getId(), owner(), "idem-" + UUID.randomUUID(), null);
         service.send(momentum.getId(), owner(), "idem-" + UUID.randomUUID(), null);
@@ -198,12 +214,11 @@ class AudiencePlanSendsKillSwitchTest {
     @Test
     void flagOff_dispatcherHoldsDueAudiencePlanCampaigns_butClaimsManual() {
         Campaign scheduled = campaign("audience_plan", "scheduled", ANCIENT);
-        Campaign failed = campaign("audience_plan", "failed", ANCIENT);
         Campaign manual = campaign("manual", "scheduled", ANCIENT);
 
         assertThat(dispatcher.claimDueCampaignIds(AWAKE))
                 .contains(manual.getId())
-                .doesNotContain(scheduled.getId(), failed.getId());
+                .doesNotContain(scheduled.getId());
     }
 
     @Test

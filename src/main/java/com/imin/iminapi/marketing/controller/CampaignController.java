@@ -112,6 +112,8 @@ public class CampaignController {
      * Draft→scheduled. <b>OWNER/ADMIN only</b> (mkt-edge-2) — a MEMBER gets
      * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
      * The body carries the stored send time, or {@code armed} for an audience-plan slump arm.
+     * A draft that is not ready is {@code 400 FIELD_INVALID} with {@code fields} keyed {@code subject},
+     * {@code bodyMd}, {@code segmentId} (required) or {@code audience} (empty); a non-draft is {@code 409 INVALID_STATE}.
      */
     @PostMapping("/{id}/send")
     public ResponseEntity<com.imin.iminapi.marketing.dto.CampaignSendResponse> send(
@@ -137,7 +139,7 @@ public class CampaignController {
     /**
      * Retry a failed campaign (spec §2.4). Distinct from {@code /send} (which is the
      * draft→scheduled path) — this re-queues a {@code failed} campaign while attempts &lt; 3.
-     * Returns 202 Accepted (the dispatcher re-claims it), matching {@code /send} semantics.
+     * Returns 202 Accepted (the dispatcher claims it), matching {@code /send} semantics.
      */
     @PostMapping("/{id}/retry")
     public ResponseEntity<Void> retry(

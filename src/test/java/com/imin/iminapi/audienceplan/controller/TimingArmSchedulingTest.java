@@ -300,7 +300,9 @@ class TimingArmSchedulingTest {
 
     @Test
     void anAudiencePlanCampaignThatIsNotAnArm_keepsTheRequestedTime() throws Exception {
-        UUID campaign = campaign("draft", "audience_plan", null).getId();
+        Campaign draft = campaign("draft", "audience_plan", null);
+        draft.setSegmentId(sendableSegment());
+        UUID campaign = campaignRepo.save(draft).getId();
         Instant requested = today.plusDays(5).atTime(12, 0).atZone(PARIS).toInstant();
 
         String body = approve(campaign, requested).andExpect(status().isAccepted())
@@ -535,7 +537,20 @@ class TimingArmSchedulingTest {
     }
 
     private String invite(Event e, String arms) throws Exception {
-        return inviteCall(e, arms).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String body = inviteCall(e, arms).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        // Invitation drafts start without copy; the organizer writes it before approving.
+        jdbc.update("update campaigns set subject = 'You are invited', body_md = 'Come along' "
+                + "where event_id = ? and status = 'draft' and subject is null", e.getId());
+        return body;
+    }
+
+    /** A segment of one member every gate mails, ConsentGate included, so an approval passes readiness. */
+    private UUID sendableSegment() {
+        UUID member = PlanPopulation.mailable(jdbc, logic, clock, orgA, "loyal", Map.of(), 1).get(0);
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, orgA, "Ready " + segment, "[\"" + member + "\"]");
+        return segment;
     }
 
     private ResultActions inviteCall(Event e, String arms) throws Exception {

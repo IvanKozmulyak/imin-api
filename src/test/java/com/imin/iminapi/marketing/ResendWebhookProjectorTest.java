@@ -355,32 +355,4 @@ class ResendWebhookProjectorTest {
             .orElseThrow().isObjectedProfiling()).isFalse();
         assertThat(consentChanges(f.orgId())).isEmpty();
     }
-
-    @Test
-    void openedStampsRecipientOnly_membershipUnchanged() {
-        Fixture f = seed(fx.email("open"));
-        Instant when = Instant.parse("2026-07-11T10:05:00Z");
-        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            f.email(), "email.opened", null, when);
-        CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
-        assertThat(r.getOpenedAt()).isEqualTo(when);
-        assertThat(r.getLastEventAt()).isEqualTo(when);
-        Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
-        assertThat(m.getLastEmailOpen()).isNull();
-        assertThat(m.getLastEmailClick()).isNull();
-    }
-
-    @Test
-    void clickedStampsRecipientOnly_membershipUnchanged() {
-        Fixture f = seed(fx.email("click"));
-        Instant when = Instant.parse("2026-07-11T10:06:00Z");
-        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            f.email(), "email.clicked", null, when);
-        CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
-        assertThat(r.getClickedAt()).isEqualTo(when);
-        assertThat(r.getLastEventAt()).isEqualTo(when);
-        Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
-        assertThat(m.getLastEmailOpen()).isNull();
-        assertThat(m.getLastEmailClick()).isNull();
-    }
 }

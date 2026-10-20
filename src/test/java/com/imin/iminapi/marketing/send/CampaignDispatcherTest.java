@@ -1,5 +1,7 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
@@ -41,6 +43,7 @@ class CampaignDispatcherTest {
     @Autowired CampaignEmailProvider provider;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired SegmentRepository segments;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -70,6 +73,18 @@ class CampaignDispatcherTest {
 
     /** A campaign with one recipient row, so the materializer no-ops and the sender drives it. */
     private Campaign scheduled(Instant at, String rowStatus) {
+        Campaign c = scheduledWithoutRows(at);
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setEmail(fx.email("disp"));
+        r.setStatus(rowStatus);
+        recipients.save(r);
+        return c;
+    }
+
+    /** No recipient rows yet, so the drive materializes from the segment. */
+    private Campaign scheduledWithoutRows(Instant at) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(awakeOrg().getId());
@@ -81,14 +96,7 @@ class CampaignDispatcherTest {
         c.setBodyMd("B");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
-        campaigns.save(c);
-        CampaignRecipient r = new CampaignRecipient();
-        r.setId(UUID.randomUUID());
-        r.setCampaignId(c.getId());
-        r.setEmail(fx.email("disp"));
-        r.setStatus(rowStatus);
-        recipients.save(r);
-        return c;
+        return campaigns.save(c);
     }
 
     private Campaign reload(Campaign c) {
@@ -132,8 +140,38 @@ class CampaignDispatcherTest {
 
         Campaign after = reload(c);
         assertThat(after.getStatus()).isEqualTo("failed");
-        assertThat(after.getAttempts()).isGreaterThanOrEqualTo((short) 1);
+        assertThat(after.getAttempts()).isEqualTo((short) 1);
         assertThat(after.getSentAt()).isNull();
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(1L);
+    }
+
+    /** The organizer is told which fix applies; the exception text stays in the log. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"segment deleted after scheduling, segment_missing", "write fault mid-drive, send_failed"})
+    void aDispatcherFailureStoresAClosedReason(String label, String reason) {
+        Instant due = Instant.now().minus(3650, ChronoUnit.DAYS);
+        Campaign c;
+        if ("segment_missing".equals(reason)) {
+            c = scheduledWithoutRows(due);
+            Segment seg = new Segment();
+            seg.setOrgId(c.getOrgId());
+            seg.setName("Gone " + UUID.randomUUID());
+            seg.setKind("static");
+            seg.setSnapshotIds("[]");
+            c.setSegmentId(segments.save(seg).getId());
+            campaigns.save(c);
+            jdbc.update("DELETE FROM segments WHERE id = ?", c.getSegmentId());
+            dispatcher.runOnce();
+        } else {
+            c = scheduled(due);
+            try (var fault = PgFaults.failWrites(jdbc, "campaign_recipients", "campaign_id", c.getId())) {
+                dispatcher.runOnce();
+            }
+        }
+
+        Campaign after = reload(c);
+        assertThat(after.getStatus()).isEqualTo("failed");
+        assertThat(after.getLastError()).isEqualTo(reason);
+        assertThat(after.getAttempts()).isEqualTo((short) 1);
     }
 }

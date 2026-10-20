@@ -5,6 +5,7 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.support.CampaignRows;
@@ -44,6 +45,7 @@ class CampaignSendCrashResumeTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired CampaignEmailProvider provider;
     @Autowired IminFixtures fx;
+    @Autowired CampaignService campaignService;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -112,7 +114,8 @@ class CampaignSendCrashResumeTest {
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(100L);
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(50L);
 
-        // The dispatcher re-claims the failed campaign on the next tick.
+        // The thrown drive failed the campaign; the organizer's Retry puts it back in the next tick's claim.
+        campaignService.retry(fx.principal(fx.owner(orgs.findById(c.getOrgId()).orElseThrow())), c.getId());
         dispatcher.runOnce();
 
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo((long) TOTAL);

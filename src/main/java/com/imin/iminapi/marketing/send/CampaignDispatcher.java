@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.MarketingGuardProperties;
@@ -29,7 +30,7 @@ import java.util.UUID;
 
 /**
  * Spec §2.5 step 1+4: the DB-as-queue dispatcher. Every 30s it claims due email campaigns
- * (scheduled+due, retryable-failed, or stale-sending) and delegates each to the injected
+ * (scheduled+due or stale-sending; a failed one waits for the organizer's Retry) and delegates each to the injected
  * CampaignSendUnit (a separate bean so its @Transactional boundary engages). The dispatcher's
  * only transaction is the claim (lock, filter, flip to sending); the per-campaign transactions live in CampaignSendUnit.
  *
@@ -104,7 +105,8 @@ public class CampaignDispatcher {
             } catch (Exception e) {
                 log.error("[dispatcher] campaign {} processOne threw: {}", c.getId(), e.getMessage());
                 try {
-                    sendUnit.markFailed(c, e.getMessage());
+                    // The message stays in the log; the campaign stores a closed code the dashboard can show.
+                    sendUnit.markFailed(c, CampaignFailureReason.storedCodeFor(e));
                 } catch (RuntimeException markFailure) {
                     // Left 'sending'; the stale reclaim picks it up. The rest of the claim still runs.
                     log.error("[dispatcher] campaign {} could not be marked failed: {}", c.getId(), markFailure.getMessage());
@@ -150,9 +152,8 @@ public class CampaignDispatcher {
     }
 
     /**
-     * The campaign ids eligible to send at {@code now}: due-scheduled, retryable-failed
-     * (attempts&lt;3), and stale-`sending` reclaim — MINUS orgs that are gone, complaint-paused,
-     * inside email quiet hours or at their daily cap (spec §2.5 step 4, §7). Separated from the scheduled
+     * The campaign ids eligible to send at {@code now}: due-scheduled and stale-`sending` reclaim — MINUS orgs
+     * that are gone, complaint-paused, inside email quiet hours or at their daily cap (spec §2.5 step 4, §7). Separated from the scheduled
      * tick so it is unit-testable. Read-only: outside a transaction its row locks end with the statement.
      */
     public List<UUID> claimDueCampaignIds(Instant now) {
@@ -160,7 +161,7 @@ public class CampaignDispatcher {
     }
 
     /**
-     * SQL claim (scheduled-due / retryable-failed / stale-sending of live, unpaused orgs, SKIP LOCKED) of up to
+     * SQL claim (scheduled-due / stale-sending of live, unpaused orgs, SKIP LOCKED) of up to
      * SCAN_LIMIT rows, filtered in Java for quiet hours and the daily cap, then cut to CLAIM_LIMIT, so held
      * campaigns ahead in the queue do not take every slot. Inside the claim transaction the locks hold until commit.
      */

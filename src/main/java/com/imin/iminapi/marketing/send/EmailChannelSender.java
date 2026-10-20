@@ -39,6 +39,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -56,6 +58,8 @@ public class EmailChannelSender {
     static final int BATCH_SIZE = 100;
     /** Rolling window the per-org daily cap is measured over — matches CampaignDispatcher. */
     private static final long DAILY_CAP_WINDOW_HOURS = 24;
+    /** Skip reason of a member the send gate no longer returns at all: an accepted erasure request. */
+    static final String SKIP_ERASE_PENDING = "erase_pending";
 
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
@@ -223,8 +227,8 @@ public class EmailChannelSender {
         } catch (com.imin.iminapi.marketing.email.CampaignEmailProvider.TerminalBatchFailure ex) {
             // A 4xx will be rejected identically on every retry, so backing off three times
             // only delays the truth and holds the campaign in 'sending'. Fail the rows with
-            // the reason on them; POST /campaigns/{id}/retry requeues 'failed' rows once the
-            // cause (key, sender identity, payload) is fixed.
+            // the reason on them; the campaign then waits for POST /campaigns/{id}/retry, which
+            // requeues 'failed' rows once the cause (key, sender identity, payload) is fixed.
             log.error("[email-sender] campaign {}: provider rejected the batch with HTTP {} — "
                     + "failing {} rows: {}", c.getId(), ex.upstreamStatus(), batch.size(), ex.getMessage());
             Instant now = Instant.now();
@@ -280,7 +284,8 @@ public class EmailChannelSender {
 
     /**
      * Re-runs the Send Gate for a claimed batch and diverts every row that no longer passes
-     * to {@code skipped} with the gate's own exclusion reason, removing it from the batch.
+     * to {@code skipped} with the gate's own exclusion reason, removing it from the batch. A member
+     * the gate drops without a reason (erase_pending) is diverted as {@code erase_pending}.
      * Read-only and tenant-scoped (SendGateService.evaluate), four batched queries per call.
      *
      * <p>Rows with a null membership_id (DSAR-erased) cannot be gated and are left alone —
@@ -294,11 +299,16 @@ public class EmailChannelSender {
                 .toList();
         if (membershipIds.isEmpty()) return;
         SendGateService.GateResult gate = sendGate.evaluate(c.getOrgId(), membershipIds);
-        if (gate.excluded().isEmpty()) return;
         Map<UUID, String> reasonByMembership = new HashMap<>();
         for (ExclusionReason ex : gate.excluded()) {
             reasonByMembership.put(ex.membershipId(), ex.reason());
         }
+        // Neither sendable nor excluded: the gate dropped it silently, so it must not be mailed either.
+        Set<UUID> sendable = new HashSet<>(gate.sendable());
+        for (UUID mid : membershipIds) {
+            if (!sendable.contains(mid)) reasonByMembership.putIfAbsent(mid, SKIP_ERASE_PENDING);
+        }
+        if (reasonByMembership.isEmpty()) return;
         Instant now = Instant.now();
         batch.removeIf(r -> {
             String reason = r.getMembershipId() == null
@@ -366,7 +376,7 @@ public class EmailChannelSender {
         });
     }
 
-    /** Terminal until the organizer restores the identity; the claim query skips it meanwhile. */
+    /** Stays failed until the organizer retries; the dispatcher never claims a failed campaign. */
     private void failForMissingLegalIdentity(Campaign c) {
         String error = ErrorCode.ORG_LEGAL_IDENTITY_MISSING.name();
         // Conditional, like markFailed: a campaign canceled meanwhile keeps that status.

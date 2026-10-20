@@ -329,21 +329,6 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     int markComplained(@Param("id") UUID id, @Param("at") java.time.Instant at);
 
     /**
-     * Stamp an open without touching status, so it cannot revert a concurrent status change.
-     * {@code opened_at} keeps the earliest open even when events arrive out of order.
-     */
-    @org.springframework.data.jpa.repository.Modifying
-    @org.springframework.transaction.annotation.Transactional
-    @Query("UPDATE CampaignRecipient r SET r.openedAt = LEAST(COALESCE(r.openedAt, :at), :at), r.lastEventAt = :at WHERE r.id = :id")
-    int markOpened(@Param("id") UUID id, @Param("at") java.time.Instant at);
-
-    /** Stamp a click without touching status; {@code clicked_at} keeps the earliest click. */
-    @org.springframework.data.jpa.repository.Modifying
-    @org.springframework.transaction.annotation.Transactional
-    @Query("UPDATE CampaignRecipient r SET r.clickedAt = LEAST(COALESCE(r.clickedAt, :at), :at), r.lastEventAt = :at WHERE r.id = :id")
-    int markClicked(@Param("id") UUID id, @Param("at") java.time.Instant at);
-
-    /**
      * Retire the rows that burned their whole attempt budget: {@code pending} with
      * {@code attempt_count >= :maxAttempts} becomes {@code failed} with an
      * {@code error_code}. Without this the drain simply stopped claiming them and they

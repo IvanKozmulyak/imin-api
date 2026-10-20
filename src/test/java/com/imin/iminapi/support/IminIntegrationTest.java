@@ -2,6 +2,7 @@ package com.imin.iminapi.support;
 
 import com.imin.iminapi.audienceplan.config.SummaryChatClient;
 import com.imin.iminapi.audienceplan.service.PortraitLlmClient;
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.ResendDomainsClient;
 import com.imin.iminapi.marketing.graph.MetaGraphClient;
@@ -44,6 +45,7 @@ import java.lang.annotation.Target;
         BirdSmsClient.class, ExpoPushSender.class, MetaGraphClient.class, IdeogramV3Client.class,
         RecraftClient.class, ResearchLlmClient.class, PortraitLlmClient.class, ChatClient.class})
 @MockitoBean(name = SummaryChatClient.NAME, types = ChatClient.class)
+@MockitoBean(name = MarketingChatClient.NAME, types = ChatClient.class)
 @MockitoSpyBean(types = {GoogleOAuthService.class, AppleOAuthService.class, AppleNativeIdentityService.class})
 @TestExecutionListeners(listeners = IminIntegrationResetListener.class,
         mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS)

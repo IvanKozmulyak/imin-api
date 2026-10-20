@@ -1,5 +1,7 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -22,10 +24,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,6 +46,8 @@ class AudiencePlanLegalIdentityGuardTest {
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -81,9 +87,20 @@ class AudiencePlanLegalIdentityGuardTest {
         c.setAttempts((short) ("failed".equals(status) ? 1 : 0));
         c.setSubject("S");
         c.setBodyMd("B");
+        // A draft that gets past the legal-identity guard must also pass the readiness check after it.
+        if ("draft".equals(status)) c.setSegmentId(sendableSegment(org));
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         return campaigns.save(c);
+    }
+
+    /** A segment of one member every gate mails, ConsentGate included. */
+    private UUID sendableSegment(Organization org) {
+        UUID member = PlanPopulation.mailable(jdbc, logic, clock, org.getId(), "loyal", Map.of(), 1).get(0);
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, org.getId(), "Ready " + segment, "[\"" + member + "\"]");
+        return segment;
     }
 
     private String status(Campaign c) {

@@ -19,6 +19,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.util.List;
 import java.util.Optional;
@@ -43,7 +44,7 @@ class CampaignTemplateServiceTest {
     private final OrganizationRepository organizations = mock(OrganizationRepository.class);
 
     private final CampaignTemplateService sut =
-            new CampaignTemplateService(chat, templates, events, organizations);
+            new CampaignTemplateService(chat, templates, events, organizations, mock(PlatformTransactionManager.class));
 
     private final UUID orgId = UUID.randomUUID();
 

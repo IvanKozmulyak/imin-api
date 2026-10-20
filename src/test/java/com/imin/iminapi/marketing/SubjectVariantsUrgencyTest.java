@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.SubjectVariantsLlm;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
@@ -37,7 +39,7 @@ import static org.mockito.Mockito.when;
 class SubjectVariantsUrgencyTest {
 
     @Autowired SubjectVariantsService service;
-    @Autowired ChatClient chatClient;
+    @Autowired @Qualifier(MarketingChatClient.NAME) ChatClient chatClient;
     @Autowired CampaignRepository campaigns;
     @Autowired TicketTierRepository tiers;
     @Autowired OrderRepository orders;

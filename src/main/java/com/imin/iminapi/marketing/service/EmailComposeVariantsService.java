@@ -3,6 +3,7 @@ package com.imin.iminapi.marketing.service;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audience.service.SegmentService;
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.EmailComposeVariantsLlm;
 import com.imin.iminapi.marketing.dto.EmailComposeVariantsResponse;
 import com.imin.iminapi.marketing.dto.EmailComposeVariantsResponse.EmailVariant;
@@ -17,8 +18,10 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -32,9 +35,9 @@ import java.util.regex.Pattern;
  * per-user {@code ai-concept}-rate-limited {@link ChatClient} pattern as
  * {@link SubjectVariantsService}, but returns complete drafts rather than subject lines only.
  *
- * <p><b>One paid call per request.</b> Exactly one structured-output LLM call, no retry loop, so
- * the endpoint can never fan out into repeated model hits (the controller also gates it on the
- * shared {@code ai-concept} bucket).
+ * <p><b>One paid call per request.</b> Exactly one structured-output LLM call, no retry loop (the
+ * marketing client retries a provider 5xx once, never a timeout), so the endpoint can never fan out
+ * into repeated model hits (the controller also gates it on the shared {@code ai-concept} bucket).
  *
  * <p><b>Untrusted output.</b> Every returned variant is sanitized and validated server-side:
  * HTML tags are stripped from the body (it must be plain Markdown), subjects over 80 chars or
@@ -73,11 +76,14 @@ public class EmailComposeVariantsService {
     private final SegmentRepository segments;
     private final SegmentService segmentService;
     private final CampaignAiSuggestions aiSuggestions;
+    private final TransactionTemplate readOnly;
 
-    public EmailComposeVariantsService(ChatClient chat, CampaignRepository campaigns,
+    public EmailComposeVariantsService(@Qualifier(MarketingChatClient.NAME) ChatClient chat,
+                                       CampaignRepository campaigns,
                                        EventRepository events, OrganizationRepository organizations,
                                        SegmentRepository segments, SegmentService segmentService,
-                                       CampaignAiSuggestions aiSuggestions) {
+                                       CampaignAiSuggestions aiSuggestions,
+                                       PlatformTransactionManager transactionManager) {
         this.chat = chat;
         this.campaigns = campaigns;
         this.events = events;
@@ -85,22 +91,33 @@ public class EmailComposeVariantsService {
         this.segments = segments;
         this.segmentService = segmentService;
         this.aiSuggestions = aiSuggestions;
+        this.readOnly = new TransactionTemplate(transactionManager);
+        this.readOnly.setReadOnly(true);
     }
 
-    @Transactional(readOnly = true)
+    /** The loaded campaign, its event and the prompt facts; read in one transaction, used after it closes. */
+    private record Grounding(Campaign campaign, Event event, String facts) {}
+
+    /**
+     * Facts are read in a read-only transaction that closes before the model call, so a slow provider
+     * holds no database connection; the fingerprints are then written in their own transaction.
+     */
     public EmailComposeVariantsResponse generate(AuthPrincipal p, UUID campaignId,
                                                  Integer requestedCount, String hint) {
-        // Org-scoped load: another org's (or a missing) campaign is an indistinguishable 404
-        // no-leak, exactly like CampaignService / SubjectVariantsService.
-        Campaign campaign = campaigns.findByIdAndOrgId(campaignId, p.orgId())
-                .orElseThrow(() -> ApiException.notFound("Campaign"));
-
         int count = clampCount(requestedCount);
-        Event event = loadEvent(p.orgId(), campaign.getEventId());
+        Grounding g = readOnly.execute(status -> {
+            // Org-scoped load: another org's (or a missing) campaign is an indistinguishable 404
+            // no-leak, exactly like CampaignService / SubjectVariantsService.
+            Campaign campaign = campaigns.findByIdAndOrgId(campaignId, p.orgId())
+                    .orElseThrow(() -> ApiException.notFound("Campaign"));
+            Event event = loadEvent(p.orgId(), campaign.getEventId());
+            return new Grounding(campaign, event, facts(campaign, event, p.orgId(), hint));
+        });
+        Campaign campaign = g.campaign();
+        Event event = g.event();
         boolean hasEvent = event != null;
 
-        String facts = facts(campaign, event, p.orgId(), hint);
-        EmailComposeVariantsLlm out = callModel(prompt(facts, hasEvent, count));
+        EmailComposeVariantsLlm out = callModel(prompt(g.facts(), hasEvent, count));
 
         List<EmailVariant> valid = new ArrayList<>();
         if (out != null && out.variants() != null) {

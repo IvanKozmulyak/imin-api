@@ -2,8 +2,10 @@ package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.repository.ProviderEventRepository;
 import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
@@ -12,6 +14,8 @@ import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
@@ -25,6 +29,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +49,7 @@ class ResendWebhookControllerTest {
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired ProviderEventRepository providerEvents;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -158,13 +164,42 @@ class ResendWebhookControllerTest {
         CampaignRecipient r = recipient(email);
         Instant first = Instant.parse("2026-07-11T10:00:00Z");
         String svixId = "svix_dup_" + UUID.randomUUID();
-        String body = "{\"type\":\"email.opened\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
+        String body = "{\"type\":\"email.delivered\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
                 + "\",\"to\":[\"" + email + "\"]},\"created_at\":\"%s\"}";
 
         mvc.perform(signed(svixId, body.formatted(first))).andExpect(status().isOk());
-        // Same delivery id, re-signed, with a later timestamp: a second projection would move opened_at.
+        // Same delivery id, re-signed, with a later timestamp: a second projection would move delivered_at.
         mvc.perform(signed(svixId, body.formatted(first.plus(1, ChronoUnit.HOURS)))).andExpect(status().isOk());
 
-        assertThat(reload(r).getOpenedAt()).isEqualTo(first);
+        assertThat(reload(r).getDeliveredAt()).isEqualTo(first);
+    }
+
+    /** IMIN does not track opens or clicks: one arriving is counted for the tracking guard, never against the person. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {ProviderEvent.TYPE_OPENED, ProviderEvent.TYPE_CLICKED})
+    void anOpenOrClickIsKeptOnlyAsAnonymousEvidence(String type) throws Exception {
+        String email = fx.email("engagement");
+        CampaignRecipient r = recipient(email);
+        String svixId = "svix_" + UUID.randomUUID();
+        String body = "{\"type\":\"" + type + "\",\"data\":{\"email_id\":\"" + r.getProviderMessageId()
+                + "\",\"to\":[\"" + email + "\"]},\"created_at\":\"2026-07-11T10:05:00Z\"}";
+        Instant since = Instant.now().minus(1, ChronoUnit.HOURS);
+        List<String> tracking = List.of(ProviderEvent.TYPE_OPENED, ProviderEvent.TYPE_CLICKED);
+        long evidenceBefore = providerEvents.countByProviderAndTypesSince(ProviderEvent.PROVIDER_RESEND, tracking, since);
+
+        mvc.perform(signed(svixId, body)).andExpect(status().isOk());
+
+        CampaignRecipient after = reload(r);
+        assertThat(after.getOpenedAt()).as("opened_at").isNull();
+        assertThat(after.getClickedAt()).as("clicked_at").isNull();
+        assertThat(after.getLastEventAt()).as("last_event_at").isNull();
+        Map<String, Object> row = jdbc.queryForMap("SELECT type, campaign_id, recipient_id, provider_message_id"
+                + " FROM provider_events WHERE provider = 'resend' AND provider_event_id = ?", svixId);
+        assertThat(row.get("type")).isEqualTo(type);
+        assertThat(row.get("campaign_id")).as("campaign_id").isNull();
+        assertThat(row.get("recipient_id")).as("recipient_id").isNull();
+        assertThat(row.get("provider_message_id")).as("provider_message_id").isNull();
+        assertThat(providerEvents.countByProviderAndTypesSince(ProviderEvent.PROVIDER_RESEND, tracking, since))
+                .as("tracking guard evidence").isEqualTo(evidenceBefore + 1);
     }
 }

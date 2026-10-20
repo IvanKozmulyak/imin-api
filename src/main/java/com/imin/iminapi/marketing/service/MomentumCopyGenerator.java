@@ -1,8 +1,10 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
@@ -17,7 +19,7 @@ public class MomentumCopyGenerator {
 
     private final ChatClient chat;
 
-    public MomentumCopyGenerator(ChatClient chat) {
+    public MomentumCopyGenerator(@Qualifier(MarketingChatClient.NAME) ChatClient chat) {
         this.chat = chat;
     }
 

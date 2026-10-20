@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.EmailTemplateDto;
 import com.imin.iminapi.marketing.dto.GeneratedTemplateLlm;
 import com.imin.iminapi.marketing.dto.GenerateTemplateRequest;
@@ -18,8 +19,11 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -49,13 +53,20 @@ public class CampaignTemplateService {
     private final CampaignEmailTemplateRepository templates;
     private final EventRepository events;
     private final OrganizationRepository organizations;
+    private final TransactionTemplate readOnly;
+    private final TransactionTemplate write;
 
-    public CampaignTemplateService(ChatClient chat, CampaignEmailTemplateRepository templates,
-                                   EventRepository events, OrganizationRepository organizations) {
+    public CampaignTemplateService(@Qualifier(MarketingChatClient.NAME) ChatClient chat,
+                                   CampaignEmailTemplateRepository templates,
+                                   EventRepository events, OrganizationRepository organizations,
+                                   PlatformTransactionManager transactionManager) {
         this.chat = chat;
         this.templates = templates;
         this.events = events;
         this.organizations = organizations;
+        this.readOnly = new TransactionTemplate(transactionManager);
+        this.readOnly.setReadOnly(true);
+        this.write = new TransactionTemplate(transactionManager);
     }
 
     /** Builtins (in display order) followed by the org's saved templates, newest first. */
@@ -103,15 +114,22 @@ public class CampaignTemplateService {
      * Generate + persist an org template from org identity (name, stored brand colours) and,
      * when {@code eventId} is given, that event's title/vibe/date. One paid LLM call; the
      * output is validated (bad hex → 422) and clamped before it is saved.
+     *
+     * <p>Facts are read in a read-only transaction that closes before the model call, so a slow
+     * provider holds no database connection; the template is saved in its own transaction after.
      */
-    @Transactional
     public EmailTemplateDto generate(AuthPrincipal p, GenerateTemplateRequest req) {
-        Organization org = organizations.findById(p.orgId())
-                .orElseThrow(() -> ApiException.forbidden("Caller has no organization"));
-        Event event = loadEvent(p.orgId(), req == null ? null : req.eventId());
         String hint = req == null ? null : req.hint();
+        Grounding g = readOnly.execute(status -> {
+            Organization org = organizations.findById(p.orgId())
+                    .orElseThrow(() -> ApiException.forbidden("Caller has no organization"));
+            Event event = loadEvent(p.orgId(), req == null ? null : req.eventId());
+            return new Grounding(org, event, facts(org, event, hint));
+        });
+        Organization org = g.org();
+        Event event = g.event();
 
-        GeneratedTemplateLlm out = callModel(facts(org, event, hint));
+        GeneratedTemplateLlm out = callModel(g.facts());
         // Untrusted model output → known-safe tokens (hex-only, whitelisted header) or 422.
         TemplateTokens tokens = TemplateTokenValidator.sanitize(out == null ? null : out.tokens());
         String name = templateName(out == null ? null : out.name(), org, event);
@@ -125,8 +143,11 @@ public class CampaignTemplateService {
         row.setSource(ResolvedTemplate.SOURCE_AI);
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
-        return EmailTemplateDto.fromRow(templates.save(row));
+        return write.execute(status -> EmailTemplateDto.fromRow(templates.save(row)));
     }
+
+    /** The org, linked event and prompt facts; read in one transaction, used after it closes. */
+    private record Grounding(Organization org, Event event, String facts) {}
 
     /** Delete an org template (404 no-leak when missing / another org's). Builtins are code, not rows. */
     @Transactional

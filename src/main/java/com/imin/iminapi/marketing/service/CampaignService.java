@@ -15,6 +15,7 @@ import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.OrganizerIdentity;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -36,6 +37,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -166,7 +168,7 @@ public class CampaignService {
                 blankToNull(channel), blankToNull(status), PageRequest.of(page, size));
         // Attributed revenue for the whole page in ONE query (V62) — never per row.
         // Only sent campaigns can have any; drafts are left null (see CampaignSummary.revMinor).
-        List<UUID> canceledIds = rows.stream().filter(c -> CANCELED.equals(c.getStatus())).map(Campaign::getId).toList();
+        List<UUID> canceledIds = rows.stream().filter(CampaignService::mayHaveSentThenStopped).map(Campaign::getId).toList();
         Set<UUID> canceledAfterSending = canceledIds.isEmpty() ? Set.of()
                 : Set.copyOf(campaignRecipientRepository.findCampaignIdsWithStatusIn(canceledIds, LEFT_THE_QUEUE));
         java.util.function.Predicate<Campaign> sent = c -> hasSent(c) || canceledAfterSending.contains(c.getId());
@@ -182,7 +184,8 @@ public class CampaignService {
                             sent.test(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
                             c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
                             e == null ? null : e.getName(),
-                            e == null ? null : e.getTimezone());
+                            e == null ? null : e.getTimezone(),
+                            CampaignFailureReason.of(c.getLastError()));
                 })
                 .toList();
     }
@@ -204,7 +207,7 @@ public class CampaignService {
      * assert the campaign earned nothing, which is a different (and false) claim.
      */
     private Long attributedRevenue(UUID orgId, Campaign c) {
-        boolean sent = hasSent(c) || (CANCELED.equals(c.getStatus())
+        boolean sent = hasSent(c) || (mayHaveSentThenStopped(c)
                 && campaignRecipientRepository.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_QUEUE) > 0);
         return sent ? attribution.attributedRevenueMinor(orgId, c.getId()) : null;
     }
@@ -216,9 +219,13 @@ public class CampaignService {
      * <p>Deliberately includes {@code sending}: EmailChannelSender delivers in batches while
      * the status is still 'sending', and {@code sentAt} is only stamped when the whole send
      * COMPLETES (CampaignSendUnit). Keying purely off {@code sentAt} would show an em-dash on
-     * a half-sent campaign that is already driving real orders. A campaign canceled mid-send is
+     * a half-sent campaign that is already driving real orders. A campaign canceled or failed mid-send is
      * checked against its recipient rows by the callers (one query per page in the list).
      */
+    private static boolean mayHaveSentThenStopped(Campaign c) {
+        return CANCELED.equals(c.getStatus()) || "failed".equals(c.getStatus());
+    }
+
     private static boolean hasSent(Campaign c) {
         return c.getSentAt() != null
                 || "sent".equals(c.getStatus())
@@ -322,12 +329,11 @@ public class CampaignService {
                     new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0));
         }
         Segment segment = segments.requireSegmentForOrg(p.orgId(), c.getSegmentId());
-        List<UUID> membershipIds = segments.resolveMembers(p.orgId(), segment).stream()
-                .map(Membership::getMembershipId).toList();
-        SendGateService.GateResult gate = sendGate.evaluate(p.orgId(), membershipIds);
+        SendableAudience audience = sendableAudience(p.orgId(), c, segment);
+        SendGateService.GateResult gate = audience.gate();
+        Map<UUID, String> skipped = audience.skipped();
         PreviewAudienceResponse.Excluded base = SendGateService.bucket(gate).excluded();
-        Map<UUID, String> skipped = sendPathGuard.skipReasons(c, gate.sendable(), Instant.now());
-        return new PreviewAudienceResponse(gate.sendable().size() - skipped.size(),
+        return new PreviewAudienceResponse(audience.sendableCount(),
                 new PreviewAudienceResponse.Excluded(base.noBasis(), base.unsubscribed(),
                         base.marketingSuppressed(), base.deliverabilitySuppressed(), base.noPhone(), base.noEmail(),
                         count(skipped, SendPathGuard.EXPERIMENT_HOLDOUT), count(skipped, SendPathGuard.EVENT_CAP),
@@ -336,6 +342,41 @@ public class CampaignService {
 
     private static int count(Map<UUID, String> skipped, String reason) {
         return (int) skipped.values().stream().filter(reason::equals).count();
+    }
+
+    /** The send gate's verdict on a segment and the send-path skips over its sendable members. */
+    private record SendableAudience(SendGateService.GateResult gate, Map<UUID, String> skipped) {
+        int sendableCount() {
+            return gate.sendable().size() - skipped.size();
+        }
+    }
+
+    /** Who the send would mail right now: SendGate, then the send-path skips, as RecipientMaterializer applies them. */
+    private SendableAudience sendableAudience(UUID orgId, Campaign c, Segment segment) {
+        List<UUID> membershipIds = segments.resolveMembers(orgId, segment).stream()
+                .map(Membership::getMembershipId).toList();
+        SendGateService.GateResult gate = sendGate.evaluate(orgId, membershipIds);
+        return new SendableAudience(gate, sendPathGuard.skipReasons(c, gate.sendable(), Instant.now()));
+    }
+
+    /**
+     * Refuses a draft the dispatcher could only send as an empty shell, to nobody, or not at all: 400
+     * {@code FIELD_INVALID} with every missing field. Writes nothing; the frequency floor is not applied here.
+     */
+    private void requireReadyToSend(Campaign c) {
+        Map<String, String> missing = new LinkedHashMap<>();
+        if (c.getSubject() == null || c.getSubject().isBlank()) missing.put("subject", "required");
+        if (c.getBodyMd() == null || c.getBodyMd().isBlank()) missing.put("bodyMd", "required");
+        if (c.getSegmentId() == null || segments.nameOrNull(c.getOrgId(), c.getSegmentId()) == null) {
+            missing.put("segmentId", "required");
+        } else if (sendableAudience(c.getOrgId(), c,
+                segments.requireSegmentForOrg(c.getOrgId(), c.getSegmentId())).sendableCount() <= 0) {
+            missing.put("audience", "empty");
+        }
+        if (!missing.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Campaign is not ready to send", missing);
+        }
     }
 
     /**
@@ -443,6 +484,9 @@ public class CampaignService {
      * idempotency_keys table was DROPPED in V11) — a replay finds status!='draft' and 409s
      * INVALID_STATE, which the FE treats as success-idempotent. The dispatcher is the sole
      * `sending` path; this method only flips draft→scheduled.
+     *
+     * <p>A draft with no subject, body or resolvable segment, or nobody mailable in it now, is a 400 {@code FIELD_INVALID}
+     * after the role, sends-switch, legal-identity and channel refusals; a non-draft replay still gets the 409.
      */
     @Transactional
     public CampaignSendResponse send(UUID campaignId, AuthPrincipal principal,
@@ -470,6 +514,8 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "SMS campaigns cannot be sent yet — no SMS dispatcher exists");
         }
+        // Drafts only: a replay of a campaign already scheduled must keep reaching the compare-and-set's 409.
+        if ("draft".equals(c.getStatus())) requireReadyToSend(c);
         Instant when = scheduledAt != null ? scheduledAt : Instant.now();
         // An invitation arm owns its send time; a slump arm is only armed here and waits for Momentum.
         if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) {
@@ -690,9 +736,8 @@ public class CampaignService {
     }
 
     /**
-     * Guarded retry of a {@code failed} campaign (spec §2.4): flip back to {@code scheduled}
-     * with {@code scheduled_at=now} so the dispatcher re-claims it, only while attempts &lt; 3.
-     * Any other status — or an exhausted-attempts failed row — is a 409 INVALID_STATE.
+     * Guarded retry of a {@code failed} campaign (spec §2.4), the only way out of {@code failed} since the dispatcher
+     * never claims one: back to {@code scheduled} at now while attempts &lt; 3, else (or any other status) 409 INVALID_STATE.
      */
     @Transactional
     public Campaign retry(AuthPrincipal principal, UUID campaignId) {
@@ -703,7 +748,7 @@ public class CampaignService {
         }
         audiencePlanAccess.requireSendsAllowed(c.getOrigin());
         requireLegalIdentity(c);
-        // Compare-and-set: a claim that took the failed row meanwhile wins, and the organizer gets the same 409.
+        // Compare-and-set: a concurrent retry that already scheduled it wins, and this one gets the same 409.
         if (campaigns.retryIfFailed(c.getId(), principal.orgId(), Instant.now()) == 0) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not retryable");
@@ -755,17 +800,19 @@ public class CampaignService {
                         .filter(sg -> p.orgId().equals(sg.getOrgId()))
                         .map(com.imin.iminapi.marketing.model.MomentumSuggestion::getTriggerType)
                         .orElse(null);
-        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(id), segmentName,
-                event == null ? null : event.getTimezone(), triggerType);
+        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(p.orgId(), id), segmentName,
+                event == null ? null : event.getTimezone(), triggerType,
+                CampaignFailureReason.of(c.getLastError()), event == null ? null : event.getName(),
+                attributedRevenue(p.orgId(), c));
     }
 
     /**
-     * Aggregate send/engagement counts for a campaign (spec §3). {@code sent} is every row that
-     * left the queue (any lifecycle status past pending/failed/skipped); {@code opened}/{@code clicked}
-     * read the webhook-projected timestamps; {@code attributedPurchases} is the utm_campaign funnel count.
+     * Aggregate send/engagement counts for one of the org's campaigns (spec §3). {@code sent} is every row that
+     * left the queue; {@code opened}/{@code clicked} read the webhook-projected timestamps; {@code attributedPurchases}
+     * counts checkout-start sessions with the campaign's tag, {@code attributedOrders} the live orders behind revMinor.
      */
     @Transactional(readOnly = true)
-    public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID campaignId) {
+    public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID orgId, UUID campaignId) {
         long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId, LEFT_THE_QUEUE);
         long delivered = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "delivered");
         long opened = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
@@ -774,8 +821,9 @@ public class CampaignService {
         long unsubscribed = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "unsubscribed");
         long complained = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "complained");
         long attributed = attribution.attributedPurchaseCount(campaignId);
+        long attributedOrders = attribution.attributedOrderCount(orgId, campaignId);
         return new com.imin.iminapi.marketing.dto.CampaignStatsDto(
-                sent, delivered, opened, clicked, bounced, unsubscribed, complained, attributed);
+                sent, delivered, opened, clicked, bounced, unsubscribed, complained, attributed, attributedOrders);
     }
 
     // ---- helpers ----

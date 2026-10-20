@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -25,6 +26,9 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.when;
 
 /**
  * mkt-core-2 (P1): a campaign whose recipients all exhausted their send attempts must end
@@ -43,6 +47,7 @@ class CampaignSendOutcomeTest {
     @Autowired IminFixtures fx;
     @Autowired AuditRows audit;
     @Autowired JdbcTemplate jdbc;
+    @Autowired CampaignEmailProvider provider;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -99,16 +104,16 @@ class CampaignSendOutcomeTest {
         Campaign after = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo("failed");
         assertThat(after.getSentAt()).isNull();
-        assertThat(after.getLastError()).isNotBlank();
+        assertThat(after.getLastError()).isEqualTo("nothing_sent");
         // retry()'s guard is status=='failed' && attempts < 3 — both hold.
-        assertThat(after.getAttempts()).isLessThan((short) 3);
+        assertThat(after.getAttempts()).isEqualTo((short) 1);
 
         // The dead rows say so, rather than sitting in 'pending' for ever.
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isZero();
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "failed")).isEqualTo(2L);
         assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "failed"))
                 .allSatisfy(r -> assertThat(r.getErrorCode()).isNotBlank());
-        assertThat(campaignService.stats(c.getId()).sent()).isZero();
+        assertThat(campaignService.stats(c.getOrgId(), c.getId()).sent()).isZero();
     }
 
     @Test
@@ -124,5 +129,37 @@ class CampaignSendOutcomeTest {
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(2L);
         assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "pending"))
                 .allSatisfy(r -> assertThat(r.getAttemptCount()).isEqualTo((short) 0));
+    }
+
+    /**
+     * July prod incident: the provider rejected every row, the periodic ticks re-claimed the failed
+     * campaign until its attempts hit 3, and the organizer's Retry (after fixing the sender) was refused.
+     */
+    @Test
+    void aRetryAfterRepeatedDispatcherPassesResendsTheRejectedRows() {
+        Campaign c = dueCampaignWithExhaustedRecipients(2);
+        recipients.findByCampaignIdAndStatus(c.getId(), "pending").forEach(r -> {
+            r.setAttemptCount((short) 0);
+            recipients.save(r);
+        });
+        when(provider.sendBatch(anyList())).thenThrow(
+                new CampaignEmailProvider.TerminalBatchFailure("Sender not verified", 422, null));
+
+        dispatcher.runOnce();
+        dispatcher.runOnce();
+        dispatcher.runOnce();
+
+        assertThat(campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow().getStatus()).isEqualTo("failed");
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "failed")).isEqualTo(2L);
+
+        // The organizer fixes the sender: the provider now accepts.
+        doAnswer(inv -> ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList())
+                .when(provider).sendBatch(anyList());
+        AuthPrincipal principal = fx.principal(fx.owner(orgs.findById(c.getOrgId()).orElseThrow()));
+        campaignService.retry(principal, c.getId());
+        dispatcher.runOnce();
+
+        assertThat(campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow().getStatus()).isEqualTo("sent");
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(2L);
     }
 }

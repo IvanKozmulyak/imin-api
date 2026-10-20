@@ -16,6 +16,7 @@ public record CampaignSummary(
         String origin,
         Integer recipientCount,
         Integer excludedCount,
+        /** Deprecated: read {@code failureReason}. The stored free text, kept for older clients. */
         String lastError,
         Instant scheduledAt,
         Instant sentAt,
@@ -32,16 +33,18 @@ public record CampaignSummary(
         /** Name of the linked, non-deleted event of this org; null without one. */
         String eventName,
         /** IANA zone of that same event, for showing its send times; null without one. */
-        String eventTimezone
+        String eventTimezone,
+        /** Why the last send failed: legal_identity_missing|segment_missing|nothing_sent|send_failed; null when none is stored. */
+        String failureReason
 ) {
     /** Projection for the list read path: revenue plus the batch-resolved segment and event context. */
     public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
-                                       String eventName, String eventTimezone) {
+                                       String eventName, String eventTimezone, String failureReason) {
         return new CampaignSummary(
                 c.getId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(),
                 c.getRecipientCount(), c.getExcludedCount(), c.getLastError(),
                 c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor,
-                segmentName, eventName, eventTimezone);
+                segmentName, eventName, eventTimezone, failureReason);
     }
 }

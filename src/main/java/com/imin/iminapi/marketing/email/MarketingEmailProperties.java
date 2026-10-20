@@ -10,7 +10,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "imin.marketing")
 public class MarketingEmailProperties {
     private String fromAddress = "";
-    private String fromName = "";
+    /** Used only when no organizer name is known; the yaml default matches. */
+    private String fromName = "IMIN";
     /**
      * The buyer site root. Used as the {@code {{eventUrl}}} fallback when a
      * campaign has no linked event.
@@ -81,20 +82,35 @@ public class MarketingEmailProperties {
 
     /** "Name <addr>" or just "addr" when name blank — mirrors EmailProperties.fromHeader(). */
     public String fromHeader() {
-        if (fromName == null || fromName.isBlank()) return fromAddress;
-        return fromName + " <" + fromAddress + ">";
+        return fromHeader(null);
+    }
+
+    /**
+     * The display name inside {@link #fromHeader(String)}: {@code "<organizer> via IMIN"} when the organizer
+     * name and the address are both set, else the configured name, else null. The hub shows exactly this.
+     */
+    public String displayName(String organizer) {
+        String viaImin = viaImin(organizer);
+        if (viaImin != null) return viaImin;
+        return fromName == null || fromName.isBlank() ? null : fromName;
     }
 
     /**
      * Per-organizer From: {@code "<organizer> via IMIN" <fromAddress>} on the configured address.
-     * Blank organizer or blank address falls back to {@link #fromHeader()}.
+     * Blank organizer or blank address falls back to {@code fromName <fromAddress>}, or the bare address.
      */
     public String fromHeader(String organizer) {
+        String display = displayName(organizer);
+        if (display == null) return fromAddress;
+        // The organizer name is free text, so it goes out as an RFC 5322 quoted-string; the configured name as set.
+        String phrase = viaImin(organizer) == null ? display
+                : "\"" + display.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return phrase + " <" + fromAddress + ">";
+    }
+
+    private String viaImin(String organizer) {
         String clean = com.imin.iminapi.marketing.render.OrganizerIdentity.singleLine(organizer);
-        if (clean.isEmpty() || fromAddress == null || fromAddress.isBlank()) return fromHeader();
-        String display = clean + " via IMIN";
-        // RFC 5322 quoted-string: escape backslash and double quote.
-        String quoted = "\"" + display.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
-        return quoted + " <" + fromAddress + ">";
+        if (clean.isEmpty() || fromAddress == null || fromAddress.isBlank()) return null;
+        return clean + " via IMIN";
     }
 }

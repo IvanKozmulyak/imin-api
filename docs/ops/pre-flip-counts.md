@@ -105,7 +105,7 @@ of SendGate (per-org `marketing_optouts`, blank email). `erase_pending` never ap
 ## 2. Orgs without a legal identity that have campaigns in flight
 
 What flipping `IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS` blocks: every campaign of these orgs becomes unschedulable
-(409 `ORG_LEGAL_IDENTITY_MISSING`), and scheduled or retryable ones stop being claimed. Blank means empty
+(409 `ORG_LEGAL_IDENTITY_MISSING`), and the organizer's Retry of a failed one is refused (409) while sends are off; the dispatcher never claims failed rows. Blank means empty
 after `TRIM`, as in `CampaignRepository.claimDue` (the app's `isBlank` also treats tabs/newlines as blank).
 
 ```sql

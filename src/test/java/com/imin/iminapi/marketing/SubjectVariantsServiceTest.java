@@ -16,6 +16,7 @@ import com.imin.iminapi.model.UserRole;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -44,7 +45,7 @@ class SubjectVariantsServiceTest {
     private final CampaignAiSuggestions aiSuggestions = mock(CampaignAiSuggestions.class);
 
     private final SubjectVariantsService sut =
-            new SubjectVariantsService(chat, campaigns, events, tiers, aiSuggestions);
+            new SubjectVariantsService(chat, campaigns, events, tiers, aiSuggestions, mock(PlatformTransactionManager.class));
 
     private final UUID orgId = UUID.randomUUID();
 

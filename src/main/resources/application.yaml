@@ -217,6 +217,8 @@ imin:
     payout-max-attempts: ${STRIPE_PAYOUT_MAX_ATTEMPTS:3}
   email:
     api-key: ${RESEND_API_KEY:}
+    # Only for the tracking guard's read of GET /domains; blank falls back to RESEND_API_KEY.
+    resend-tracking-read-key: ${RESEND_TRACKING_READ_KEY:}
     from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}
     from-name: ${IMIN_EMAIL_FROM_NAME:imin}
     reply-to: ${IMIN_EMAIL_REPLY_TO:}
@@ -245,7 +247,10 @@ imin:
     # with its OWN SPF/DKIM so bulk sends never touch the transactional auth-email
     # reputation. In prod set IMIN_MARKETING_FROM_ADDRESS to a verified Resend sender.
     from-address: ${IMIN_MARKETING_FROM_ADDRESS:contact@imin.support}
-    from-name: ${IMIN_MARKETING_FROM_NAME:Alex}
+    # Shown only when no organizer name is known; campaigns go out as "<org> via IMIN".
+    from-name: ${IMIN_MARKETING_FROM_NAME:IMIN}
+    # Longest wait for one marketing-copy model answer (compose, subject, template, Momentum); one 5xx retry.
+    llm-timeout: ${IMIN_MARKETING_LLM_TIMEOUT:45s}
     # The buyer site root — the {{eventUrl}} fallback when a campaign has no
     # linked event. It does NOT build the unsubscribe link any more; that URL
     # was https://app.imin.wtf/optout?token=… and it 404'd in production,

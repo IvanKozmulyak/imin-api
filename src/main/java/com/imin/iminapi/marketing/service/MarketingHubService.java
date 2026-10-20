@@ -9,7 +9,9 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +43,7 @@ public class MarketingHubService {
     private final CampaignAttributionService attribution;
     private final MarketingEmailProperties emailProps;
     private final AllCampaignsConsent allCampaignsConsent;
+    private final OrganizationRepository organizations;
 
     public MarketingHubService(MembershipRepository memberships,
                                SendGateService sendGate,
@@ -49,7 +52,8 @@ public class MarketingHubService {
                                CampaignRepository campaigns,
                                CampaignAttributionService attribution,
                                MarketingEmailProperties emailProps,
-                               AllCampaignsConsent allCampaignsConsent) {
+                               AllCampaignsConsent allCampaignsConsent,
+                               OrganizationRepository organizations) {
         this.memberships = memberships;
         this.sendGate = sendGate;
         this.suggestions = suggestions;
@@ -58,6 +62,7 @@ public class MarketingHubService {
         this.attribution = attribution;
         this.emailProps = emailProps;
         this.allCampaignsConsent = allCampaignsConsent;
+        this.organizations = organizations;
     }
 
     @Transactional(readOnly = true)
@@ -111,6 +116,10 @@ public class MarketingHubService {
         String emailFrom = emailProps.getFromAddress() == null ? "" : emailProps.getFromAddress();
         String emailFromName = emailProps.getFromName() == null ? "" : emailProps.getFromName();
         boolean sendingEnabled = !emailFrom.isBlank();
+        // The From fans get: the same displayName the sender's fromHeader builds on.
+        Organization org = organizationOrNull(orgId);
+        String organizerName = org == null ? null : org.displayName();
+        String emailFromDisplayName = emailProps.displayName(organizerName);
 
         return new MarketingHubMetricsDto(
                 sendableEmail,
@@ -122,6 +131,13 @@ public class MarketingHubService {
                 smsPhones,
                 emailFrom,
                 emailFromName,
+                emailFromDisplayName,
+                organizerName,
                 sendingEnabled);
+    }
+
+    /** The caller's org for the sender name. A missing org leaves the organizer name out. */
+    private Organization organizationOrNull(UUID orgId) {
+        return organizations.findById(orgId).orElse(null);
     }
 }

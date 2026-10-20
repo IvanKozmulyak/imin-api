@@ -24,8 +24,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The dispatcher's claim decision (spec §2.5 step 4, §7): due-scheduled, retryable-failed, and stale-`sending`
- * reclaim MINUS complaint-paused orgs and orgs inside email quiet hours; the claim method, not the tick.
+ * The dispatcher's claim decision (spec §2.5 step 4, §7): due-scheduled and stale-`sending` reclaim MINUS
+ * complaint-paused orgs and orgs inside email quiet hours; the claim method, not the tick.
  */
 @IminIntegrationTest
 class CampaignDispatcherGatingTest {
@@ -104,24 +104,6 @@ class CampaignDispatcherGatingTest {
         Organization o = org("UTC", false);
         Campaign c = campaign(o.getId(), "sending", 1, ANCIENT,
             AWAKE.minus(10, ChronoUnit.MINUTES)); // updated_at stale > 5 min
-        assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(c.getId());
-    }
-
-    @Test
-    void failedCampaignAtMaxAttemptsIsNotRetried() {
-        Organization o = org("UTC", false);
-        Campaign exhausted = campaign(o.getId(), "failed", 3, ANCIENT, AWAKE);
-        Campaign lastTry = campaign(o.getId(), "failed", 2, ANCIENT, AWAKE);
-
-        assertThat(dispatcher.claimDueCampaignIds(AWAKE))
-                .contains(lastTry.getId())
-                .doesNotContain(exhausted.getId());
-    }
-
-    @Test
-    void failedCampaignUnderMaxAttemptsIsRetried() {
-        Organization o = org("UTC", false);
-        Campaign c = campaign(o.getId(), "failed", 1, ANCIENT, AWAKE);
         assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(c.getId());
     }
 

@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
@@ -138,7 +139,7 @@ public class CampaignSendUnit {
         long left = recipients.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_BUILDING);
         long dead = recipients.countByCampaignIdAndStatus(c.getId(), "failed");
         if (left == 0 && dead > 0) {
-            newTx.executeWithoutResult(st -> markFailed(c, "no recipients could be sent"));
+            newTx.executeWithoutResult(st -> markFailed(c, CampaignFailureReason.NOTHING_SENT));
             return;
         }
         Instant sentAt = Instant.now();
@@ -158,7 +159,7 @@ public class CampaignSendUnit {
 
     @Transactional
     public void markFailed(Campaign c, String error) {
-        String lastError = error == null ? "send failed" : error.substring(0, Math.min(500, error.length()));
+        String lastError = error == null ? CampaignFailureReason.SEND_FAILED : error.substring(0, Math.min(500, error.length()));
         // Conditional: a campaign canceled or sent meanwhile keeps that status.
         if (campaigns.markFailedIfActive(c.getId(), lastError, Instant.now()) == 0) {
             log.warn("[send-unit] campaign {} not marked failed: no longer scheduled or sending ({})", c.getId(), error);

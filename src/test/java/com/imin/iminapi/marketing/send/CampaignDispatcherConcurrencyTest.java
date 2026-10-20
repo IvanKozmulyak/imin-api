@@ -13,7 +13,6 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
@@ -31,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -51,7 +49,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -315,7 +312,7 @@ class CampaignDispatcherConcurrencyTest {
         o = orgs.save(o);
         orgIds.add(o.getId());
         Campaign c = campaign(o.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
-        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+        jdbc.update("UPDATE campaigns SET status = 'sending', updated_at = now() - interval '1 hour' WHERE id = ?",
                 c.getId());
         Map<String, Object> before = stateOf(c);
 
@@ -330,9 +327,9 @@ class CampaignDispatcherConcurrencyTest {
         Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
         Campaign driven = campaign(orgId, ancient);
         List<String> own = pendingRecipients(driven, EmailChannelSender.BATCH_SIZE + 50);
-        // Claimed after `driven`; its prior state is 'failed', not the initial 'scheduled'.
+        // Claimed after `driven`; its prior state is a stale 'sending', not the initial 'scheduled'.
         Campaign unstarted = campaign(orgId, ancient.plusSeconds(1));
-        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+        jdbc.update("UPDATE campaigns SET status = 'sending', updated_at = now() - interval '1 hour' WHERE id = ?",
                 unstarted.getId());
         Map<String, Object> unstartedBefore = stateOf(unstarted);
         // Claimed too, then given a new status by a writer that leaves updated_at alone (defensive: no such writer moves a sending row today).
@@ -443,7 +440,7 @@ class CampaignDispatcherConcurrencyTest {
         pendingRecipients(driven, 1);
         Campaign stuck = campaign(orgId, ancient.plusSeconds(1));
         Campaign released = campaign(orgId, ancient.plusSeconds(2));
-        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+        jdbc.update("UPDATE campaigns SET status = 'sending', updated_at = now() - interval '1 hour' WHERE id = ?",
                 released.getId());
         Map<String, Object> releasedBefore = stateOf(released);
         requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 3, 10);
@@ -506,7 +503,7 @@ class CampaignDispatcherConcurrencyTest {
         // All ordered before the eligible campaign. SQL-filtered holds outnumber the scan, so a Java-side filter goes red.
         int heldRows = hold == Hold.QUIET_HOURS ? 12 : CampaignDispatcher.SCAN_LIMIT + 1;
         for (int i = 0; i < heldRows; i++) held.add(campaign(heldOrg, ancient.plusSeconds(i)));
-        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+        jdbc.update("UPDATE campaigns SET status = 'sending', updated_at = now() - interval '1 hour' WHERE id = ?",
                 held.get(0).getId());
         List<Map<String, Object>> heldBefore = held.stream().map(this::stateOf).toList();
         UUID orgId = awakeOrg().getId();
@@ -542,44 +539,6 @@ class CampaignDispatcherConcurrencyTest {
                 return o.getId();
             }
         }
-    }
-
-    @Test
-    void aRetryRacingTheClaim_answers409AndTheCampaignSends() throws Exception {
-        Organization org = awakeOrg();
-        AuthPrincipal owner = fx.principal(fx.owner(org));
-        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
-        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1 WHERE id = ?", c.getId());
-        List<String> own = pendingRecipients(c, 2);
-        requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
-                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
-
-        Throwable refused;
-        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
-            try {
-                Future<?> run = executor().submit(() -> dispatcher.runOnce());
-                // The claim holds the row lock; its flip to 'sending' is paused before commit.
-                pause.awaitBlocked(WAIT);
-                String tag = "organizer-" + UUID.randomUUID().toString().substring(0, 8);
-                Future<?> organizer = executor().submit(() -> tx.executeWithoutResult(st -> {
-                    // Tags this backend so the wait below sees the organizer's own UPDATE blocked, nothing else.
-                    jdbc.execute("SET LOCAL application_name = '" + tag + "'");
-                    campaignService.retry(owner, c.getId());
-                }));
-                awaitWaiting("application_name = '" + tag + "'", 1, "FALSE");
-                pause.release();
-                run.get(WAIT.toSeconds(), TimeUnit.SECONDS);
-                refused = catchThrowable(() -> organizer.get(WAIT.toSeconds(), TimeUnit.SECONDS));
-            } finally {
-                pause.release();
-                shutdownExecutors();
-            }
-        }
-
-        assertThat(refused).as("the organizer is told the campaign already left").isInstanceOf(ExecutionException.class)
-                .cause().isInstanceOfSatisfying(ApiException.class,
-                        e -> assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT));
-        assertEachSentOnce(c, own);
     }
 
     @Test
@@ -785,7 +744,6 @@ class CampaignDispatcherConcurrencyTest {
                 SELECT id, org_id, status, scheduled_at, updated_at, attempts, name, origin FROM campaigns
                 WHERE channel = 'email'
                   AND ((status = 'scheduled' AND scheduled_at <= ?)
-                    OR (status = 'failed' AND attempts < 3)
                     OR (status = 'sending' AND updated_at < ?))
                   AND (? = TRUE OR origin <> 'audience_plan')
                   AND ((origin <> 'audience_plan' AND ? = FALSE) OR EXISTS (

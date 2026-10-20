@@ -20,6 +20,7 @@ import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -50,7 +51,8 @@ class EmailComposeVariantsServiceTest {
     private final CampaignAiSuggestions aiSuggestions = mock(CampaignAiSuggestions.class);
 
     private final EmailComposeVariantsService sut =
-            new EmailComposeVariantsService(chat, campaigns, events, organizations, segments, segmentService, aiSuggestions);
+            new EmailComposeVariantsService(chat, campaigns, events, organizations, segments, segmentService, aiSuggestions,
+                    mock(PlatformTransactionManager.class));
 
     private final UUID orgId = UUID.randomUUID();
     private UUID campaignId;

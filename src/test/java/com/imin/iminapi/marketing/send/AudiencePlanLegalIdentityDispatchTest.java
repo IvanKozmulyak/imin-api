@@ -6,6 +6,7 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.support.CampaignRows;
@@ -51,6 +52,7 @@ class AudiencePlanLegalIdentityDispatchTest {
     @Autowired CampaignEmailProvider provider;
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
+    @Autowired CampaignService campaignService;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final Set<String> ownAddresses = new HashSet<>();
@@ -177,7 +179,7 @@ class AudiencePlanLegalIdentityDispatchTest {
     }
 
     @Test
-    void identityRestored_failedCampaignIsClaimedAgain() {
+    void identityRestored_theOrganizersRetryPutsTheFailedCampaignBackInTheClaim() {
         Organization o = awakeOrg(null, fx.email("legal"));
         Campaign held = campaignWithPending(o, "audience_plan", "scheduled", Instant.now());
         sendUnit.processOne(held);
@@ -185,7 +187,10 @@ class AudiencePlanLegalIdentityDispatchTest {
 
         o.setLegalName("Restored SAS");
         orgs.save(o);
+        // A failed campaign waits for the organizer; restoring the identity alone sends nothing.
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).doesNotContain(held.getId());
 
+        campaignService.retry(fx.principal(fx.owner(o)), held.getId());
         assertThat(dispatcher.claimDueCampaignIds(Instant.now())).contains(held.getId());
     }
 

@@ -374,6 +374,23 @@ class CampaignServiceTest {
         audit.assertRecorded(ORG, "CAMPAIGN_CANCELED", "campaign", id);
     }
 
+    @Test
+    void aFailedCampaignReportsRevenueOnlyOnceSomethingLeftTheQueue() {
+        UUID partlySent = sendingWithPending("Partly sent", 1);
+        jdbc.update("UPDATE campaign_recipients SET status = 'sent' WHERE campaign_id = ?", partlySent);
+        service.forceStatusForTest(partlySent, "failed");
+        UUID neverSent = sendingWithPending("Never sent", 1);
+        service.forceStatusForTest(neverSent, "failed");
+
+        assertThat(service.get(principal(ORG), partlySent).revMinor()).isZero();
+        assertThat(service.get(principal(ORG), neverSent).revMinor()).isNull();
+        var rows = service.list(principal(ORG), null, "failed", 0, 50);
+        assertThat(rows).filteredOn(r -> r.id().equals(partlySent)).singleElement()
+                .extracting(CampaignSummary::revMinor).isEqualTo(0L);
+        assertThat(rows).filteredOn(r -> r.id().equals(neverSent)).singleElement()
+                .extracting(CampaignSummary::revMinor).isNull();
+    }
+
     private UUID sendingWithPending(String name, int n) {
         CampaignDto d = service.create(principal(ORG),
                 new CreateCampaignRequest("email", name, null, null, null, null, null, null));
@@ -435,8 +452,7 @@ class CampaignServiceTest {
 
     @Test
     void send_records_who_dispatched_the_campaign() {
-        CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Blast", null, null, null, null, null, null));
+        CampaignDto d = readyDraft("Blast");
 
         service.send(d.id(), principal(ORG), "idem-" + UUID.randomUUID(), null);
 
@@ -446,8 +462,7 @@ class CampaignServiceTest {
 
     @Test
     void send_replay_does_not_record_a_second_dispatch() {
-        CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Blast", null, null, null, null, null, null));
+        CampaignDto d = readyDraft("Blast");
         service.send(d.id(), principal(ORG), "idem-1", null);
 
         assertThatThrownBy(() -> service.send(d.id(), principal(ORG), "idem-2", null))
@@ -472,6 +487,20 @@ class CampaignServiceTest {
 
     @Autowired com.imin.iminapi.marketing.service.CampaignAiSuggestions aiSuggestions;
     @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
+
+    /** A draft a send accepts: subject, body and a segment of one SendGate-sendable member. */
+    private CampaignDto readyDraft(String name) {
+        UUID consumer = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into consumers (consumer_id, normalized_email) values (?, ?)", consumer, fx.email("ready"));
+        jdbc.update("insert into memberships (membership_id, org_id, consumer_id, status, consent_status, consent_basis)"
+                + " values (?, ?, ?, 'active', 'subscribed', 'explicit')", member, ORG, consumer);
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, ORG, "Ready " + segment, "[\"" + member + "\"]");
+        return service.create(principal(ORG),
+                new CreateCampaignRequest("email", name, segment, null, "Subject", null, "Body", null));
+    }
 
     private CampaignDto draft() {
         return service.create(principal(ORG),

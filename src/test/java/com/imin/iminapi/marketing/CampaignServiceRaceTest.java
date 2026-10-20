@@ -325,11 +325,25 @@ class CampaignServiceRaceTest {
         c.setChannel("email");
         c.setName("Race");
         c.setStatus("draft");
+        c.setSegmentId(sendableSegment(orgId));
         c.setSubject("Original subject");
         c.setBodyMd("B");
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         return campaigns.save(c);
+    }
+
+    /** A segment of one SendGate-sendable member, so the organizer's send passes readiness. */
+    private UUID sendableSegment(UUID orgId) {
+        UUID consumer = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        UUID segment = UUID.randomUUID();
+        jdbc.update("insert into consumers (consumer_id, normalized_email) values (?, ?)", consumer, fx.email("race"));
+        jdbc.update("insert into memberships (membership_id, org_id, consumer_id, status, consent_status, consent_basis)"
+                + " values (?, ?, ?, 'active', 'subscribed', 'explicit')", member, orgId, consumer);
+        jdbc.update("insert into segments (id, org_id, name, kind, snapshot_ids) values (?, ?, ?, 'static', ?)",
+                segment, orgId, "Race " + segment, "[\"" + member + "\"]");
+        return segment;
     }
 
     private static String tag(String what) {

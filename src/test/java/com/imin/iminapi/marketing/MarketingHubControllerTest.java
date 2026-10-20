@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -23,6 +24,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -60,6 +62,8 @@ class MarketingHubControllerTest {
     @Autowired CampaignRepository campaigns;
     @Autowired FunnelEventRepository funnel;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PropertyFlips flips;
+    @Autowired MarketingEmailProperties emailProps;
 
     private UUID orgA;
     private UUID orgB;
@@ -147,8 +151,21 @@ class MarketingHubControllerTest {
                 // leaves the from-address blank, so sendingEnabled is honestly false here — the
                 // MarketingHubServiceTest proves it flips true once a from-address is configured.
                 .andExpect(jsonPath("$.emailFrom").value(""))
-                .andExpect(jsonPath("$.emailFromName").value(""))
                 .andExpect(jsonPath("$.sendingEnabled").value(false));
+    }
+
+    /** The sender the composer shows is the name inside the org's real From, not the global name. */
+    @Test
+    void senderIdentityIsTheOrgsOwnFrom() throws Exception {
+        Organization a = orgs.findById(orgA).orElseThrow();
+        a.setBrandName("Night Club");
+        orgs.save(a);
+        flips.set(emailProps, "fromAddress", "contact@imin.support");
+
+        mvc.perform(get("/api/v1/marketing/hub-metrics").with(authentication(authA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.emailFromDisplayName").value("Night Club via IMIN"))
+                .andExpect(jsonPath("$.organizerName").value("Night Club"));
     }
 
     @Test

@@ -26,6 +26,20 @@ public final class NetOrderRevenue {
         return out;
     }
 
+    /**
+     * Folds the same rows into the number of orders kept per key: an order counts while some of its money is kept
+     * (net above zero) or when it was free (total zero); one refunded or charged back in full does not.
+     */
+    public static Map<String, Long> keptOrdersByKey(List<Object[]> rows) {
+        Map<String, Long> out = new HashMap<>();
+        for (Object[] r : rows) {
+            long total = num(r[1]);
+            boolean kept = total - num(r[2]) - num(r[3]) > 0 || total == 0;
+            out.merge((String) r[0], kept ? 1L : 0L, Long::sum);
+        }
+        return out;
+    }
+
     private static long num(Object v) {
         return ((Number) v).longValue();
     }
