@@ -379,6 +379,14 @@ public class CampaignService {
         }
     }
 
+    /** A past schedule would dispatch at once while the UI says "scheduled"; 2 min absorbs client clock skew. */
+    private static void requireNotPast(Instant scheduledAt) {
+        if (scheduledAt != null && scheduledAt.isBefore(Instant.now().minusSeconds(120))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Scheduled time has already passed", Map.of("scheduledAt", "must be in the future"));
+        }
+    }
+
     /**
      * Send a single test email of the draft to the authenticated organizer's own address.
      * Restricted to the caller (spec §3/§7) — a requested address is only honored if it
@@ -515,7 +523,10 @@ public class CampaignService {
                     "SMS campaigns cannot be sent yet — no SMS dispatcher exists");
         }
         // Drafts only: a replay of a campaign already scheduled must keep reaching the compare-and-set's 409.
-        if ("draft".equals(c.getStatus())) requireReadyToSend(c);
+        if ("draft".equals(c.getStatus())) {
+            requireReadyToSend(c);
+            requireNotPast(scheduledAt);
+        }
         Instant when = scheduledAt != null ? scheduledAt : Instant.now();
         // An invitation arm owns its send time; a slump arm is only armed here and waits for Momentum.
         if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) {

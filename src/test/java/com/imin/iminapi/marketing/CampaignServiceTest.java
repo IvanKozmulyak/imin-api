@@ -612,4 +612,36 @@ class CampaignServiceTest {
 
         assertThat(sentTest().ai().any()).isFalse();
     }
+
+    @Test
+    void send_refuses_a_schedule_time_already_past() {
+        CampaignDto stale = readyDraft("Stale");
+        CampaignDto skewed = readyDraft("Skewed");
+
+        assertThatThrownBy(() -> service.send(stale.id(), principal(ORG), "idem-" + UUID.randomUUID(),
+                Instant.now().minusSeconds(600)))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.FIELD_INVALID)
+                .extracting(e -> ((ApiException) e).fields())
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("scheduledAt", "must be in the future");
+        assertThat(service.get(principal(ORG), stale.id()).status()).isEqualTo("draft");
+        assertThat(audit.forOrg(ORG)).noneMatch(r ->
+                AuditActions.CAMPAIGN_SENT.equals(r.getAction()) && stale.id().equals(r.getTargetId()));
+
+        // A browser clock 30 s behind the server is still accepted.
+        service.send(skewed.id(), principal(ORG), "idem-" + UUID.randomUUID(), Instant.now().minusSeconds(30));
+        assertThat(service.get(principal(ORG), skewed.id()).status()).isEqualTo("scheduled");
+    }
+
+    @Test
+    void send_replay_with_a_past_time_still_gets_409_not_400() {
+        CampaignDto d = readyDraft("Replay");
+        Instant at = Instant.now().plusSeconds(3600);
+        service.send(d.id(), principal(ORG), "idem-1", at);
+
+        assertThatThrownBy(() -> service.send(d.id(), principal(ORG), "idem-2", Instant.now().minusSeconds(3600)))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+    }
 }

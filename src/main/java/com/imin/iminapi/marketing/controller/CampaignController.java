@@ -113,7 +113,7 @@ public class CampaignController {
      * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
      * The body carries the stored send time, or {@code armed} for an audience-plan slump arm.
      * A draft that is not ready is {@code 400 FIELD_INVALID} with {@code fields} keyed {@code subject},
-     * {@code bodyMd}, {@code segmentId} (required) or {@code audience} (empty); a non-draft is {@code 409 INVALID_STATE}.
+     * {@code bodyMd}, {@code segmentId} (required), {@code audience} (empty) or {@code scheduledAt} (more than 2 min in the past); a non-draft is {@code 409 INVALID_STATE}.
      */
     @PostMapping("/{id}/send")
     public ResponseEntity<com.imin.iminapi.marketing.dto.CampaignSendResponse> send(

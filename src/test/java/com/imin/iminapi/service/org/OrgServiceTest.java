@@ -362,4 +362,40 @@ class OrgServiceTest {
 
         assertThat(o.getLegalName()).isNull();
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"Not/AZone", "+02:00", "  ", "Etc/GMT+2", "Etc/GMT-5"})
+    void patch_refuses_a_timezone_that_is_not_an_iana_zone(String zone) {
+        UUID orgId = UUID.randomUUID();
+        Organization o = new Organization();
+        o.setId(orgId); o.setName("Old"); o.setContactEmail("a@b.com"); o.setCountry("GB");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        o.setUpdatedAt(updated);
+        o.setTimezone("Europe/London");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(o));
+
+        assertThatThrownBy(() -> sut.patch(owner(orgId), "\"" + updated + "\"",
+                new OrgPatchRequest("Renamed", null, null, zone)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+
+        assertThat(o.getTimezone()).isEqualTo("Europe/London");
+        assertThat(o.getName()).isEqualTo("Old");
+        verify(orgs, never()).save(any(Organization.class));
+    }
+
+    @Test
+    void patch_stores_the_trimmed_timezone() {
+        UUID orgId = UUID.randomUUID();
+        Organization o = new Organization();
+        o.setId(orgId); o.setName("Old"); o.setContactEmail("a@b.com"); o.setCountry("GB");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        o.setUpdatedAt(updated);
+        when(orgs.findById(orgId)).thenReturn(Optional.of(o));
+        when(orgs.save(any(Organization.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        OrganizationDto dto = sut.patch(owner(orgId), "\"" + updated + "\"",
+                new OrgPatchRequest(null, null, null, " Europe/Lisbon "));
+
+        assertThat(dto.timezone()).isEqualTo("Europe/Lisbon");
+    }
 }

@@ -114,7 +114,8 @@ public class AuthService {
         org.setSlug(uniqueSlug(req.orgName()));
         org.setContactEmail(req.email());
         org.setCountry(req.country().toUpperCase());
-        org.setTimezone("UTC");
+        // The org clock drives quiet hours; derive it from the country, UTC only when unmapped.
+        org.setTimezone(com.imin.iminapi.util.CountryTimeZones.zoneFor(req.country()).orElse("UTC"));
         // Email sign-up collects every setup detail up front, so the org is set up from creation.
         org.setSetupCompletedAt(com.imin.iminapi.util.Times.nowMicros());
         Organization savedOrg;

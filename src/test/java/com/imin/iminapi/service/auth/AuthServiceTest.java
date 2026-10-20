@@ -465,4 +465,22 @@ class AuthServiceTest {
         p.setAppBaseUrl("http://localhost:3000");
         return p;
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FR,Europe/Paris", "GB,Europe/London", "US,America/New_York"})
+    void signup_sets_the_org_clock_from_its_country(String country, String zone) {
+        when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        java.util.concurrent.atomic.AtomicReference<Organization> saved = new java.util.concurrent.atomic.AtomicReference<>();
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); saved.set(o); return o;
+        });
+        when(users.save(any(User.class))).thenAnswer(inv -> {
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+        });
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("1234");
+
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", country, true, OrganizerTerms.CURRENT_VERSION));
+
+        assertThat(saved.get().getTimezone()).isEqualTo(zone);
+    }
 }

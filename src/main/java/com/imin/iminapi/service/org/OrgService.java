@@ -73,6 +73,7 @@ public class OrgService {
         RoleGuard.requireAtLeast(p, UserRole.ADMIN, "edit organization settings");
         Organization o = orgs.findById(p.orgId()).orElseThrow(() -> ApiException.notFound("Organization"));
         ifMatch.requireMatch(ifMatchHeader, o.getUpdatedAt());
+        String zone = body.timezone() == null ? null : requireIanaZone(body.timezone());
         if (body.name() != null) o.setName(body.name());
         if (body.contactEmail() != null) o.setContactEmail(body.contactEmail());
         // Only validate/replace when the country actually changes — this grandfathers existing
@@ -83,7 +84,7 @@ public class OrgService {
             StripeSupportedCountries.requireSupported(body.country());
             o.setCountry(body.country().toUpperCase());
         }
-        if (body.timezone() != null) o.setTimezone(body.timezone());
+        if (zone != null) o.setTimezone(zone);
         String legalName = body.legalName() != null ? blankToNull(body.legalName()) : o.getLegalName();
         String legalContact = body.legalContact() != null ? blankToNull(body.legalContact()) : o.getLegalContact();
         requireLegalIdentityKeptWhileQueued(o, legalName, legalContact);
@@ -91,6 +92,17 @@ public class OrgService {
         o.setLegalContact(legalContact);
         o.setUpdatedAt(Instant.now());
         return OrganizationDto.from(orgs.save(o));
+    }
+
+    /** Quiet hours read this zone; an unreadable id would silently run them on UTC, so refuse it here.
+     *  Etc/GMT+N ids are refused too: their sign is inverted (Etc/GMT+2 is UTC-2). */
+    private static String requireIanaZone(String raw) {
+        String zone = raw.trim();
+        if (!java.time.ZoneId.getAvailableZoneIds().contains(zone) || zone.matches("Etc/GMT[+-]\\d+")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    java.util.Map.of("timezone", "must be an IANA time zone, e.g. Europe/Paris"));
+        }
+        return zone;
     }
 
     /** A scheduled or sending campaign that needs the legal footer keeps the org's identity from being cleared. */

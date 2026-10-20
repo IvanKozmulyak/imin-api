@@ -25,7 +25,8 @@ import java.util.Optional;
  *   <li>CA &rarr; America/Toronto (capital Ottawa's zone; ignores the 5 other zones)</li>
  * </ul>
  * This is deliberately a country-level heuristic; when it's wrong the organizer edits the event's
- * timezone explicitly. Keep in sync with the {@code V75__event_timezone_backfill.sql} CASE map.
+ * timezone explicitly. Keep in sync with the {@code V75__event_timezone_backfill.sql} and
+ * {@code V192__org_timezone_backfill.sql} CASE maps.
  */
 public final class CountryTimeZones {
 
@@ -85,6 +86,11 @@ public final class CountryTimeZones {
     );
 
     private CountryTimeZones() {}
+
+    /** Every mapped country, read-only; lets a test check the SQL backfill against this map. */
+    public static Map<String, String> all() {
+        return ZONES;
+    }
 
     /**
      * The primary IANA zone id for a country, or empty when the code is null/blank/unmapped.
