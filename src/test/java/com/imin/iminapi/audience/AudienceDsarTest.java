@@ -9,6 +9,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
@@ -89,10 +90,11 @@ class AudienceDsarTest {
         principalA = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
     }
 
-    /** The erasure job and the momentum sweep see every org; own memberships and orgs go. */
+    /** The erasure job and the momentum sweep see every org; own campaigns, memberships and orgs go. */
     @AfterEach
     void tearDown() {
         try {
+            CampaignRows.delete(jdbc, List.of(orgA, orgB));
             jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
         } finally {
             OrgRows.delete(jdbc, List.of(orgA, orgB));
@@ -550,6 +552,43 @@ class AudienceDsarTest {
         UUID mid = seedMembership(orgA, fx.email("unengaged"));
 
         assertThat(dsarService.exportRecords(orgA, mid, principalA).emailEngagement()).isNull();
+    }
+
+    @Test
+    void export_records_show_the_latest_engagement_from_campaign_rows() {
+        UUID mid = seedMembership(orgA, fx.email("rowengaged"));
+        setEngagement(mid, Instant.parse("2026-05-01T10:00:00Z"), Instant.parse("2026-09-02T10:00:00Z"));
+        UUID older = campaign(orgA);
+        engagementRow(older, mid, Instant.parse("2026-06-01T10:00:00Z"), null, null);
+        UUID newer = campaign(orgA);
+        engagementRow(newer, mid, Instant.parse("2026-07-01T10:00:00Z"), Instant.parse("2026-07-03T10:00:00Z"),
+                Instant.parse("2026-07-03T10:00:00Z"));
+
+        DsarRecords.EmailEngagementRecord e = dsarService.exportRecords(orgA, mid, principalA).emailEngagement();
+
+        assertThat(e).isNotNull();
+        assertThat(e.lastOpenedAt()).as("recipient open beats the older frozen one")
+                .isEqualTo(Instant.parse("2026-07-01T10:00:00Z"));
+        assertThat(e.lastClickedAt()).as("frozen click beats the older recipient one")
+                .isEqualTo(Instant.parse("2026-09-02T10:00:00Z"));
+        assertThat(e.lastTicketLinkClickedAt()).isEqualTo(Instant.parse("2026-07-03T10:00:00Z"));
+    }
+
+    private UUID campaign(UUID orgId) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("insert into campaigns (id, org_id, channel, name, status) values (?, ?, 'email', 'dsar', 'sent')",
+                id, orgId);
+        return id;
+    }
+
+    private void engagementRow(UUID campaignId, UUID mid, Instant open, Instant click, Instant ticketClick) {
+        jdbc.update("insert into campaign_recipients (id, campaign_id, membership_id, status, opened_at, clicked_at,"
+                        + " ticket_clicked_at) values (?, ?, ?, 'delivered', ?, ?, ?)",
+                UUID.randomUUID(), campaignId, mid, ts(open), ts(click), ts(ticketClick));
+    }
+
+    private static java.sql.Timestamp ts(Instant at) {
+        return at == null ? null : java.sql.Timestamp.from(at);
     }
 
     private void setEngagement(UUID mid, Instant open, Instant click) {

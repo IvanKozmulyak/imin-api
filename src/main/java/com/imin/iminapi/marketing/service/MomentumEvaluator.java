@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
@@ -7,6 +8,7 @@ import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
@@ -23,20 +25,26 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
  * Hourly Momentum evaluator (spec §6.1). Walks published, future, on-sale events,
  * computes sales-curve metrics, applies the four trigger rules with guardrails
  * (min-audience floor, 7-day cooldown, one live suggestion per trigger, expiry),
- * and persists a pre-drafted suggestion. Suggestions only — never sends.
+ * and persists a pre-drafted suggestion. Then, on every pass, it considers
+ * {@code clicked_no_buy}: recent ticket-link clickers with no live ticket. Suggestions only — never sends.
  */
 @Component
 public class MomentumEvaluator {
 
     private static final Logger log = LoggerFactory.getLogger(MomentumEvaluator.class);
+
+    /** How far back clicked_no_buy reads ticket-link clicks; a constant, so the webapp's "last 7 days" stays true. */
+    static final Duration CLICKED_NO_BUY_WINDOW = Duration.ofDays(7);
 
     private final EventRepository events;
     private final OrderRepository orders;
@@ -52,6 +60,8 @@ public class MomentumEvaluator {
     private final MomentumPlanTarget planTarget;
     private final ApplicationEventPublisher publisher;
     private final AllCampaignsConsent allCampaignsConsent;
+    private final CampaignRecipientRepository recipients;
+    private final MembershipRepository memberships;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
@@ -60,7 +70,8 @@ public class MomentumEvaluator {
                              SendGateService sendGate, SegmentService segments,
                              MomentumNotifier notifier, MomentumPlanTarget planTarget,
                              ApplicationEventPublisher publisher,
-                             AllCampaignsConsent allCampaignsConsent) {
+                             AllCampaignsConsent allCampaignsConsent,
+                             CampaignRecipientRepository recipients, MembershipRepository memberships) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -75,6 +86,8 @@ public class MomentumEvaluator {
         this.planTarget = planTarget;
         this.publisher = publisher;
         this.allCampaignsConsent = allCampaignsConsent;
+        this.recipients = recipients;
+        this.memberships = memberships;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -137,27 +150,20 @@ public class MomentumEvaluator {
                 String.format(java.util.Locale.ROOT, "%.2f", m.requiredVelocityToTarget(thresholds.getSlumpTargetPct())),
                 fired == null ? "no-trigger" : fired.wireValue());
 
-        if (fired == null) return;
+        if (fired != null) fireSalesCurveTrigger(e, m, fired, now);
+        // A sales-curve suggestion stored just above is live, so clicked_no_buy stands down this pass.
+        considerClickedNoBuy(e, m, now);
+    }
 
+    private void fireSalesCurveTrigger(Event e, MomentumMetrics m, MomentumTriggerType fired, Instant now) {
         // Guardrail: single live suggestion per (event, trigger).
         if (suggestions.findByEventIdAndTriggerTypeAndStatus(
                 e.getId(), fired.wireValue(), "suggested").isPresent()) {
             return;
         }
-        // Guardrail: 7-day cooldown per (event, trigger).
-        Optional<MomentumSuggestion> last = suggestions
-                .findTopByEventIdAndTriggerTypeOrderBySuggestedAtDesc(e.getId(), fired.wireValue());
-        if (last.isPresent() && last.get().getSuggestedAt()
-                .isAfter(now.minus(Duration.ofDays(thresholds.getCooldownDays())))) {
-            return;
-        }
+        if (inCooldown(e, fired, now)) return;
 
-        // The event's audience plan is refreshed off-thread; this draft still uses the plan stored now.
-        try {
-            publisher.publishEvent(new MomentumTriggered(e.getOrgId(), e.getId(), fired.wireValue()));
-        } catch (RuntimeException ex) {
-            log.warn("Momentum: plan refresh for event {} not queued: {}", e.getId(), ex.getMessage());
-        }
+        publishTriggered(e, fired);
 
         // Target: the plan's best segment (holdouts removed) when it clears the floor, else the prebuilt Repeat.
         MomentumPlanTarget.Target planned = planTarget(e);
@@ -195,7 +201,7 @@ public class MomentumEvaluator {
 
         String why;
         try {
-            why = persistSuggestion(e, fired, m, segmentId, now);
+            why = persistSuggestion(e, fired, m, segmentId, now, null);
         } catch (RuntimeException ex) {
             if (planned != null) {
                 try {
@@ -211,6 +217,72 @@ public class MomentumEvaluator {
         notifier.notifyOwner(e.getOrgId(), fired.wireValue(), why);
     }
 
+    /**
+     * Members who clicked this event's ticket link in its email campaigns within {@link #CLICKED_NO_BUY_WINDOW},
+     * minus live-ticket holders, frozen into a Momentum segment. Objected and erase-pending members never qualify.
+     */
+    private void considerClickedNoBuy(Event e, MomentumMetrics m, Instant now) {
+        MomentumTriggerType trigger = MomentumTriggerType.CLICKED_NO_BUY;
+        if (m.capacity() > 0 && m.seatsLeft() <= 0) return;
+        // Any live suggestion for the event, whatever its trigger, holds this one back so they never stack.
+        if (suggestions.existsByEventIdAndStatus(e.getId(), "suggested")) return;
+        if (inCooldown(e, trigger, now)) return;
+
+        List<UUID> clickers = recipients.findTicketClickersForEvent(
+                e.getOrgId(), e.getId(), now.minus(CLICKED_NO_BUY_WINDOW));
+        if (clickers.isEmpty()) return;
+        Set<UUID> holders = new HashSet<>();
+        for (Object[] pair : memberships.findAttendedEventPairs(e.getOrgId(), List.of(e.getId()))) {
+            holders.add((UUID) pair[0]);
+        }
+        List<UUID> targets = clickers.stream().filter(id -> !holders.contains(id)).toList();
+        if (targets.isEmpty()) return;
+
+        int sendable = sendableCount(e.getOrgId(), targets);
+        if (sendable < thresholds.getMinAudienceFloor()) {
+            log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
+                    e.getId(), trigger.wireValue(), sendable, thresholds.getMinAudienceFloor());
+            return;
+        }
+
+        publishTriggered(e, trigger);
+        UUID segmentId = planTarget.snapshot(e.getOrgId(), clickedNoBuySegmentName(e.getName()), targets);
+        String why;
+        try {
+            why = persistSuggestion(e, trigger, m, segmentId, now, targets.size());
+        } catch (RuntimeException ex) {
+            try {
+                planTarget.discard(e.getOrgId(), segmentId);
+            } catch (RuntimeException cleanup) {
+                ex.addSuppressed(cleanup);
+            }
+            throw ex;
+        }
+        notifier.notifyOwner(e.getOrgId(), trigger.wireValue(), why);
+    }
+
+    private static String clickedNoBuySegmentName(String eventName) {
+        String base = "Momentum: clicked tickets, no ticket";
+        return eventName == null || eventName.isBlank() ? base : base + " · " + eventName.trim();
+    }
+
+    /** Guardrail: cooldown per (event, trigger), counted from the last suggestion in any status. */
+    private boolean inCooldown(Event e, MomentumTriggerType trigger, Instant now) {
+        Optional<MomentumSuggestion> last = suggestions
+                .findTopByEventIdAndTriggerTypeOrderBySuggestedAtDesc(e.getId(), trigger.wireValue());
+        return last.isPresent() && last.get().getSuggestedAt()
+                .isAfter(now.minus(Duration.ofDays(thresholds.getCooldownDays())));
+    }
+
+    /** The event's audience plan is refreshed off-thread; the draft still uses the plan stored now. */
+    private void publishTriggered(Event e, MomentumTriggerType trigger) {
+        try {
+            publisher.publishEvent(new MomentumTriggered(e.getOrgId(), e.getId(), trigger.wireValue()));
+        } catch (RuntimeException ex) {
+            log.warn("Momentum: plan refresh for event {} not queued: {}", e.getId(), ex.getMessage());
+        }
+    }
+
     /** Null when the plan gives no usable target; a plan failure never stops the Repeat fallback. */
     private MomentumPlanTarget.Target planTarget(Event e) {
         try {
@@ -221,9 +293,9 @@ public class MomentumEvaluator {
         }
     }
 
-    /** Writes the suggestion and returns its "why" line. */
+    /** Writes the suggestion and returns its "why" line; {@code clickedNoTicket} is null for sales-curve triggers. */
     private String persistSuggestion(Event e, MomentumTriggerType fired, MomentumMetrics m, UUID segmentId,
-                                   Instant now) {
+                                   Instant now, Integer clickedNoTicket) {
         MomentumDraftPayload draft = copy.generate(
                 fired,
                 e.getName(),
@@ -239,7 +311,7 @@ public class MomentumEvaluator {
         s.setEventId(e.getId());
         s.setTriggerType(fired.wireValue());
         s.setStatus("suggested");
-        s.setMetricsSnapshot(m.toJson());
+        s.setMetricsSnapshot(m.toJson(clickedNoTicket));
         s.setDraftPayload(toDraftJson(draft));
         s.setSuggestedAt(now);
         suggestions.save(s);
@@ -289,6 +361,12 @@ public class MomentumEvaluator {
                     + m.sellThroughPct() + "% sold.";
             case SLUMP -> "Pace has slowed at " + m.sellThroughPct() + "% sold, "
                     + m.daysOut() + " days out.";
+            // The organizer may know why these people were chosen; the email itself must not reveal it.
+            case CLICKED_NO_BUY -> "The recipients clicked through to this event's tickets from an earlier email in the last "
+                    + CLICKED_NO_BUY_WINDOW.toDays() + " days and hold no ticket"
+                    + (m.capacity() > 0 ? "; " + m.remaining() + " tickets remain" : "")
+                    + ". In the subject, preheader and body, never say or imply that the reader clicked a link,"
+                    + " opened an email or was tracked.";
         };
     }
 

@@ -204,4 +204,15 @@ class MomentumSparkAndProseTest {
         // And with no series, the projection degrades to the known sell-through, not a guess.
         assertThat(m.projectedSellThroughPct()).isEqualTo(m.sellThroughPct());
     }
+
+    /** The webapp words clicked_no_buy in the reader's language; an English server line would show on every locale. */
+    @Test
+    void clickedNoBuyCarriesNoServerProse() {
+        MomentumMetrics m = MomentumMetrics.compute(
+                40, 100, 5, NOW.minus(Duration.ofDays(30)), NOW.plus(Duration.ofDays(2)), NOW,
+                ticketsAt(2, 3, 4, 8));
+        assertThat(MomentumProse.headline(MomentumTriggerType.CLICKED_NO_BUY, m)).isNull();
+        assertThat(MomentumProse.pace(MomentumTriggerType.CLICKED_NO_BUY, m)).isNull();
+        assertThat(MomentumProse.daysOutLabel(MomentumTriggerType.CLICKED_NO_BUY, m)).isNull();
+    }
 }

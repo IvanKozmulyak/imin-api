@@ -42,7 +42,9 @@ class SegmentLiveCountTest {
                 mock(com.imin.iminapi.audienceplan.repository.FanFeatureRepository.class),
                 mock(com.imin.iminapi.repository.EventRepository.class),
                 consentGate,
-                mock(com.imin.iminapi.audienceplan.config.AudiencePlanLogic.class));
+                mock(com.imin.iminapi.audienceplan.config.AudiencePlanLogic.class),
+                mock(com.imin.iminapi.marketing.repository.CampaignRecipientRepository.class),
+                java.time.Clock.systemUTC());
     }
 
     @Test

@@ -14,10 +14,12 @@ import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.support.AuditRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -41,8 +43,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the counts and totals here must be genuine SQL aggregates, so mocking the repo would test nothing.
  *
  * <p>Covers: total across pages, chip counts vs. real aggregates (including a row that is both
- * delivered AND opened), engagement filtering as an axis orthogonal to status, a null-membership
- * row degrading to a null name, and org scoping.
+ * delivered AND opened), no per-person opens or clicks, a null-membership row degrading to a null
+ * name, and org scoping.
  */
 @IminIntegrationTest
 class CampaignRecipientLogTest {
@@ -206,46 +208,31 @@ class CampaignRecipientLogTest {
         assertThat(page.counts().unsubscribed()).isZero();
     }
 
-    // ---- 3. engagement filtering ----
+    // ---- 3. no per-person opens or clicks ----
 
+    /** Opens and clicks show only as totals: no row carries its instants, and the log cannot be filtered by them. */
     @Test
-    void engagementFilter_pagesTheOpenedAndClickedSubsets() {
+    void anAdminSeesNoPerPersonOpensOrClicks_andTheEngagementFilterIsRefused() {
         UUID org = UUID.randomUUID();
         Campaign c = campaign(org);
         Instant t = clock.instant();
-        recipient(c.getId(), null, "delivered", t, t);      // opened + clicked
-        recipient(c.getId(), null, "delivered", t, null);   // opened only
-        recipient(c.getId(), null, "delivered", null, null);
-        recipient(c.getId(), null, "sent", null, null);
+        recipient(c.getId(), null, "delivered", t, t);
+        AuthPrincipal admin = new AuthPrincipal(UUID.randomUUID(), org, UserRole.ADMIN, UUID.randomUUID());
 
-        RecipientPage opened = service.listRecipients(c.getId(), principal(org), null, "opened", 0, 50);
-        assertThat(opened.items()).hasSize(2);
-        assertThat(opened.total()).isEqualTo(2L);
-        assertThat(opened.items()).allSatisfy(r -> assertThat(r.openedAt()).isNotNull());
-
-        RecipientPage clicked = service.listRecipients(c.getId(), principal(org), null, "clicked", 0, 50);
-        assertThat(clicked.items()).hasSize(1);
-        assertThat(clicked.total()).isEqualTo(1L);
-        assertThat(clicked.items().get(0).clickedAt()).isNotNull();
-        // Engagement did not become a status — the row is still `delivered`.
-        assertThat(clicked.items().get(0).status()).isEqualTo("delivered");
-    }
-
-    @Test
-    void engagementFilter_combinesWithStatus_asAnOrthogonalAxis() {
-        UUID org = UUID.randomUUID();
-        Campaign c = campaign(org);
-        Instant t = clock.instant();
-        recipient(c.getId(), null, "delivered", t, null);
-        recipient(c.getId(), null, "bounced", t, null);     // opened, but a different lifecycle
-        recipient(c.getId(), null, "delivered", null, null);
-
-        RecipientPage deliveredAndOpened =
-                service.listRecipients(c.getId(), principal(org), "delivered", "opened", 0, 50);
-        assertThat(deliveredAndOpened.total()).isEqualTo(1L);
-        assertThat(deliveredAndOpened.items()).hasSize(1);
-        assertThat(deliveredAndOpened.items().get(0).status()).isEqualTo("delivered");
-        assertThat(deliveredAndOpened.items().get(0).openedAt()).isNotNull();
+        RecipientDto row = service.listRecipients(c.getId(), admin, null, null, 0, 50).items().get(0);
+        SoftAssertions.assertSoftly(softly -> {
+            softly.assertThat(row.openedAt()).as("openedAt").isNull();
+            softly.assertThat(row.clickedAt()).as("clickedAt").isNull();
+            for (String value : List.of("opened", "clicked")) {
+                softly.assertThatThrownBy(() -> service.listRecipients(c.getId(), admin, null, value, 0, 50))
+                        .as("engagement=" + value)
+                        .isInstanceOfSatisfying(ApiException.class, e -> {
+                            assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+                            assertThat(e.code()).isEqualTo(ErrorCode.FIELD_INVALID);
+                            assertThat(e.fields()).containsKey("engagement");
+                        });
+            }
+        });
     }
 
     @Test
@@ -262,15 +249,6 @@ class CampaignRecipientLogTest {
         assertThat(issues.total()).isEqualTo(3L);
         assertThat(issues.items()).hasSize(3);
         assertThat(issues.items()).noneSatisfy(r -> assertThat(r.status()).isEqualTo("delivered"));
-    }
-
-    @Test
-    void engagementFilter_rejectsAnUnknownValue_ratherThanSilentlyIgnoringIt() {
-        UUID org = UUID.randomUUID();
-        Campaign c = campaign(org);
-        assertThatThrownBy(() -> service.listRecipients(c.getId(), principal(org), null, "bogus", 0, 50))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("engagement");
     }
 
     // ---- 4. recipient name ----

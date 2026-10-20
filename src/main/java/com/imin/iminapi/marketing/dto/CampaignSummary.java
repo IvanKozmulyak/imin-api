@@ -35,16 +35,24 @@ public record CampaignSummary(
         /** IANA zone of that same event, for showing its send times; null without one. */
         String eventTimezone,
         /** Why the last send failed: legal_identity_missing|segment_missing|nothing_sent|send_failed; null when none is stored. */
-        String failureReason
+        String failureReason,
+        /** Rows that left the queue, as {@code stats.sent}; the three counts are null unless email and a row left. */
+        Long sentCount,
+        /** Rows with a recorded open, as {@code stats.opened}; estimates (image loading, image blocking). */
+        Long openedCount,
+        /** Rows with a recorded click, as {@code stats.clicked} (which says what older rows count). */
+        Long clickedCount
 ) {
-    /** Projection for the list read path: revenue plus the batch-resolved segment and event context. */
+    /** Projection for the list read path: revenue, the batch-resolved segment and event context, and the counts. */
     public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
-                                       String eventName, String eventTimezone, String failureReason) {
+                                       String eventName, String eventTimezone, String failureReason,
+                                       Long sentCount, Long openedCount, Long clickedCount) {
         return new CampaignSummary(
                 c.getId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(),
                 c.getRecipientCount(), c.getExcludedCount(), c.getLastError(),
                 c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor,
-                segmentName, eventName, eventTimezone, failureReason);
+                segmentName, eventName, eventTimezone, failureReason,
+                sentCount, openedCount, clickedCount);
     }
 }

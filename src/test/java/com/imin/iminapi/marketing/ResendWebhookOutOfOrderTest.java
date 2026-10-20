@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SuppressionService;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
@@ -82,6 +84,7 @@ class ResendWebhookOutOfOrderTest {
     @Autowired DataSource dataSource;
     @Autowired AuditRows auditRows;
     @Autowired SuppressionService suppressionService;
+    @Autowired MarketingEmailProperties marketingProps;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -96,11 +99,13 @@ class ResendWebhookOutOfOrderTest {
         CampaignRows.delete(jdbc, orgIds);
     }
 
-    /** One webhook as Resend sends it; {@code bounceType} is non-null only for email.bounced. */
-    record Event(String type, Instant createdAt, String bounceType) {
+    /** One webhook as Resend sends it; {@code bounceType} only for email.bounced, {@code clickLink} only for a click. */
+    record Event(String type, Instant createdAt, String bounceType, String clickLink) {
+        Event(String type, Instant createdAt, String bounceType) { this(type, createdAt, bounceType, null); }
         static Event of(String type, Instant at) { return new Event(type, at, null); }
         static Event permanentBounce() { return new Event("email.bounced", BOUNCED, "Permanent"); }
         static Event transientBounce() { return new Event("email.bounced", BOUNCED, "Transient"); }
+        static Event click(String link, Instant at) { return new Event("email.clicked", at, null, link); }
         @Override public String toString() {
             String name = type.startsWith("email.") ? type.substring("email.".length()) : type;
             return bounceType == null ? name : name + "(" + bounceType + ")";
@@ -109,7 +114,7 @@ class ResendWebhookOutOfOrderTest {
 
     record Expected(String status, String errorCode, Instant deliveredAt) {}
 
-    private record Seeded(UUID orgId, UUID membershipId, CampaignRecipient recipient, String email) {}
+    private record Seeded(UUID orgId, UUID membershipId, CampaignRecipient recipient, String email, UUID eventId) {}
 
     static Stream<Arguments> eventPairsInBothOrders() {
         Event sent = Event.of("email.sent", SENT);
@@ -160,6 +165,62 @@ class ResendWebhookOutOfOrderTest {
         assertThat(after.getErrorCode()).as("error_code").isEqualTo(expected.errorCode());
         assertThat(after.getDeliveredAt()).as("delivered_at").isEqualTo(expected.deliveredAt());
         assertThat(after.getLastEventAt()).as("last_event_at").isEqualTo(lastEventAt);
+    }
+
+    private static final Instant FIRST = Instant.parse("2026-07-11T10:05:00Z");
+    private static final Instant LATER = Instant.parse("2026-07-11T10:15:00Z");
+
+    /** Which engagement a repeated webhook carries; the link is built from the seeded campaign's event. */
+    enum Engagement { OPENED, CLICKED, TICKET_CLICKED }
+
+    static Stream<Arguments> repeatedEngagementInBothOrders() {
+        return Stream.of(Engagement.values()).flatMap(kind -> Stream.of(
+                arguments(kind, List.of(FIRST, LATER)),
+                arguments(kind, List.of(LATER, FIRST))));
+    }
+
+    /** Segments and Momentum read "the last time": a late-delivered older event never moves the stamp back. */
+    @ParameterizedTest(name = "{0} arriving {1}")
+    @MethodSource("repeatedEngagementInBothOrders")
+    void aRepeatedOpenOrClickKeepsTheLatestInstant(Engagement kind, List<Instant> arrivals) throws Exception {
+        Seeded s = seed(fx.email("ooo-repeat"), UUID.randomUUID());
+        for (Instant at : arrivals) deliver(s, engagement(s, kind, at));
+
+        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(kind == Engagement.OPENED ? LATER : null);
+        assertThat(after.getClickedAt()).as("clicked_at").isEqualTo(kind == Engagement.OPENED ? null : LATER);
+        assertThat(after.getTicketClickedAt()).as("ticket_clicked_at")
+                .isEqualTo(kind == Engagement.TICKET_CLICKED ? LATER : null);
+    }
+
+    /** The sender's stale whole-row save (no @Version) keeps the webhook's stamps and lands its status, either order. */
+    @ParameterizedTest(name = "stale save {0}")
+    @ValueSource(strings = {"after the stamps", "before the stamps"})
+    void engagementSurvivesTheSendersFullRowSave(String order) throws Exception {
+        Seeded s = seed(fx.email("ooo-save"), UUID.randomUUID());
+        CampaignRecipient stale = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        stale.setStatus("delivered");
+        boolean saveLast = order.startsWith("after");
+
+        if (!saveLast) recipientRepo.save(stale);
+        deliver(s, engagement(s, Engagement.OPENED, FIRST));
+        deliver(s, engagement(s, Engagement.TICKET_CLICKED, LATER));
+        if (saveLast) recipientRepo.save(stale);
+
+        CampaignRecipient after = recipientRepo.findById(s.recipient().getId()).orElseThrow();
+        assertThat(after.getStatus()).as("the save's status").isEqualTo("delivered");
+        assertThat(after.getOpenedAt()).as("opened_at").isEqualTo(FIRST);
+        assertThat(after.getClickedAt()).as("clicked_at").isEqualTo(LATER);
+        assertThat(after.getTicketClickedAt()).as("ticket_clicked_at").isEqualTo(LATER);
+    }
+
+    private Event engagement(Seeded s, Engagement kind, Instant at) {
+        return switch (kind) {
+            case OPENED -> Event.of("email.opened", at);
+            case CLICKED -> Event.click("https://instagram.com/imin", at);
+            case TICKET_CLICKED -> Event.click(marketingProps.getBuyerSiteBaseUrl() + "/e/" + s.eventId()
+                    + "?utm_source=imin", at);
+        };
     }
 
     static Stream<Arguments> eventsCommittedWhileAComplaintIsInFlight() {
@@ -388,6 +449,10 @@ class ResendWebhookOutOfOrderTest {
 
     /** The complaint branch needs a real membership; the campaign carries the org the projector derives. */
     private Seeded seed(String email) {
+        return seed(email, null);
+    }
+
+    private Seeded seed(String email, UUID eventId) {
         UUID orgId = UUID.randomUUID();
         orgIds.add(orgId);
 
@@ -408,6 +473,7 @@ class ResendWebhookOutOfOrderTest {
         c.setChannel("email");
         c.setName("webhook-out-of-order");
         c.setStatus("sending");
+        c.setEventId(eventId);
         c.setCreatedAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         campaignRepo.save(c);
@@ -419,7 +485,7 @@ class ResendWebhookOutOfOrderTest {
         r.setEmail(email);
         r.setStatus("sent");
         r.setProviderMessageId("msg_" + UUID.randomUUID());
-        return new Seeded(orgId, m.getMembershipId(), recipientRepo.save(r), email);
+        return new Seeded(orgId, m.getMembershipId(), recipientRepo.save(r), email, eventId);
     }
 
     /** Each delivery is a distinct Svix message, so the dedup claim never swallows it. */
@@ -430,9 +496,10 @@ class ResendWebhookOutOfOrderTest {
         }
         String bounce = e.bounceType() == null ? ""
                 : ",\"bounce\":{\"type\":\"" + e.bounceType() + "\",\"subType\":\"General\"}";
+        String click = e.clickLink() == null ? "" : ",\"click\":{\"link\":\"" + e.clickLink() + "\"}";
         String body = "{\"type\":\"" + e.type() + "\",\"created_at\":\"" + e.createdAt() + "\","
                 + "\"data\":{\"email_id\":\"" + s.recipient().getProviderMessageId() + "\","
-                + "\"to\":[\"" + s.email() + "\"]" + bounce + "}}";
+                + "\"to\":[\"" + s.email() + "\"]" + bounce + click + "}}";
         String svixId = "svix_" + UUID.randomUUID();
         String ts = String.valueOf(System.currentTimeMillis() / 1000L);
         mvc.perform(post("/api/v1/public/webhooks/resend")

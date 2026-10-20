@@ -177,17 +177,39 @@ public class CampaignService {
         // Segment names and linked events for the page in one query each, org-scoped like detail.
         var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
         var linkedEvents = activeEventsByIds(p.orgId(), idsOf(rows, Campaign::getEventId));
+        Map<UUID, EngagementCounts> engagement = emailEngagementCounts(rows);
         return rows.stream()
                 .map(c -> {
                     Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
+                    EngagementCounts counts = engagement.get(c.getId());
                     return CampaignSummary.from(c,
                             sent.test(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
                             c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
                             e == null ? null : e.getName(),
                             e == null ? null : e.getTimezone(),
-                            CampaignFailureReason.of(c.getLastError()));
+                            CampaignFailureReason.of(c.getLastError()),
+                            counts == null ? null : counts.sent(),
+                            counts == null ? null : counts.opened(),
+                            counts == null ? null : counts.clicked());
                 })
                 .toList();
+    }
+
+    private record EngagementCounts(long sent, long opened, long clicked) {}
+
+    /** Counts per email campaign of the page with at least one row that left the queue; one query per page. */
+    private Map<UUID, EngagementCounts> emailEngagementCounts(List<Campaign> rows) {
+        List<UUID> emailIds = rows.stream().filter(c -> "email".equals(c.getChannel())).map(Campaign::getId).toList();
+        if (emailIds.isEmpty()) return Map.of();
+        Map<UUID, EngagementCounts> out = new java.util.HashMap<>();
+        for (Object[] r : campaignRecipientRepository.engagementCountsByCampaign(emailIds, LEFT_THE_QUEUE)) {
+            long sentRows = ((Number) r[1]).longValue();
+            if (sentRows > 0) {
+                out.put((UUID) r[0], new EngagementCounts(sentRows, ((Number) r[2]).longValue(),
+                        ((Number) r[3]).longValue()));
+            }
+        }
+        return out;
     }
 
     private static Set<UUID> idsOf(List<Campaign> rows, Function<Campaign, UUID> id) {
@@ -557,21 +579,12 @@ public class CampaignService {
         return new CampaignSendResponse(when, false);
     }
 
-    /** Engagement axis of the recipient log — derived from timestamps, NOT from the status enum. */
-    private enum Engagement { OPENED, CLICKED }
-
     /**
      * One page of a campaign's recipient log, plus honest counts (spec §2.4).
      *
-     * <p>Two orthogonal filter axes:
-     * <ul>
-     *   <li>{@code status} — lifecycle. Comma-separated for multi-status chips ("Issues" =
-     *       {@code bounced,failed,complained}); a single value is just a one-element list, so the
-     *       pre-existing {@code ?status=skipped} call keeps working unchanged.</li>
-     *   <li>{@code engagement} — {@code opened} | {@code clicked}, read off
-     *       {@code opened_at}/{@code clicked_at}. Independent of status by design: a row can be
-     *       {@code delivered} AND opened, so these are NOT status values.</li>
-     * </ul>
+     * <p>{@code status} is the lifecycle filter. Comma-separated for multi-status chips ("Issues" =
+     * {@code bounced,failed,complained}); a single value is just a one-element list, so the
+     * pre-existing {@code ?status=skipped} call keeps working unchanged. {@code engagement} is refused.
      *
      * <p>{@code total} is a real aggregate over the ACTIVE filter (so the client pages the current
      * subset honestly); {@code counts} is a real aggregate over the WHOLE log (so the chips are
@@ -595,7 +608,7 @@ public class CampaignService {
                 principal, com.imin.iminapi.model.UserRole.ADMIN, "read the campaign recipient log");
 
         List<String> statuses = parseStatuses(status);
-        Engagement eng = parseEngagement(engagement);
+        refuseEngagementFilter(engagement);
 
         org.springframework.data.domain.Pageable pageable =
                 org.springframework.data.domain.PageRequest.of(page, size,
@@ -605,22 +618,8 @@ public class CampaignService {
         List<com.imin.iminapi.marketing.model.CampaignRecipient> rows;
         long total;
         if (statuses == null) {
-            if (eng == Engagement.OPENED) {
-                rows = campaignRecipientRepository.findByCampaignIdAndOpenedAtNotNull(campaignId, pageable);
-                total = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
-            } else if (eng == Engagement.CLICKED) {
-                rows = campaignRecipientRepository.findByCampaignIdAndClickedAtNotNull(campaignId, pageable);
-                total = campaignRecipientRepository.countByCampaignIdAndClickedAtNotNull(campaignId);
-            } else {
-                rows = campaignRecipientRepository.findByCampaignId(campaignId, pageable);
-                total = campaignRecipientRepository.countByCampaignId(campaignId);
-            }
-        } else if (eng == Engagement.OPENED) {
-            rows = campaignRecipientRepository.findByCampaignIdAndStatusInAndOpenedAtNotNull(campaignId, statuses, pageable);
-            total = campaignRecipientRepository.countByCampaignIdAndStatusInAndOpenedAtNotNull(campaignId, statuses);
-        } else if (eng == Engagement.CLICKED) {
-            rows = campaignRecipientRepository.findByCampaignIdAndStatusInAndClickedAtNotNull(campaignId, statuses, pageable);
-            total = campaignRecipientRepository.countByCampaignIdAndStatusInAndClickedAtNotNull(campaignId, statuses);
+            rows = campaignRecipientRepository.findByCampaignId(campaignId, pageable);
+            total = campaignRecipientRepository.countByCampaignId(campaignId);
         } else {
             rows = campaignRecipientRepository.findByCampaignIdAndStatusIn(campaignId, statuses, pageable);
             total = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId, statuses);
@@ -686,19 +685,12 @@ public class CampaignService {
         return out.isEmpty() ? null : out;
     }
 
-    /**
-     * Strict: an unrecognised engagement value is a 400, not a silently ignored filter — a chip
-     * that quietly returned the unfiltered log would be exactly the authoritative-looking lie
-     * this endpoint exists to remove.
-     */
-    private Engagement parseEngagement(String raw) {
-        if (raw == null || raw.isBlank()) return null;
-        return switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
-            case "opened" -> Engagement.OPENED;
-            case "clicked" -> Engagement.CLICKED;
-            default -> throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                    "engagement must be one of: opened, clicked");
-        };
+    /** No per-person opens or clicks: refused, not ignored, so no client takes the whole log for a subset. */
+    private static void refuseEngagementFilter(String raw) {
+        if (raw == null || raw.isBlank()) return;
+        throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                "The recipient log cannot be filtered by opens or clicks",
+                java.util.Map.of("engagement", "unsupported"));
     }
 
     /**
@@ -819,8 +811,9 @@ public class CampaignService {
 
     /**
      * Aggregate send/engagement counts for one of the org's campaigns (spec §3). {@code sent} is every row that
-     * left the queue; {@code opened}/{@code clicked} read the webhook-projected timestamps; {@code attributedPurchases}
-     * counts checkout-start sessions with the campaign's tag, {@code attributedOrders} the live orders behind revMinor.
+     * left the queue; {@code opened}/{@code clicked} count rows the webhook stamped (unsubscribe-link clicks and
+     * objected members are not; rows stamped before 21 October 2026 may include both); {@code attributedPurchases} counts
+     * checkout-start sessions with the campaign's tag, {@code attributedOrders} the live orders behind revMinor.
      */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID orgId, UUID campaignId) {

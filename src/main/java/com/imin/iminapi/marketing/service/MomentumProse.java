@@ -24,6 +24,9 @@ import java.util.Locale;
  * would have used it is OMITTED rather than filled with a plausible-sounding default. The
  * persuasion in the card comes from {@code TRIGGERS[t].why} on the FE, which is static
  * trigger-explanation copy and is clearly not a metric.
+ *
+ * <p>{@code clicked_no_buy} gets no server prose: the webapp words it from the snapshot's {@code clickedNoTicket}
+ * in the reader's language.
  */
 public final class MomentumProse {
 
@@ -42,6 +45,7 @@ public final class MomentumProse {
                     : "FINAL CALL";
             case LAUNCH_PUSH -> "TICKETS LIVE";
             case SLUMP -> m.daysOut() + " DAYS OUT";
+            case CLICKED_NO_BUY -> null;
         };
     }
 
@@ -65,6 +69,7 @@ public final class MomentumProse {
                     ? "On-sale " + plural(m.hoursSinceOnSale(), "hour", "hours")
                     : "On-sale " + plural(m.hoursSinceOnSale() / 24, "day", "days");
             case SLUMP -> plural(m.daysOut(), "day", "days") + " out";
+            case CLICKED_NO_BUY -> null;
         };
     }
 
@@ -117,6 +122,7 @@ public final class MomentumProse {
                         + m.projectedSellThroughPct() + "% of capacity"
                         + (m.projectedSellThroughPct() < 100 ? ", not sold out" : "");
             }
+            case CLICKED_NO_BUY -> null;
         };
     }
 

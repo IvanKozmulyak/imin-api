@@ -12,6 +12,9 @@ import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.EmailNormalizer;
+import com.imin.iminapi.audience.service.SegmentFacts;
+import com.imin.iminapi.audience.service.SegmentRuleRow;
+import com.imin.iminapi.audience.service.SegmentRules;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
@@ -26,17 +29,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /** The segment rule grammar: groups, the new fields, validation and ConsentGate exclusion reasons. */
 @IminIntegrationTest
@@ -182,6 +192,42 @@ class SegmentRuleGrammarTest {
                 .containsExactlyInAnyOrder(loyal.getMembershipId(), repeat.getMembershipId());
         assertThat(ids((groups(group("and", rule("guest_class", "==", "none"))))))
                 .containsExactly(noRow.getMembershipId());
+    }
+
+    // Half past midnight UTC, so a calendar-day count would disagree with whole 24-hour periods.
+    private static final Instant ENGAGEMENT_AS_OF = Instant.parse("2026-10-20T00:30:00Z");
+
+    /** Whole elapsed 24-hour periods since the instant, floored at 0; no fact counts as more days than any number. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("engagementCases")
+    void engagementFieldsMatchOnWholeElapsedDays(String name, String field, String op, String value,
+                                                 Duration sinceOpen, Duration sinceTicketClick, boolean matches) {
+        UUID id = UUID.randomUUID();
+        Map<UUID, Instant> open = sinceOpen == null ? Map.of() : Map.of(id, ENGAGEMENT_AS_OF.minus(sinceOpen));
+        Map<UUID, Instant> ticket = sinceTicketClick == null ? Map.of()
+                : Map.of(id, ENGAGEMENT_AS_OF.minus(sinceTicketClick));
+        SegmentFacts facts = new SegmentFacts(Map.of(), Map.of(), open, ticket, ENGAGEMENT_AS_OF);
+        SegmentRuleRow row = new SegmentRuleRow(id, 0, 0, null, 0, null, null, null, null);
+
+        assertThat(SegmentRules.matches(SegmentRules.parse(groups(group("and", rule(field, op, value)))), row, facts))
+                .isEqualTo(matches);
+    }
+
+    static Stream<Arguments> engagementCases() {
+        Duration ninety = Duration.ofDays(90);
+        return Stream.of(
+                arguments("exactly 90 x 24 h is 90 days", "days_since_open", "<=", "90", ninety, null, true),
+                arguments("90 x 24 h + 1 s is still 90 days", "days_since_open", "<=", "90",
+                        ninety.plusSeconds(1), null, true),
+                arguments("90 x 24 h + 23 h across a UTC midnight is still 90 days", "days_since_open", "<=", "90",
+                        ninety.plusHours(23), null, true),
+                arguments("91 x 24 h is 91 days", "days_since_open", "<=", "90", Duration.ofDays(91), null, false),
+                arguments("never opened is not within 90 days", "days_since_open", "<=", "90", null, null, false),
+                arguments("never opened is more than 90 days", "days_since_open", ">=", "90", null, null, true),
+                arguments("an open in the future is 0 days", "days_since_open", "==", "0",
+                        Duration.ofDays(-2), null, true),
+                arguments("a ticket click reads its own instant, not the open", "days_since_ticket_click", "==", "10",
+                        Duration.ofDays(1), Duration.ofDays(10), true));
     }
 
     @Test

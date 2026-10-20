@@ -1,18 +1,35 @@
 package com.imin.iminapi.marketing.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.audience.model.Consumer;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.marketing.MomentumTestSupport;
 import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
+import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Notification;
+import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.support.PgFaults;
@@ -20,15 +37,19 @@ import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.AopTestUtils;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 
@@ -57,6 +78,14 @@ class MomentumEvaluatorTest {
     @Autowired NotificationRepository notifications;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier(PlanRefreshExecutor.NAME) Executor planRefreshExecutor;
+    @Autowired IminFixtures fx;
+    @Autowired ConsumerRepository consumers;
+    @Autowired MembershipRepository memberships;
+    @Autowired CampaignRepository campaigns;
+    @Autowired CampaignRecipientRepository recipients;
+    @Autowired SegmentRepository segmentRepo;
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
     private int defaultFloor;
@@ -79,6 +108,7 @@ class MomentumEvaluatorTest {
     void deleteOwnRows() {
         AsyncDrain.drain(planRefreshExecutor);
         for (UUID orgId : orgIds) jdbc.update("delete from momentum_suggestions where org_id = ?", orgId);
+        CampaignRows.delete(jdbc, orgIds);
         OrgRows.delete(jdbc, orgIds);
     }
 
@@ -354,5 +384,180 @@ class MomentumEvaluatorTest {
 
         assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).contains("launch_push");
         assertThat(notifications.findByUserIdAndReadAtIsNull(ownerId)).isEmpty();
+    }
+
+    // Excluded clickers come first, so a dropped filter would return them: a ticket holder, an 8-day-old click,
+    // another event's campaign, an objected member and one pending erasure.
+    @Test
+    void clickedNoBuy_snapshotsTheClickersWithoutALiveTicket() throws Exception {
+        UUID event = quietEvent(0, 100);
+        UUID org = support.orgIdOf(event);
+        Instant now = Instant.now();
+
+        String holder = fx.email("cnb-holder");
+        clicker(org, event, holder, now.minus(Duration.ofHours(1)), false, "active");
+        ticketFor(event, holder, Ticket.STATE_ISSUED);
+        clicker(org, event, fx.email("cnb-stale"), now.minus(Duration.ofDays(8)), false, "active");
+        clicker(org, otherEventOf(event), fx.email("cnb-elsewhere"), now.minus(Duration.ofHours(1)), false, "active");
+        clicker(org, event, fx.email("cnb-objected"), now.minus(Duration.ofHours(1)), true, "active");
+        clicker(org, event, fx.email("cnb-erasing"), now.minus(Duration.ofHours(1)), false, "erase_pending");
+
+        String refunded = fx.email("cnb-refunded");
+        UUID refundedOnly = clicker(org, event, refunded, now.minus(Duration.ofDays(6)), false, "active");
+        ticketFor(event, refunded, Ticket.STATE_REFUNDED);
+        UUID twice = clicker(org, event, fx.email("cnb-twice"), now.minus(Duration.ofHours(3)), false, "active");
+        clickAgain(org, event, twice, now.minus(Duration.ofHours(4)));
+        List<UUID> included = List.of(refundedOnly, twice,
+                clicker(org, event, fx.email("cnb-recent"), now.minus(Duration.ofHours(2)), false, "active"),
+                clicker(org, event, fx.email("cnb-midweek"), now.minus(Duration.ofDays(3)), false, "active"));
+        flips.set(thresholds, "minAudienceFloor", included.size());
+
+        evaluate(event);
+
+        assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).containsExactly("clicked_no_buy");
+        MomentumSuggestion made = live(event).get(0);
+        UUID segmentId = UUID.fromString(JSON.readTree(made.getDraftPayload()).path("segmentId").asText());
+        Segment snapshot = segmentRepo.findByIdAndOrgId(segmentId, org).orElseThrow();
+        assertThat(snapshot.getKind()).isEqualTo("static");
+        assertThat(snapshot.getOrigin()).isEqualTo(Segment.ORIGIN_MOMENTUM);
+        assertThat(snapshot.getName()).isEqualTo("Momentum: clicked tickets, no ticket · Momentum Test Event");
+        List<UUID> frozen = new ArrayList<>();
+        for (JsonNode id : JSON.readTree(snapshot.getSnapshotIds())) frozen.add(UUID.fromString(id.asText()));
+        assertThat(frozen).containsExactlyInAnyOrderElementsOf(included);
+        assertThat(JSON.readTree(made.getMetricsSnapshot()).path("clickedNoTicket").asInt(-1))
+                .isEqualTo(included.size());
+        assertThat(notifications.findByUserIdAndReadAtIsNull(ownerOf(event)))
+                .extracting(Notification::getKind).containsExactly("momentum_suggestion");
+    }
+
+    enum Guardrail {
+        ANOTHER_TRIGGER_LIVE, OWN_SUGGESTION_IN_COOLDOWN, SOLD_OUT, BELOW_FLOOR, EVERY_CLICKER_HOLDS_A_TICKET
+    }
+
+    /** Each case has three recent clickers and a floor they meet, so only its guardrail holds the suggestion back. */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Guardrail.class)
+    void clickedNoBuy_isHeldBackByItsGuardrails(Guardrail guardrail) {
+        UUID event = guardrail == Guardrail.SOLD_OUT ? quietEvent(100, 100) : quietEvent(0, 100);
+        UUID org = support.orgIdOf(event);
+        int clickers = 3;
+        List<String> emails = new ArrayList<>();
+        for (int i = 0; i < clickers; i++) {
+            emails.add(fx.email("cnb-guard"));
+            clicker(org, event, emails.get(i), Instant.now().minus(Duration.ofHours(1)), false, "active");
+        }
+        flips.set(thresholds, "minAudienceFloor", clickers);
+        switch (guardrail) {
+            case ANOTHER_TRIGGER_LIVE -> prior(event, "launch_push", "suggested", Duration.ofHours(1));
+            case OWN_SUGGESTION_IN_COOLDOWN -> prior(event, "clicked_no_buy", "dismissed", Duration.ofDays(3));
+            // The dismissed sold_out keeps the sales-curve trigger in cooldown, so no live suggestion stands in.
+            case SOLD_OUT -> prior(event, "sold_out", "dismissed", Duration.ofDays(1));
+            case BELOW_FLOOR -> flips.set(thresholds, "minAudienceFloor", clickers + 1);
+            // With no floor, only the empty-target check keeps a suggestion for nobody from being written.
+            case EVERY_CLICKER_HOLDS_A_TICKET -> {
+                emails.forEach(email -> ticketFor(event, email, Ticket.STATE_ISSUED));
+                flips.set(thresholds, "minAudienceFloor", 0);
+            }
+        }
+
+        evaluate(event);
+
+        assertThat(suggestions.findByEventIdAndTriggerTypeAndStatus(event, "clicked_no_buy", "suggested")).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from segments where org_id = ? and origin = 'momentum'",
+                Integer.class, org)).isZero();
+    }
+
+    /** On sale for a day and a month out: no sales-curve rule matches while sell-through stays low. */
+    private UUID quietEvent(int sold, int capacity) {
+        return liveEvent(sold, capacity, Instant.now().minus(Duration.ofHours(24)), Instant.now().plus(Duration.ofDays(30)));
+    }
+
+    private UUID otherEventOf(UUID eventId) {
+        Event e = new Event();
+        e.setOrgId(support.orgIdOf(eventId));
+        e.setName("Another Event");
+        e.setSlug("event-" + UUID.randomUUID());
+        e.setStatus(EventStatus.LIVE);
+        e.setStartsAt(Instant.now().plus(Duration.ofDays(30)));
+        e.setCreatedBy(ownerOf(eventId));
+        return events.save(e).getId();
+    }
+
+    /** A subscribed member whose row in a sent email campaign about {@code eventId} has a ticket click at {@code at}. */
+    private UUID clicker(UUID orgId, UUID eventId, String email, Instant at, boolean objected, String status) {
+        Consumer consumer = new Consumer();
+        consumer.setNormalizedEmail(email.toLowerCase(Locale.ROOT));
+        consumer = consumers.save(consumer);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(consumer.getConsumerId());
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
+        m.setObjectedProfiling(objected);
+        m.setStatus(status);
+        m = memberships.save(m);
+
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("clicked-no-buy");
+        c.setStatus("sent");
+        c.setEventId(eventId);
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaigns.save(c);
+
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(m.getMembershipId());
+        r.setEmail(email);
+        r.setStatus("delivered");
+        r.setClickedAt(at);
+        r.setTicketClickedAt(at);
+        recipients.save(r);
+        return m.getMembershipId();
+    }
+
+    /** A second email campaign about the event whose ticket link the member clicked too. */
+    private void clickAgain(UUID orgId, UUID eventId, UUID membershipId, Instant at) {
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("clicked-no-buy-2");
+        c.setStatus("sent");
+        c.setEventId(eventId);
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaigns.save(c);
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(membershipId);
+        r.setEmail("again-" + membershipId + "@example.com");
+        r.setStatus("delivered");
+        r.setClickedAt(at);
+        r.setTicketClickedAt(at);
+        recipients.save(r);
+    }
+
+    /** A non-test order for the event, matched to the member by email, holding one ticket in {@code state}. */
+    private void ticketFor(UUID eventId, String email, String state) {
+        fx.ticket(fx.order(events.findById(eventId).orElseThrow(), email), state);
+    }
+
+    private void prior(UUID eventId, String trigger, String status, Duration ago) {
+        MomentumSuggestion s = new MomentumSuggestion();
+        s.setId(UUID.randomUUID());
+        s.setOrgId(support.orgIdOf(eventId));
+        s.setEventId(eventId);
+        s.setTriggerType(trigger);
+        s.setStatus(status);
+        s.setMetricsSnapshot("{}");
+        s.setDraftPayload("{}");
+        s.setSuggestedAt(Instant.now().minus(ago));
+        suggestions.save(s);
     }
 }

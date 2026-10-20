@@ -15,8 +15,8 @@ import java.util.UUID;
  * points outside the caller's org. The client decides how to render absence.
  *
  * <p>{@code status} is the lifecycle only (pending|sent|delivered|bounced|failed|complained|
- * unsubscribed|skipped). Engagement lives in {@code openedAt}/{@code clickedAt} and is
- * orthogonal — a row can be {@code delivered} AND opened.
+ * unsubscribed|skipped). {@code openedAt}/{@code clickedAt} are always null: the log shows no
+ * per-person opens or clicks (only campaign totals do); the fields stay for contract stability.
  */
 public record RecipientDto(UUID id, UUID membershipId, String email, String name, String status,
                            String skipReason, String providerMessageId,
@@ -26,7 +26,7 @@ public record RecipientDto(UUID id, UUID membershipId, String email, String name
     /** @param name resolved membership display name, or {@code null} when unavailable. */
     public static RecipientDto from(CampaignRecipient r, String name) {
         return new RecipientDto(r.getId(), r.getMembershipId(), r.getEmail(), name, r.getStatus(),
-                r.getSkipReason(), r.getProviderMessageId(), r.getOpenedAt(), r.getClickedAt(),
+                r.getSkipReason(), r.getProviderMessageId(), null, null,
                 r.getDeliveredAt(), r.getLastEventAt());
     }
 }

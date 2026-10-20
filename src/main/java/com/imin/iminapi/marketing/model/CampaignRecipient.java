@@ -44,11 +44,16 @@ public class CampaignRecipient {
     @Column(name = "provider_message_id")
     private String providerMessageId;
 
-    @Column(name = "opened_at")
+    // Only the webhook projector's UPDATEs write these three, so a whole-row save cannot revert them.
+    @Column(name = "opened_at", updatable = false)
     private Instant openedAt;
 
-    @Column(name = "clicked_at")
+    @Column(name = "clicked_at", updatable = false)
     private Instant clickedAt;
+
+    /** Latest click on the campaign event's ticket page link (V191); a ticket click also stamps {@code clickedAt}. */
+    @Column(name = "ticket_clicked_at", updatable = false)
+    private Instant ticketClickedAt;
 
     @Column(name = "delivered_at")
     private Instant deliveredAt;

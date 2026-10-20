@@ -29,6 +29,9 @@ public interface MomentumSuggestionRepository extends JpaRepository<MomentumSugg
     /** Live suggestion for an event (Momentum sales-dashboard card), regardless of trigger. */
     List<MomentumSuggestion> findByEventIdAndStatus(UUID eventId, String status);
 
+    /** Whether the event has a suggestion in {@code status} under any trigger; clicked_no_buy stands down on one. */
+    boolean existsByEventIdAndStatus(UUID eventId, String status);
+
     /** Live 'suggested' rows for the expiry sweep. */
     List<MomentumSuggestion> findByStatus(String status);
 

@@ -6,6 +6,7 @@ import com.imin.iminapi.audience.service.ConsentChanged;
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -37,8 +38,9 @@ import java.util.UUID;
  * comes from the owned RFC-8058 one-click endpoint (Phase 2), which is why
  * {@code ConsentService} is not a dependency of this projector.
  *
- * <p>Opens and clicks never reach it: the controller keeps them as anonymous evidence
- * only, so nothing stamps {@code opened_at}/{@code clicked_at} on a recipient row.
+ * <p>Opens and clicks stamp only the recipient row ({@code opened_at}, {@code clicked_at},
+ * {@code ticket_clicked_at}; latest instant wins, {@code last_event_at} untouched), never the
+ * membership, and nothing for a membership that objected. An unsubscribe-link click writes nothing.
  */
 @Service
 public class ResendWebhookProjector {
@@ -53,6 +55,7 @@ public class ResendWebhookProjector {
     private final ApplicationEventPublisher events;
     private final FanFeatureRepository fanFeatureRepo;
     private final ConsentConfirmationTokenRepository confirmationTokens;
+    private final MarketingEmailProperties marketingProps;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
@@ -61,7 +64,8 @@ public class ResendWebhookProjector {
                                   ComplaintRateBreaker complaintRateBreaker,
                                   ApplicationEventPublisher events,
                                   FanFeatureRepository fanFeatureRepo,
-                                  ConsentConfirmationTokenRepository confirmationTokens) {
+                                  ConsentConfirmationTokenRepository confirmationTokens,
+                                  MarketingEmailProperties marketingProps) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
@@ -70,6 +74,7 @@ public class ResendWebhookProjector {
         this.events = events;
         this.fanFeatureRepo = fanFeatureRepo;
         this.confirmationTokens = confirmationTokens;
+        this.marketingProps = marketingProps;
     }
 
     /**
@@ -87,6 +92,13 @@ public class ResendWebhookProjector {
     @Transactional
     public void project(UUID campaignId, UUID recipientId, UUID membershipId,
                         String email, String type, String bounceType, Instant occurredAt) {
+        project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt, null);
+    }
+
+    /** @param clickLink Resend's {@code data.click.link} for an {@code email.clicked} event, else null. */
+    @Transactional
+    public void project(UUID campaignId, UUID recipientId, UUID membershipId,
+                        String email, String type, String bounceType, Instant occurredAt, String clickLink) {
         // A signed body with no "type" is malformed, not fatal (mkt-core-14). provider_events.type
         // is nullable so the dedup claim succeeds, and a String switch on null throws NPE — which
         // rolled that claim back with it, so every Resend retry repeated the 500 for ever instead
@@ -150,7 +162,24 @@ public class ResendWebhookProjector {
                 if (recipientId != null) recipientRepo.markComplained(recipientId, occurredAt);
                 complaintRateBreaker.evaluate(campaignId, orgId);
             }
+            case ProviderEvent.TYPE_OPENED -> {
+                if (recipientId != null) recipientRepo.markOpened(recipientId, occurredAt);
+            }
+            case ProviderEvent.TYPE_CLICKED -> {
+                if (recipientId != null) projectClick(campaignId, recipientId, occurredAt, clickLink);
+            }
             default -> { /* unknown type — logged and deduped upstream, no projection */ }
+        }
+    }
+
+    private void projectClick(UUID campaignId, UUID recipientId, Instant occurredAt, String clickLink) {
+        UUID eventId = campaignId == null ? null
+                : campaignRepo.findById(campaignId).map(Campaign::getEventId).orElse(null);
+        switch (ClickedLink.classify(clickLink, eventId, marketingProps.getBuyerSiteBaseUrl(),
+                marketingProps.getApiPublicBaseUrl())) {
+            case UNSUBSCRIBE -> { /* the opt-out is recorded by the unsubscribe endpoint, not counted as a click */ }
+            case TICKET -> recipientRepo.markTicketClicked(recipientId, occurredAt);
+            case OTHER, UNKNOWN -> recipientRepo.markClicked(recipientId, occurredAt);
         }
     }
 

@@ -101,10 +101,15 @@ public class MomentumPlanTarget {
 
     /** Freezes the target into a static segment the draft campaign will send to; returns its id. */
     public UUID snapshot(UUID orgId, String eventName, Target target) {
-        List<String> ids = target.membershipIds().stream().map(UUID::toString).sorted().toList();
+        return snapshot(orgId, name(eventName, target), target.membershipIds());
+    }
+
+    /** Freezes {@code membershipIds} into a static Momentum segment named {@code name} (clamped); returns its id. */
+    public UUID snapshot(UUID orgId, String name, List<UUID> membershipIds) {
+        List<String> ids = membershipIds.stream().map(UUID::toString).sorted().toList();
         Segment s = new Segment();
         s.setOrgId(orgId);
-        s.setName(name(eventName, target));
+        s.setName(name.length() <= MAX_NAME ? name : name.substring(0, MAX_NAME));
         s.setKind("static");
         // The origin makes SendPathGuard apply ConsentGate at send and hides the row from the Segments list.
         s.setOrigin(Segment.ORIGIN_MOMENTUM);

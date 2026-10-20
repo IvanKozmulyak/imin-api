@@ -43,7 +43,7 @@ public record DsarRecords(
                 fanFeatures, rows, emailEngagement, consentConfirmations);
     }
 
-    /** The same records with the historic open/click timestamps; null when none are held. */
+    /** The same records with the email open and click timestamps; null when none are held. */
     public DsarRecords withEmailEngagement(EmailEngagementRecord engagement) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
                 fanFeatures, importProvenance, engagement, consentConfirmations);
@@ -127,8 +127,11 @@ public record DsarRecords(
             String rejectReason,
             Instant createdAt) {}
 
-    /** Last open and click recorded on the membership before tracking was switched off; no longer written. */
-    public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt) {}
+    /**
+     * Latest email open, email click and click on a campaign event's ticket link: the later of the membership's
+     * frozen {@code last_email_open}/{@code last_email_click} columns and this person's campaign recipient rows.
+     */
+    public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt, Instant lastTicketLinkClickedAt) {}
 
     /**
      * One confirmation email for a door QR, survey or site follow sign-up: when it went, until when it worked,

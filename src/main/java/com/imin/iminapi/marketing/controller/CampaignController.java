@@ -173,9 +173,8 @@ public class CampaignController {
      *
      * @param status     lifecycle filter; comma-separated for multi-status chips, e.g.
      *                   {@code bounced,failed,complained}. A single value behaves as before.
-     * @param engagement {@code opened} | {@code clicked} — an axis ORTHOGONAL to {@code status},
-     *                   read from {@code opened_at}/{@code clicked_at}. Combinable with
-     *                   {@code status}. Any other value is a 400 FIELD_INVALID.
+     * @param engagement refused: any value is a 400 FIELD_INVALID ({@code fields.engagement}),
+     *                   since the log shows no per-person opens or clicks.
      */
     @GetMapping("/{id}/recipients")
     public com.imin.iminapi.marketing.dto.RecipientPage recipients(

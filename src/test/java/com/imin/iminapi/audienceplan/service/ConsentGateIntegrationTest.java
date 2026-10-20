@@ -526,13 +526,7 @@ class ConsentGateIntegrationTest {
         assertReason(gate(), badOrg, mid, ConsentGate.RETENTION_3Y);
     }
 
-    // ── tracking, isolation, breakdown ─────────────────────────────────────
-
-    @Test
-    void canTrack_isAlwaysFalse() {
-        assertThat(gate().canTrack()).isFalse();
-        assertThat(gate(true).canTrack()).isFalse();
-    }
+    // ── isolation, breakdown ───────────────────────────────────────────────
 
     @Test
     void membershipOfAnotherOrg_isNeverMailableNorLeaked() {

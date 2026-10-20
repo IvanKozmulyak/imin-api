@@ -75,11 +75,6 @@ public class ConsentGate {
         this.cutoff = new RetentionCutoff(orgRepo, logic, clock);
     }
 
-    /** Open/click tracking is off for everyone. */
-    public boolean canTrack() {
-        return false;
-    }
-
     /** False for a membership of another org or one that does not exist. */
     @Transactional(readOnly = true)
     public boolean canMarket(UUID orgId, UUID membershipId) {

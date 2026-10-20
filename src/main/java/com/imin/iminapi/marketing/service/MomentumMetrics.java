@@ -199,6 +199,11 @@ public record MomentumMetrics(
 
     /** JSON for metrics_snapshot (audit + "why am I seeing this"). */
     public String toJson() {
+        return toJson(null);
+    }
+
+    /** As {@link #toJson()}, plus {@code clickedNoTicket} (the clicked_no_buy audience at evaluation) when non-null. */
+    public String toJson(Integer clickedNoTicket) {
         return "{"
                 + "\"sold\":" + sold + ","
                 + "\"capacity\":" + capacity + ","
@@ -211,6 +216,7 @@ public record MomentumMetrics(
                 + "\"sparkStartDate\":" + (sparkStartDate == null ? "null" : "\"" + sparkStartDate + "\"") + ","
                 + "\"spark\":" + sparkJson() + ","
                 + "\"seatsLeft\":" + seatsLeft
+                + (clickedNoTicket == null ? "" : ",\"clickedNoTicket\":" + clickedNoTicket)
                 + "}";
     }
 

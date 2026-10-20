@@ -21,7 +21,7 @@ experiments:
   holdout_pct: 15
   holdout_min_mailable: 60
   default_timing_arms: [launch, d3]
-# Open/click tracking is off for everyone, so there is no tracking rule here.
+# Open/click tracking has no consent rule here: it is disclosed in the privacy policy.
 legal:
   retention_days: 1095
   soft_opt_in_requires_paid_order_and_org_seller: true

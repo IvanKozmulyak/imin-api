@@ -12,11 +12,11 @@ public final class OrganizerTerms {
 
     private OrganizerTerms() {}
 
-    /** The id the published organizer-terms page prints; the dashboard's ORGANIZER_TERMS_VERSION matches it. */
+    /** The current terms id; during a release the accepted set also holds the next id the dashboard may send. */
     public static final String CURRENT_VERSION = "1.0";
 
     // Bump order: add the new id here and ship the API, then ship the dashboard, then drop the old id.
-    private static final Set<String> ACCEPTED_VERSIONS = Set.of(CURRENT_VERSION);
+    private static final Set<String> ACCEPTED_VERSIONS = Set.of(CURRENT_VERSION, "1.1");
 
     /** The {@code termsVersion} field message for a blank or unknown version. */
     public static final String STALE_MESSAGE = "The organizer terms have changed; accept the current version";

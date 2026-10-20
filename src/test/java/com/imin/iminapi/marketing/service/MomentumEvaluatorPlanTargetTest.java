@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
@@ -8,6 +9,7 @@ import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
@@ -30,6 +32,7 @@ import java.util.stream.IntStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -56,9 +59,11 @@ class MomentumEvaluatorPlanTargetTest {
     final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     final AudiencePlanProperties planProps = new AudiencePlanProperties();
     final ConsentGate consentGate = mock(ConsentGate.class);
+    final CampaignRecipientRepository recipients = mock(CampaignRecipientRepository.class);
     final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, salesTotals, suggestions,
             new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher,
-            new AllCampaignsConsent(planProps, consentGate));
+            new AllCampaignsConsent(planProps, consentGate),
+            recipients, mock(MembershipRepository.class));
 
     UUID orgId;
     UUID repeatId;
@@ -93,7 +98,7 @@ class MomentumEvaluatorPlanTargetTest {
         when(sendGate.evaluate(any(), any())).thenAnswer(inv ->
                 new SendGateService.GateResult(inv.getArgument(1), List.of()));
         when(planTarget.best(event)).thenReturn(Optional.empty());
-        when(planTarget.snapshot(eq(orgId), eq("Night Kit"), any())).thenReturn(snapshotId);
+        when(planTarget.snapshot(eq(orgId), eq("Night Kit"), any(MomentumPlanTarget.Target.class))).thenReturn(snapshotId);
         when(copy.generate(any(), any(), any(), any(), any(), any(), any()))
                 .thenAnswer(inv -> new MomentumDraftPayload("s", "p", "b",
                         ((UUID) inv.getArgument(6)).toString(), null, "why"));
@@ -120,7 +125,7 @@ class MomentumEvaluatorPlanTargetTest {
         evaluator.evaluateOne(event, NOW);
 
         verify(sendGate).evaluate(orgId, repeatMembers);
-        verify(planTarget, never()).snapshot(any(), any(), any());
+        verify(planTarget, never()).snapshot(any(), any(), any(MomentumPlanTarget.Target.class));
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
     }
 
@@ -133,7 +138,7 @@ class MomentumEvaluatorPlanTargetTest {
 
         evaluator.evaluateOne(event, NOW);
 
-        verify(planTarget, never()).snapshot(any(), any(), any());
+        verify(planTarget, never()).snapshot(any(), any(), any(MomentumPlanTarget.Target.class));
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
     }
 
@@ -188,6 +193,36 @@ class MomentumEvaluatorPlanTargetTest {
         when(planTarget.best(event)).thenReturn(Optional.of(new MomentumPlanTarget.Target("loyal", "same", planMembers)));
         IllegalStateException boom = new IllegalStateException("copy failed");
         doThrow(boom).when(copy).generate(any(), any(), any(), any(), any(), any(), any());
+        IllegalStateException cleanup = new IllegalStateException("delete failed");
+        doThrow(cleanup).when(planTarget).discard(orgId, snapshotId);
+
+        assertThatThrownBy(() -> evaluator.evaluateOne(event, NOW)).isSameAs(boom);
+        assertThat(boom.getSuppressed()).containsExactly(cleanup);
+    }
+
+    private void clickedNoBuyWithSnapshot() {
+        when(salesTotals.soldForEvent(event.getId())).thenReturn(50); // no sales-curve rule fires
+        when(recipients.findTicketClickersForEvent(eq(orgId), eq(event.getId()), any())).thenReturn(ids(12));
+        when(planTarget.snapshot(eq(orgId), any(String.class), anyList())).thenReturn(snapshotId);
+    }
+
+    @Test
+    void clickedNoBuy_suggestionWriteFails_snapshotIsDiscarded_andTheErrorSurfaces() {
+        clickedNoBuyWithSnapshot();
+        IllegalStateException boom = new IllegalStateException("save failed");
+        when(suggestions.save(any())).thenThrow(boom);
+
+        assertThatThrownBy(() -> evaluator.evaluateOne(event, NOW)).isSameAs(boom);
+
+        verify(planTarget).discard(orgId, snapshotId);
+        verify(notifier, never()).notifyOwner(any(), any(), any());
+    }
+
+    @Test
+    void clickedNoBuy_failingDiscard_isSuppressed_andTheOriginalErrorSurfaces() {
+        clickedNoBuyWithSnapshot();
+        IllegalStateException boom = new IllegalStateException("save failed");
+        when(suggestions.save(any())).thenThrow(boom);
         IllegalStateException cleanup = new IllegalStateException("delete failed");
         doThrow(cleanup).when(planTarget).discard(orgId, snapshotId);
 
@@ -292,7 +327,7 @@ class MomentumEvaluatorPlanTargetTest {
 
         evaluator.evaluateOne(event, NOW);
 
-        verify(planTarget, never()).snapshot(any(), any(), any());
+        verify(planTarget, never()).snapshot(any(), any(), any(MomentumPlanTarget.Target.class));
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
     }
 

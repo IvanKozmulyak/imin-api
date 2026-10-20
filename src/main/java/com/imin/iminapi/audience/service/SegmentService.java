@@ -11,6 +11,7 @@ import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -23,6 +24,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -45,6 +48,8 @@ public class SegmentService {
     private final EventRepository eventRepo;
     private final ConsentGate consentGate;
     private final AudiencePlanLogic planLogic;
+    private final CampaignRecipientRepository recipientRepo;
+    private final Clock clock;
 
     public SegmentService(SegmentRepository segmentRepo,
                           MembershipRepository membershipRepo,
@@ -53,7 +58,9 @@ public class SegmentService {
                           FanFeatureRepository fanFeatureRepo,
                           EventRepository eventRepo,
                           ConsentGate consentGate,
-                          AudiencePlanLogic planLogic) {
+                          AudiencePlanLogic planLogic,
+                          CampaignRecipientRepository recipientRepo,
+                          Clock clock) {
         this.segmentRepo = segmentRepo;
         this.membershipRepo = membershipRepo;
         this.orgRepo = orgRepo;
@@ -62,6 +69,8 @@ public class SegmentService {
         this.eventRepo = eventRepo;
         this.consentGate = consentGate;
         this.planLogic = planLogic;
+        this.recipientRepo = recipientRepo;
+        this.clock = clock;
     }
 
     /** The 8 genre bucket keys a {@code genre} rule accepts. */
@@ -277,7 +286,7 @@ public class SegmentService {
         return parsed;
     }
 
-    /** Fan features and ticket facts, read only for the fields the rules use. */
+    /** Fan features, ticket and email-engagement facts, read only for the fields the rules use. */
     SegmentFacts loadFacts(UUID orgId, SegmentRules.Parsed rules) {
         Set<String> fields = rules.fields();
         Map<UUID, SegmentFacts.Features> features = Map.of();
@@ -306,7 +315,17 @@ public class SegmentService {
                         .add(row[1].toString().toLowerCase(Locale.ROOT));
             }
         }
-        return new SegmentFacts(features, attended);
+        Map<UUID, Instant> lastOpen = Map.of();
+        Map<UUID, Instant> lastTicketClick = Map.of();
+        if (fields.stream().anyMatch(SegmentRules.ENGAGEMENT_FIELDS::contains)) {
+            lastOpen = new HashMap<>();
+            lastTicketClick = new HashMap<>();
+            for (Object[] row : recipientRepo.findEngagementByOrg(orgId)) {
+                if (row[1] != null) lastOpen.put((UUID) row[0], (Instant) row[1]);
+                if (row[2] != null) lastTicketClick.put((UUID) row[0], (Instant) row[2]);
+            }
+        }
+        return new SegmentFacts(features, attended, lastOpen, lastTicketClick, clock.instant());
     }
 
     /** Buckets with a positive weight in a taste JSON object. */

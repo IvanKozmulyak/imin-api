@@ -74,9 +74,8 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                          @Param("to") java.time.Instant to);
 
     // ---- recipient log paging (GET /marketing/campaigns/{id}/recipients) ----
-    // Status and engagement are ORTHOGONAL axes — a row can be `delivered` AND opened — so the
-    // filter combinations are spelled out as distinct derived queries rather than one @Query with
-    // nullable :status / :engagement params. That is deliberate on two counts:
+    // The status filter is spelled out as distinct derived queries rather than one @Query with a
+    // nullable :status param. That is deliberate on two counts:
     //   1. A nullable String param bound into a SQL function is the Postgres trap that bit
     //      MembershipRepository: Hibernate binds null as bytea and Postgres rejects it. Derived queries bind no param at all on the branches that don't need it.
     //   2. Each method name below is UNIQUE — no new overloaded finders, and notably no paged
@@ -89,15 +88,7 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     java.util.List<CampaignRecipient> findByCampaignId(UUID campaignId, org.springframework.data.domain.Pageable pageable);
 
-    java.util.List<CampaignRecipient> findByCampaignIdAndOpenedAtNotNull(UUID campaignId, org.springframework.data.domain.Pageable pageable);
-
-    java.util.List<CampaignRecipient> findByCampaignIdAndClickedAtNotNull(UUID campaignId, org.springframework.data.domain.Pageable pageable);
-
     java.util.List<CampaignRecipient> findByCampaignIdAndStatusIn(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
-
-    java.util.List<CampaignRecipient> findByCampaignIdAndStatusInAndOpenedAtNotNull(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
-
-    java.util.List<CampaignRecipient> findByCampaignIdAndStatusInAndClickedAtNotNull(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
 
     // ---- `total` for the active filter: one real aggregate per find-branch above ----
 
@@ -108,10 +99,6 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     long countByCampaignIdAndOpenedAtNotNull(UUID campaignId);
 
     long countByCampaignIdAndClickedAtNotNull(UUID campaignId);
-
-    long countByCampaignIdAndStatusInAndOpenedAtNotNull(UUID campaignId, java.util.Collection<String> statuses);
-
-    long countByCampaignIdAndStatusInAndClickedAtNotNull(UUID campaignId, java.util.Collection<String> statuses);
 
     long countByCampaignId(UUID campaignId);
 
@@ -327,6 +314,104 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     @org.springframework.transaction.annotation.Transactional
     @Query("UPDATE CampaignRecipient r SET r.status = 'complained', r.lastEventAt = :at WHERE r.id = :id")
     int markComplained(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Engagement writes skip a row whose membership objected (Art. 21); checked inside the UPDATE itself. */
+    String NOT_OBJECTED = " AND NOT EXISTS (SELECT m.membershipId FROM com.imin.iminapi.audience.model.Membership m"
+            + " WHERE m.membershipId = r.membershipId AND m.objectedProfiling = true)";
+
+    /**
+     * Stamp an open: {@code opened_at} keeps the latest instant whatever order Resend delivers in. Writes neither
+     * status nor {@code last_event_at}, which is the send time the caps and the frequency floor read.
+     *
+     * @return 1 when written, 0 when the row is missing or its membership objected
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.openedAt = GREATEST(COALESCE(r.openedAt, :at), :at)"
+            + " WHERE r.id = :id" + NOT_OBJECTED)
+    int markOpened(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Stamp a click on any link but the unsubscribe one; same rules as {@link #markOpened}. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.clickedAt = GREATEST(COALESCE(r.clickedAt, :at), :at)"
+            + " WHERE r.id = :id" + NOT_OBJECTED)
+    int markClicked(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /** Stamp a click on the campaign event's ticket page: {@code clicked_at} and {@code ticket_clicked_at}, latest wins. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE CampaignRecipient r SET r.clickedAt = GREATEST(COALESCE(r.clickedAt, :at), :at),"
+            + " r.ticketClickedAt = GREATEST(COALESCE(r.ticketClickedAt, :at), :at)"
+            + " WHERE r.id = :id" + NOT_OBJECTED)
+    int markTicketClicked(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /**
+     * Rows of {@code [campaignId, sent, opened, clicked]} for those of {@code ids} that have recipient rows; one query
+     * per list page. {@code sent} counts rows in {@code leftTheQueue}; opened/clicked count stamped rows, as the stats do.
+     */
+    @Query("""
+            select r.campaignId,
+                   sum(case when r.status in :leftTheQueue then 1L else 0L end),
+                   sum(case when r.openedAt is not null then 1L else 0L end),
+                   sum(case when r.clickedAt is not null then 1L else 0L end)
+              from CampaignRecipient r
+             where r.campaignId in :ids
+             group by r.campaignId
+            """)
+    List<Object[]> engagementCountsByCampaign(@Param("ids") java.util.Collection<UUID> ids,
+                                              @Param("leftTheQueue") java.util.Collection<String> leftTheQueue);
+
+    /**
+     * Members who clicked the ticket link of this org's email campaigns about {@code eventId} at or after
+     * {@code since}; objected and erase-pending members are left out.
+     */
+    @Query("""
+            select distinct r.membershipId
+              from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c,
+                   com.imin.iminapi.audience.model.Membership m
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and c.eventId = :eventId
+               and c.channel = 'email'
+               and r.ticketClickedAt >= :since
+               and m.membershipId = r.membershipId
+               and m.orgId = :orgId
+               and m.objectedProfiling = false
+               and m.status <> 'erase_pending'
+            """)
+    List<UUID> findTicketClickersForEvent(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
+                                          @Param("since") java.time.Instant since);
+
+    /**
+     * Rows of {@code [membershipId, lastOpenedAt, lastTicketClickedAt]} over this org's email campaigns, for members
+     * with at least one of the two; objected members are left out. Either time is null when there is none.
+     */
+    @Query("""
+            select r.membershipId, max(r.openedAt), max(r.ticketClickedAt)
+              from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c,
+                   com.imin.iminapi.audience.model.Membership m
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and c.channel = 'email'
+               and (r.openedAt is not null or r.ticketClickedAt is not null)
+               and m.membershipId = r.membershipId
+               and m.orgId = :orgId
+               and m.objectedProfiling = false
+             group by r.membershipId
+            """)
+    List<Object[]> findEngagementByOrg(@Param("orgId") UUID orgId);
+
+    /**
+     * Exactly one row of {@code [lastOpenedAt, lastClickedAt, lastTicketClickedAt]} over every recipient row of this
+     * membership, each null when there is none; no objection filter, because the Art.15 export shows what is held.
+     */
+    @Query("""
+            select max(r.openedAt), max(r.clickedAt), max(r.ticketClickedAt)
+              from CampaignRecipient r
+             where r.membershipId = :membershipId
+            """)
+    List<Object[]> findEngagementOfMembership(@Param("membershipId") UUID membershipId);
 
     /**
      * Retire the rows that burned their whole attempt budget: {@code pending} with

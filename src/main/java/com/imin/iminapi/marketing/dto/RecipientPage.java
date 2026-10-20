@@ -9,7 +9,7 @@ import java.util.List;
  * unchanged. {@code total} and {@code counts} are additive:
  * <ul>
  *   <li>{@code total} — real SQL count of the rows matching the ACTIVE filter
- *       ({@code status} + {@code engagement}), so the client can page the current subset
+ *       ({@code status}), so the client can page the current subset
  *       honestly instead of guessing from a page-scoped tally.</li>
  *   <li>{@code counts} — whole-log aggregates for the filter chips, unaffected by the
  *       active filter or the current page. When no filter is applied,

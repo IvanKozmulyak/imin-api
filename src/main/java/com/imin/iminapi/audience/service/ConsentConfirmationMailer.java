@@ -26,7 +26,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import java.util.Map;
 
 /**
- * Sends the confirmation email after commit, From {@code "<Organizer> via IMIN"}, no tracking; normally off the request
+ * Sends the confirmation email after commit, From {@code "<Organizer> via IMIN"}; normally off the request
  * thread, but a full {@code ticketEmailExecutor} sends on it (CallerRunsPolicy, {@code AsyncConfig}). A failed send
  * never fails the sign-up; its row is removed so a later sign-up can retry.
  */

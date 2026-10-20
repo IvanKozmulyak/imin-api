@@ -3,8 +3,6 @@ package com.imin.iminapi.marketing.email;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.email.EmailProperties;
-import com.imin.iminapi.marketing.model.ProviderEvent;
-import com.imin.iminapi.marketing.repository.ProviderEventRepository;
 import com.resend.Resend;
 import com.resend.services.domains.model.AbstractDomain;
 import com.resend.services.domains.model.ListDomainsResponse;
@@ -29,12 +27,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,9 +37,9 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Open and click tracking must be off for everyone on both sending domains (transactional and marketing from-address).
- * Worst domain wins (TRACKING_ON, UNKNOWN, UP); an open/click webhook in the last 24 h turns a non-UP verdict into TRACKING_ON.
- * TRACKING_ON is ordered below UP and mapped to 200, so it never turns the root health 503.
+ * Open and click tracking is expected on for the marketing sending domain (the host of the marketing from-address):
+ * campaign stats, engagement segments and Momentum read the opens and clicks. Both flags on is UP; either flag off is
+ * TRACKING_OFF, ordered below UP and mapped to 200 so it never turns the root health 503; anything unsure is UNKNOWN.
  * Never runs at boot: a probe or the hourly tick refreshes the cached verdict off-thread; each change alerts once.
  */
 @Component("resendTrackingHealthIndicator")
@@ -55,12 +50,10 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** Custom status: loud in the component and the log, but not a liveness failure. */
-    public static final Status TRACKING_ON = new Status("TRACKING_ON");
+    public static final Status TRACKING_OFF = new Status("TRACKING_OFF");
 
     static final Duration CACHE_TTL = Duration.ofMinutes(5);
-    static final Duration EVIDENCE_WINDOW = Duration.ofHours(24);
     static final String NOT_CONFIGURED = "not_configured";
-    private static final List<String> TRACKING_EVENTS = List.of(ProviderEvent.TYPE_OPENED, ProviderEvent.TYPE_CLICKED);
     private static final String DOMAINS_URL = "https://api.resend.com/domains/";
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(5);
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
@@ -74,7 +67,6 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
 
     private final EmailProperties emailProps;
     private final MarketingEmailProperties marketingProps;
-    private final ProviderEventRepository providerEvents;
 
     private final Executor refresher;
     private final ExecutorService ownedRefresher;
@@ -86,17 +78,15 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
     private volatile AlertState lastAlerted;
 
     @Autowired
-    public ResendTrackingHealthIndicator(EmailProperties emailProps, MarketingEmailProperties marketingProps,
-                                         ProviderEventRepository providerEvents) {
-        this(emailProps, marketingProps, providerEvents, null, Clock.systemUTC());
+    public ResendTrackingHealthIndicator(EmailProperties emailProps, MarketingEmailProperties marketingProps) {
+        this(emailProps, marketingProps, null, Clock.systemUTC());
     }
 
     /** A null refresher gets a private single daemon thread. */
     ResendTrackingHealthIndicator(EmailProperties emailProps, MarketingEmailProperties marketingProps,
-                                  ProviderEventRepository providerEvents, Executor refresher, Clock clock) {
+                                  Executor refresher, Clock clock) {
         this.emailProps = emailProps;
         this.marketingProps = marketingProps;
-        this.providerEvents = providerEvents;
         this.clock = clock;
         if (refresher == null) {
             this.ownedRefresher = Executors.newSingleThreadExecutor(r -> {
@@ -152,36 +142,14 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
 
     private Health evaluate() {
         String key = lookupKey();
-        Set<String> domains = sendingDomains();
-        Status status = Status.UP;
-        String reason = null;
-        Map<String, Object> perDomain = new LinkedHashMap<>();
-        if (key.isBlank() || domains.isEmpty()) {
-            status = Status.UNKNOWN;
-            reason = NOT_CONFIGURED;
-        } else {
-            for (String domain : domains) {
-                DomainVerdict v = evaluateDomain(domain, key);
-                perDomain.put(domain, v.details());
-                if (rank(v.status()) > rank(status)) {
-                    status = v.status();
-                    reason = v.reason();
-                }
-            }
+        String domain = hostOf(marketingProps.getFromAddress());
+        if (key.isBlank() || domain.isBlank()) {
+            return Health.unknown().withDetail("reason", NOT_CONFIGURED).build();
         }
-        long events = 0;
-        if (!Status.UP.equals(status)) {
-            events = evidenceSince(clock.instant().minus(EVIDENCE_WINDOW));
-            if (events > 0) {
-                status = TRACKING_ON;
-                reason = null;
-            }
-        }
-        Health.Builder b = Health.status(status);
-        if (reason != null) b.withDetail("reason", reason);
-        if (!perDomain.isEmpty()) b.withDetail("domains", perDomain);
-        if (events > 0) b.withDetail("evidence", "webhook").withDetail("events", events);
-        return b.build();
+        DomainVerdict v = evaluateDomain(domain, key);
+        Health.Builder b = Health.status(v.status());
+        if (v.reason() != null) b.withDetail("reason", v.reason());
+        return b.withDetail("domains", Map.of(domain, v.details())).build();
     }
 
     private DomainVerdict evaluateDomain(String domain, String key) {
@@ -194,16 +162,16 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
             return unknown("unavailable");
         }
         if (state == null) return unknown("domain_not_found");
-        if (Boolean.TRUE.equals(state.openTracking()) || Boolean.TRUE.equals(state.clickTracking())) {
-            Map<String, Object> d = details(TRACKING_ON, null);
+        if (Boolean.FALSE.equals(state.openTracking()) || Boolean.FALSE.equals(state.clickTracking())) {
+            Map<String, Object> d = details(TRACKING_OFF, null);
             if (state.openTracking() != null) d.put("openTracking", state.openTracking());
             if (state.clickTracking() != null) d.put("clickTracking", state.clickTracking());
-            return new DomainVerdict(TRACKING_ON, null, d);
+            return new DomainVerdict(TRACKING_OFF, null, d);
         }
         if (state.openTracking() == null || state.clickTracking() == null) return unknown("tracking_not_reported");
         Map<String, Object> d = details(Status.UP, null);
-        d.put("openTracking", false);
-        d.put("clickTracking", false);
+        d.put("openTracking", true);
+        d.put("clickTracking", true);
         return new DomainVerdict(Status.UP, null, d);
     }
 
@@ -218,26 +186,6 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
         return d;
     }
 
-    private static int rank(Status s) {
-        if (TRACKING_ON.equals(s)) return 2;
-        return Status.UP.equals(s) ? 0 : 1;
-    }
-
-    /** A failed count is not evidence either way. */
-    private long evidenceSince(Instant since) {
-        try {
-            return recentTrackingEvents(since);
-        } catch (RuntimeException e) {
-            log.warn("Resend tracking evidence count failed ({})", e.getClass().getSimpleName());
-            return 0;
-        }
-    }
-
-    /** Open and click webhooks received since {@code since}; Resend sends them only while tracking is on. */
-    protected long recentTrackingEvents(Instant since) {
-        return providerEvents.countByProviderAndTypesSince(ProviderEvent.PROVIDER_RESEND, TRACKING_EVENTS, since);
-    }
-
     private void alertOnChange(Health h) {
         try {
             Object reason = h.getDetails().get("reason");
@@ -250,10 +198,10 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
         }
     }
 
+    /** Off is an ERROR because organizers would see untrue 0% open and click rates; unsure is a WARN. */
     private static Level levelFor(AlertState s) {
-        if (TRACKING_ON.equals(s.status())) return Level.ERROR;
-        if (Status.UP.equals(s.status())) return Level.INFO;
-        return NOT_CONFIGURED.equals(s.reason()) ? Level.WARN : Level.ERROR;
+        if (TRACKING_OFF.equals(s.status())) return Level.ERROR;
+        return Status.UP.equals(s.status()) ? Level.INFO : Level.WARN;
     }
 
     /** Names domains only, never an address or a key. */
@@ -261,25 +209,28 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
         Map<?, ?> perDomain = h.getDetails().get("domains") instanceof Map<?, ?> m ? m : Map.of();
         String checked = perDomain.isEmpty() ? "none" : String.join(", ", perDomain.keySet().stream()
                 .map(Object::toString).toList());
-        if (TRACKING_ON.equals(s.status())) {
-            List<String> on = perDomain.entrySet().stream()
-                    .filter(e -> e.getValue() instanceof Map<?, ?> d && TRACKING_ON.getCode().equals(d.get("status")))
-                    .map(e -> e.getKey().toString()).toList();
-            Object events = h.getDetails().get("events");
-            return "Resend open/click tracking is ON (" + (on.isEmpty() ? "domains checked: " + checked
-                    : "on for: " + String.join(", ", on))
-                    + (events == null ? "" : "; " + events + " open/click webhooks in the last 24 h")
-                    + "); it must be off for everyone";
+        if (TRACKING_OFF.equals(s.status())) {
+            return "Resend open/click tracking is OFF on " + checked + " (" + flags(perDomain)
+                    + "); opens and clicks stop being recorded, so organizers see untrue open and click rates";
         }
         if (Status.UP.equals(s.status())) {
-            return "Resend open/click tracking is off on " + checked;
+            return "Resend open/click tracking is on for " + checked;
         }
         if (NOT_CONFIGURED.equals(s.reason())) {
-            return "Resend tracking guard is not configured (needs RESEND_TRACKING_READ_KEY or RESEND_API_KEY"
-                    + " and a sending from-address); tracking cannot be checked";
+            return "Resend tracking check is not configured (needs RESEND_TRACKING_READ_KEY or RESEND_API_KEY"
+                    + " and IMIN_MARKETING_FROM_ADDRESS); tracking cannot be checked";
         }
-        return "Resend tracking guard cannot confirm tracking is off (reason: " + s.reason()
-                + "; domains: " + checked + ")";
+        return "Resend tracking check cannot confirm tracking is on (reason: " + s.reason()
+                + "; domain: " + checked + ")";
+    }
+
+    private static String flags(Map<?, ?> perDomain) {
+        return perDomain.values().stream()
+                .filter(v -> v instanceof Map<?, ?>)
+                .map(v -> (Map<?, ?>) v)
+                .map(d -> String.join(", ", java.util.stream.Stream.of("openTracking", "clickTracking")
+                        .filter(d::containsKey).map(k -> k + "=" + d.get(k)).toList()))
+                .findFirst().orElse("");
     }
 
     /** One line per state change; ERROR reaches Sentry in prod. Never throws. */
@@ -297,15 +248,6 @@ public class ResendTrackingHealthIndicator implements HealthIndicator {
         if (read != null && !read.isBlank()) return read.trim();
         String api = emailProps.getApiKey();
         return api == null ? "" : api.trim();
-    }
-
-    private Set<String> sendingDomains() {
-        Set<String> hosts = new LinkedHashSet<>();
-        for (String from : new String[] {emailProps.getFromAddress(), marketingProps.getFromAddress()}) {
-            String host = hostOf(from);
-            if (!host.isBlank()) hosts.add(host);
-        }
-        return hosts;
     }
 
     /**

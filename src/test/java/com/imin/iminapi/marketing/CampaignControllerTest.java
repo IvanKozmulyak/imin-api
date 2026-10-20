@@ -11,6 +11,8 @@ import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -34,6 +36,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +69,7 @@ class CampaignControllerTest {
     @Autowired ConsumerRepository consumers;
     @Autowired MembershipRepository memberships;
     @Autowired SegmentRepository segments;
+    @Autowired CampaignRecipientRepository recipients;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -308,6 +312,62 @@ class CampaignControllerTest {
 
         assertThat(campaigns.findByIdAndOrgId(id, otherOwner.orgId())).get()
                 .extracting(Campaign::getStatus).isEqualTo(status);
+    }
+
+    /** Each email row carries its own sent/opened/clicked counts; SMS, drafts and a send that left nothing carry none. */
+    @Test
+    void listCarriesEachEmailCampaignsSentOpenedAndClickedCounts() throws Exception {
+        Instant at = Instant.parse("2026-07-11T10:05:00Z");
+        UUID emailA = sentCampaign("email", "sent");
+        row(emailA, "delivered", at, at);
+        row(emailA, "delivered", at, null);
+        row(emailA, "sent", null, null);
+        row(emailA, "pending", null, null);
+        UUID sms = sentCampaign("sms", "sent");
+        row(sms, "delivered", at, at);
+        UUID draft = draft(owner, null, null).id();
+        UUID emailB = sentCampaign("email", "sent");
+        row(emailB, "bounced", null, null);
+        row(emailB, "unsubscribed", at, null);
+        UUID sentNothing = sentCampaign("email", "failed");
+        row(sentNothing, "failed", null, null);
+
+        String json = mvc.perform(get("/api/v1/marketing/campaigns").with(auth(owner)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        Map<String, Map<String, Object>> byId = new java.util.HashMap<>();
+        for (Map<String, Object> r : om.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<
+                List<Map<String, Object>>>() {})) {
+            byId.put((String) r.get("id"), r);
+        }
+
+        assertThat(counts(byId, emailA)).containsExactly(3, 2, 1);
+        assertThat(counts(byId, emailB)).containsExactly(2, 1, 0);
+        assertThat(counts(byId, sms)).as("sms").containsOnlyNulls();
+        assertThat(counts(byId, draft)).as("draft").containsOnlyNulls();
+        assertThat(counts(byId, sentNothing)).as("email that sent nothing").containsOnlyNulls();
+    }
+
+    private static List<Object> counts(Map<String, Map<String, Object>> byId, UUID id) {
+        Map<String, Object> r = byId.get(id.toString());
+        assertThat(r).as("list row " + id).isNotNull().containsKeys("sentCount", "openedCount", "clickedCount");
+        return java.util.Arrays.asList(r.get("sentCount"), r.get("openedCount"), r.get("clickedCount"));
+    }
+
+    private UUID sentCampaign(String channel, String status) {
+        UUID id = service.create(owner, new CreateCampaignRequest(channel, "Counts " + channel, null, null,
+                null, null, null, null)).id();
+        service.forceStatusForTest(id, status);
+        return id;
+    }
+
+    private void row(UUID campaignId, String status, Instant openedAt, Instant clickedAt) {
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(campaignId);
+        r.setStatus(status);
+        r.setOpenedAt(openedAt);
+        r.setClickedAt(clickedAt);
+        recipients.save(r);
     }
 
     @Test

@@ -9,7 +9,8 @@ package com.imin.iminapi.marketing.dto;
  * <p>{@code opened}/{@code clicked} are ORTHOGONAL to the lifecycle status: they are derived
  * from {@code opened_at IS NOT NULL} / {@code clicked_at IS NOT NULL}, so one row can be
  * counted in {@code total}, {@code delivered}-ish statuses AND {@code opened} at once. The
- * buckets therefore do NOT sum to {@code total} — that is deliberate, not a bug.
+ * buckets therefore do NOT sum to {@code total} — that is deliberate, not a bug. Unsubscribe-link
+ * clicks and objected members are not stamped; rows stamped before 21 October 2026 may include both.
  *
  * <p>The "Issues" chip is left to the client to compose from the atomic status buckets
  * ({@code bounced} + {@code failed} + {@code complained}, say) rather than being invented

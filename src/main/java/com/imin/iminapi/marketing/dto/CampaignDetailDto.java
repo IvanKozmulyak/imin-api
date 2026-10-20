@@ -43,7 +43,7 @@ public record CampaignDetailDto(
         String segmentName,
         /** IANA zone of the linked active event, for showing its send times; null without one. */
         String eventTimezone,
-        /** Momentum trigger (launch_push|slump|urgency_72h|sold_out) of the suggestion this campaign was approved from; null for manual campaigns. */
+        /** Momentum trigger (launch_push|slump|urgency_72h|sold_out|clicked_no_buy) of the suggestion this campaign was approved from; null for manual campaigns. */
         String triggerType,
         /** Failed sends so far (0..3); Retry is accepted while it is below 3. */
         int attempts,

@@ -23,6 +23,10 @@ import java.util.function.Function;
  * {@code {"groups": [{"combinator": "and"|"or"|"not", "rules": [...]}]}}. Groups are ANDed together;
  * {@code and} needs every rule, {@code or} at least one, {@code not} none of them. A group without rules
  * is neutral, and no groups at all matches everyone.
+ *
+ * <p>{@code days_since_open} and {@code days_since_ticket_click} count whole elapsed 24-hour periods since
+ * the member's latest recorded open or ticket-link click ({@link SegmentFacts}); a member with none counts as
+ * {@code Long.MAX_VALUE} days, as {@code recency} does.
  */
 public final class SegmentRules {
 
@@ -76,7 +80,10 @@ public final class SegmentRules {
         }
     }
 
-    public static final Set<String> NUMERIC_FIELDS = Set.of("events", "spend_minor", "recency", "no_show", "nps");
+    public static final Set<String> NUMERIC_FIELDS = Set.of("events", "spend_minor", "recency", "no_show", "nps",
+            "days_since_open", "days_since_ticket_click");
+    /** Numeric fields read from campaign recipient rows through {@link SegmentFacts}, never from the membership. */
+    public static final Set<String> ENGAGEMENT_FIELDS = Set.of("days_since_open", "days_since_ticket_click");
     /** Legacy string fields: any comparison operator is accepted and means equality. */
     public static final Set<String> STRING_FIELDS = Set.of("lifecycle", "consent_status", "consent_basis");
     /** Fields read from fan features and tickets; they take {@code ==} or {@code in}. */
@@ -298,6 +305,8 @@ public final class SegmentRules {
             case "recency" -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
             case "no_show" -> row.noShow();
             case "nps" -> row.nps() == null ? Long.MIN_VALUE : row.nps();
+            case "days_since_open" -> facts.daysSinceOpen(row.membershipId());
+            case "days_since_ticket_click" -> facts.daysSinceTicketClick(row.membershipId());
             default -> 0;
         };
         return switch (op) {

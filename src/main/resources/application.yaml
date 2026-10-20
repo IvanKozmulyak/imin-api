@@ -1026,17 +1026,17 @@ imin:
     # Appeal address in hold notices and the dashboard banner (acceptable-use §5).
     appeal-email: ${IMIN_MODERATION_APPEAL_EMAIL:hello@imin.wtf}
 
-# resendTracking reports TRACKING_ON (ranked below UP, 200) so a Resend setting never fails the healthcheck.
+# resendTracking reports TRACKING_OFF (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.
 management:
   endpoint:
     health:
       status:
-        order: down,out-of-service,up,tracking-on,unknown
+        order: down,out-of-service,up,tracking-off,unknown
         http-mapping:
           down: 503
           out-of-service: 503
-          tracking-on: 200
+          tracking-off: 200
 
 sentry:
   dsn: ${SENTRY_DSN:}

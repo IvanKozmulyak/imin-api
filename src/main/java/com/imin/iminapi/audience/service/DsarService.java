@@ -163,12 +163,28 @@ public class DsarService {
                 .withImportProvenance(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(membershipId).stream()
                         .map(DsarService::toRecord)
                         .toList())
-                .withEmailEngagement(m.getLastEmailOpen() == null && m.getLastEmailClick() == null ? null
-                        : new DsarRecords.EmailEngagementRecord(m.getLastEmailOpen(), m.getLastEmailClick()))
+                .withEmailEngagement(emailEngagement(m))
                 .withConsentConfirmations(confirmationTokenRepo.findByMembershipIdOrderBySentAtAsc(membershipId).stream()
                         .map(t -> new DsarRecords.ConsentConfirmationRecord(t.getConsentRecordId(), t.getLocale(),
                                 t.getSentAt(), t.getExpiresAt(), t.getUsedAt(), t.getNpsScore()))
                         .toList());
+    }
+
+    /** Each time is the later of the frozen membership column and the recipient rows; null when none is held. */
+    private DsarRecords.EmailEngagementRecord emailEngagement(Membership m) {
+        List<Object[]> rows = campaignRecipientRepo.findEngagementOfMembership(m.getMembershipId());
+        Object[] r = rows.isEmpty() ? new Object[3] : rows.get(0);
+        Instant opened = latest(m.getLastEmailOpen(), (Instant) r[0]);
+        Instant clicked = latest(m.getLastEmailClick(), (Instant) r[1]);
+        Instant ticketClicked = (Instant) r[2];
+        if (opened == null && clicked == null && ticketClicked == null) return null;
+        return new DsarRecords.EmailEngagementRecord(opened, clicked, ticketClicked);
+    }
+
+    private static Instant latest(Instant a, Instant b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isAfter(b) ? a : b;
     }
 
     private static DsarRecords.ImportProvenanceRecord toRecord(ImportRowProvenance p) {

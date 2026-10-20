@@ -30,9 +30,8 @@ import java.util.UUID;
  * accept a forgery), 200 (no-op) when the message id can't be resolved to a
  * recipient (out-of-band or already-purged row — nothing to project).
  *
- * <p>Opens and clicks are not tracked: such an event is acked and kept only as a
- * {@code provider_events} row with no message, campaign or recipient id, which the
- * tracking guard counts as evidence that Resend tracking is still on.
+ * <p>Opens and clicks are projected onto the recipient row like every other type, but claimed by svix id
+ * alone (no message, campaign or recipient id), so {@code provider_events} keeps no per-person event log.
  */
 @RestController
 @RequestMapping("/api/v1/public/webhooks")
@@ -77,6 +76,7 @@ public class ResendWebhookController {
         String messageId;
         String email;
         String bounceType;
+        String clickLink;
         Instant occurredAt;
         try {
             JsonNode root = MAPPER.readTree(body);
@@ -91,16 +91,11 @@ public class ResendWebhookController {
             // treat a full mailbox exactly like a dead address and suppress it for every org
             // on the platform, for ever.
             bounceType = text(data.path("bounce"), "type");
+            clickLink = text(data.path("click"), "link");
             occurredAt = parseInstant(text(root, "created_at"));
         } catch (Exception e) {
             log.warn("[resend-webhook] unparseable body — acking to stop retries: {}", e.getMessage());
             return ResponseEntity.ok().build(); // malformed but signed — don't loop Resend
-        }
-
-        if (ProviderEvent.TYPE_OPENED.equals(type) || ProviderEvent.TYPE_CLICKED.equals(type)) {
-            // Not linked to anyone: only the fact that one arrived, for the tracking guard.
-            dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, null, null, null, type);
-            return ResponseEntity.ok().build();
         }
 
         CampaignRecipient r = messageId == null ? null
@@ -110,8 +105,10 @@ public class ResendWebhookController {
         UUID membershipId = r == null ? null : r.getMembershipId();
 
         // Idempotent claim keyed on the svix message id (the provider_event_id).
-        boolean fresh = dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, messageId,
-                campaignId, recipientId, type);
+        boolean engagement = ProviderEvent.TYPE_OPENED.equals(type) || ProviderEvent.TYPE_CLICKED.equals(type);
+        boolean fresh = engagement
+                ? dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, null, null, null, type)
+                : dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, messageId, campaignId, recipientId, type);
         if (!fresh) {
             log.info("[resend-webhook] duplicate svixId={} — acked", svixId);
             return ResponseEntity.ok().build();
@@ -120,7 +117,7 @@ public class ResendWebhookController {
         if (r != null) {
             // org id is derived inside the projector from the campaign (recipient
             // rows carry no org_id — spec §2.2 V53).
-            projector.project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt);
+            projector.project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt, clickLink);
         } else {
             log.info("[resend-webhook] no recipient for messageId={} type={} — logged only", messageId, type);
         }
