@@ -111,11 +111,16 @@ class MarketingEmailLegalAssertionsTest {
         return mine;
     }
 
+    /** The footer opens the buyer-site page; the header URL (API) carries the same token. */
+    private static String footerUrl(CampaignEmailProvider.OutgoingEmail e) {
+        return e.unsubscribeUrl().replaceFirst("^.*/api/v1/public/unsubscribe/", "https://app.imin.wtf/unsubscribe/");
+    }
+
     private static List<String> linksOtherThanUnsubscribe(CampaignEmailProvider.OutgoingEmail e) {
         List<String> out = new ArrayList<>();
         Matcher m = HREF.matcher(e.html());
         while (m.find()) {
-            if (!m.group(1).equals(e.unsubscribeUrl())) out.add(m.group(1));
+            if (!m.group(1).equals(footerUrl(e))) out.add(m.group(1));
         }
         return out;
     }
@@ -144,8 +149,8 @@ class MarketingEmailLegalAssertionsTest {
         for (CampaignEmailProvider.OutgoingEmail e : sent) {
             String unsub = e.unsubscribeUrl();
             assertThat(unsub).contains("/api/v1/public/unsubscribe/");
-            assertThat(e.html()).contains("href=\"" + unsub + "\"").contains(">Unsubscribe</a>");
-            assertThat(e.text()).endsWith("Unsubscribe: " + unsub);
+            assertThat(e.html()).contains("href=\"" + footerUrl(e) + "\"").contains(">Unsubscribe</a>");
+            assertThat(e.text()).endsWith("Unsubscribe: " + footerUrl(e));
         }
     }
 }

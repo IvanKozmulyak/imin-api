@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.dto;
 
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.util.UUID;
@@ -33,11 +34,20 @@ public final class CampaignRequests {
             /** True when the subject is AI-generated. Only true is meaningful; the flag is sticky. */
             Boolean subjectAiGenerated,
             /** True when the preheader or body is AI-generated. Only true is meaningful; sticky. */
-            Boolean bodyAiGenerated
+            Boolean bodyAiGenerated,
+            /** Language of the fan-facing shell: en|es|fr|uk. Null → the org default. */
+            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale
     ) {
         public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
                                      String subject, String preheader, String bodyMd, String templateKey) {
-            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null);
+            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null);
+        }
+
+        public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
+                                     String subject, String preheader, String bodyMd, String templateKey,
+                                     Boolean subjectAiGenerated, Boolean bodyAiGenerated) {
+            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
+                    subjectAiGenerated, bodyAiGenerated, null);
         }
     }
 
@@ -69,18 +79,20 @@ public final class CampaignRequests {
             /** True marks the preheader/body AI-generated. False or absent never clears it (sticky). */
             Boolean bodyAiGenerated,
             /** {@code email} or {@code sms}; applied only when non-null (draft-only, refused on audience-plan campaigns). */
-            String channel
+            String channel,
+            /** Language of the fan-facing shell: en|es|fr|uk. Applied only when non-null. */
+            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale
     ) {
         public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
                                     String subject, String preheader, String bodyMd, String templateKey) {
-            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null);
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null, null);
         }
 
         public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
                                     String subject, String preheader, String bodyMd, String templateKey,
                                     Boolean subjectAiGenerated, Boolean bodyAiGenerated) {
             this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
-                    subjectAiGenerated, bodyAiGenerated, null);
+                    subjectAiGenerated, bodyAiGenerated, null, null);
         }
     }
 

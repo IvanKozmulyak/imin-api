@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
@@ -29,11 +30,14 @@ public class MomentumCopyGenerator {
                                          String venue,
                                          String triggerContext,
                                          String posterUrl,
-                                         UUID segmentId) {
+                                         UUID segmentId,
+                                         String locale) {
+        String language = CampaignLocale.promptLanguageName(locale);
         String prompt = """
                 You are drafting a marketing email for an event on a ticketing app.
                 Trigger: %s. Context: %s.
-                Write concise, on-brand copy. Return JSON ONLY matching this schema:
+                Write concise, on-brand copy. Write subject, preheader and bodyMd in %s;
+                keep "why" in English, it is read by the organizer. Return JSON ONLY matching this schema:
 
                 {
                   "subject": "<email subject, max 60 chars, no emoji spam>",
@@ -43,11 +47,12 @@ public class MomentumCopyGenerator {
                 }
 
                 Event name: %s
-                Event date: %s
+                Event date (local to the event): %s
                 Venue: %s
                 """.formatted(
                         trigger.wireValue(),
                         triggerContext,
+                        language,
                         eventName,
                         eventDate == null ? "(unspecified)" : eventDate,
                         venue == null ? "(unspecified)" : venue);
@@ -61,6 +66,7 @@ public class MomentumCopyGenerator {
                 llm.bodyMd(),
                 segmentId == null ? null : segmentId.toString(),
                 posterUrl,
-                llm.why());
+                llm.why(),
+                EmailLocale.normalize(locale));
     }
 }

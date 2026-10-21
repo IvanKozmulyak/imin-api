@@ -44,6 +44,7 @@ public class UnsubscribeTokenService {
 
     /** Distinguishes the two token shapes so one verifier cannot accept the other's token. */
     private static final String NOTIFY_PREFIX = "notify:";
+    private static final String TEST_PREFIX = "test:";
 
     private final byte[] secret;
     private final byte[] legacySecret;
@@ -68,13 +69,33 @@ public class UnsubscribeTokenService {
 
     public Optional<Claims> verify(String token) {
         return verifiedPayload(token).flatMap(payload -> {
-            if (payload.startsWith(NOTIFY_PREFIX)) return Optional.empty();
+            if (payload.startsWith(NOTIFY_PREFIX) || payload.startsWith(TEST_PREFIX)) return Optional.empty();
             String[] parts = payload.split(":", 4);
             if (parts.length != 4) return Optional.empty();
             try {
                 return Optional.of(new Claims(
                         UUID.fromString(parts[0]), UUID.fromString(parts[1]),
                         UUID.fromString(parts[2]), parts[3]));
+            } catch (IllegalArgumentException e) {
+                return Optional.empty();
+            }
+        });
+    }
+
+    public record TestClaims(UUID orgId, UUID campaignId) {}
+
+    /** Token for the footer link of an organizer's test send: names the campaign, unsubscribes nobody. */
+    public String signTest(UUID orgId, UUID campaignId) {
+        return signPayload(TEST_PREFIX + orgId + ":" + campaignId);
+    }
+
+    public Optional<TestClaims> verifyTest(String token) {
+        return verifiedPayload(token).flatMap(payload -> {
+            if (!payload.startsWith(TEST_PREFIX)) return Optional.empty();
+            String[] parts = payload.substring(TEST_PREFIX.length()).split(":", 2);
+            if (parts.length != 2) return Optional.empty();
+            try {
+                return Optional.of(new TestClaims(UUID.fromString(parts[0]), UUID.fromString(parts[1])));
             } catch (IllegalArgumentException e) {
                 return Optional.empty();
             }

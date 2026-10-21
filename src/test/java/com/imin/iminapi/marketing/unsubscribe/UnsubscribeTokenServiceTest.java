@@ -107,4 +107,20 @@ class UnsubscribeTokenServiceTest {
         assertThat(sut.verifyNotify(forged)).isEmpty();
         assertThat(sut.verifyNotify("nonsense")).isEmpty();
     }
+
+    @Test
+    void testTokensAreNotMarketingTokens() {
+        UnsubscribeTokenService sut = new UnsubscribeTokenService(OWN, LEGACY);
+        UUID org = UUID.randomUUID(), campaign = UUID.randomUUID();
+
+        String test = sut.signTest(org, campaign);
+
+        assertThat(sut.verify(test)).isEmpty();
+        assertThat(sut.verifyTest(test)).hasValueSatisfying(c -> {
+            assertThat(c.orgId()).isEqualTo(org);
+            assertThat(c.campaignId()).isEqualTo(campaign);
+        });
+        assertThat(sut.verifyTest(sut.sign(org, UUID.randomUUID(), campaign, "email"))).isEmpty();
+        assertThat(sut.verifyTest(sut.signNotify(UUID.randomUUID()))).isEmpty();
+    }
 }

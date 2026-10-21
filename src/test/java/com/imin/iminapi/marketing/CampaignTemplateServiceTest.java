@@ -44,7 +44,8 @@ class CampaignTemplateServiceTest {
     private final OrganizationRepository organizations = mock(OrganizationRepository.class);
 
     private final CampaignTemplateService sut =
-            new CampaignTemplateService(chat, templates, events, organizations, mock(PlatformTransactionManager.class));
+            new CampaignTemplateService(chat, templates, events, organizations, mock(PlatformTransactionManager.class),
+                    mock(com.imin.iminapi.repository.UserRepository.class));
 
     private final UUID orgId = UUID.randomUUID();
 

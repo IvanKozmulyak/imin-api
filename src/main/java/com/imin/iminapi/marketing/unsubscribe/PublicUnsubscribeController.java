@@ -1,6 +1,13 @@
 package com.imin.iminapi.marketing.unsubscribe;
 
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
+import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.security.ApiException;
@@ -8,6 +15,7 @@ import com.imin.iminapi.security.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -17,36 +25,32 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.util.HtmlUtils;
 
-import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
- * Owned opt-out endpoint (spec §2.4/§3/§7). Shared by email List-Unsubscribe headers +
- * footer AND the SMS opt-out URL suffix. Both verbs live on one URL, and the split
- * between them is load-bearing:
+ * Owned opt-out endpoint. The consent write lives here, and this controller is the sole
+ * suppression authority. The email footer links to the human page on the buyer site; the
+ * {@code List-Unsubscribe} header (RFC 8058 one-tap) posts straight here.
  *
  * <ul>
- *   <li><b>POST</b> mutates. It is what RFC 8058 one-click sends and what the
- *       confirm page below submits.</li>
- *   <li><b>GET</b> renders the confirm page and touches nothing.</li>
+ *   <li><b>POST</b> mutates: RFC 8058 one-click, and what the buyer-site page submits.
+ *       Test-email tokens answer 200 and write nothing.</li>
+ *   <li><b>GET /{token}/details</b> reads state for the buyer-site page; it writes nothing.</li>
+ *   <li><b>GET /{token}</b> redirects (303) to the buyer-site page and touches nothing: a footer link
+ *       is fetched by mail-client proxies and URL scanners, so a safe method must stay safe.</li>
  * </ul>
  *
- * <p>The GET used to write the opt-out too, on the reasoning that the write is
- * idempotent. Idempotence is not the problem: a footer link is fetched by things
- * that are not the recipient — mail-client image proxies, link prefetchers,
- * corporate URL scanners, security sandboxes — so people were unsubscribed by
- * software on their behalf, and the consent record recorded them as the actor.
- * A safe method must be safe.
- *
- * <p>The token never expires (see {@link UnsubscribeTokenService}), so the page
- * works whenever the recipient gets round to it. Our DB is the sole suppression
- * authority.
+ * <p>The token never expires (see {@link UnsubscribeTokenService}).
  */
 @RestController
 @RequestMapping("/api/v1/public/unsubscribe")
 public class PublicUnsubscribeController {
+
+    /** The literal older test sends signed into their footer link. */
+    private static final String LEGACY_TEST_TOKEN = "preview";
 
     private static final Logger log = LoggerFactory.getLogger(PublicUnsubscribeController.class);
 
@@ -54,10 +58,20 @@ public class PublicUnsubscribeController {
     private final ConsentService consentService;
     private final RateLimiter rateLimiter;
     private final CampaignRecipientRepository campaignRecipients;
+    private final CampaignRepository campaigns;
+    private final MembershipRepository memberships;
+    private final OrganizationRepository organizations;
+    private final MarketingEmailProperties emailProps;
 
     public PublicUnsubscribeController(UnsubscribeTokenService tokens, ConsentService consentService,
                                        RateLimiter rateLimiter,
-                                       CampaignRecipientRepository campaignRecipients) {
+                                       CampaignRecipientRepository campaignRecipients,
+                                       CampaignRepository campaigns, MembershipRepository memberships,
+                                       OrganizationRepository organizations, MarketingEmailProperties emailProps) {
+        this.campaigns = campaigns;
+        this.memberships = memberships;
+        this.organizations = organizations;
+        this.emailProps = emailProps;
         this.tokens = tokens;
         this.consentService = consentService;
         this.rateLimiter = rateLimiter;
@@ -71,6 +85,8 @@ public class PublicUnsubscribeController {
         // messages at once, and an opt-out is the one request we must never make
         // hard to complete. It bounds signature-probing, not real recipients.
         rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
+        // A test email's link, signed or the legacy literal, unsubscribes nobody.
+        if (LEGACY_TEST_TOKEN.equals(token) || tokens.verifyTest(token).isPresent()) return "test";
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
         // The recipient acted on this sender themselves — their mail client's
@@ -101,56 +117,54 @@ public class PublicUnsubscribeController {
     }
 
     /**
-     * The confirm page: one POST button back to this URL. Bad or over-limit links get an HTML page
-     * with their status; the JSON envelope would show raw in a browser and 500 for a strict text/html client.
+     * What the buyer-site page shows for this link. Reads only: nothing is written and no rate-limit
+     * bucket is consumed, because the page fetches it server-side from a few shared egress IPs. The
+     * token is HMAC-gated, and the response carries no fan name or address.
      */
-    @GetMapping(value = "/{token}", produces = MediaType.TEXT_HTML_VALUE)
-    @ResponseBody
-    public ResponseEntity<String> confirmPage(@PathVariable String token, HttpServletRequest http) {
-        try {
-            rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
-        } catch (ApiException e) {
-            if (e.status() != HttpStatus.TOO_MANY_REQUESTS) throw e;
-            return page(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", "Too many requests",
-                    "Too many unsubscribe requests came from your network. Wait a few minutes, then open the link again.",
-                    "");
+    @GetMapping(value = "/{token}/details", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<UnsubscribeDetails> details(@PathVariable String token) {
+        UnsubscribeDetails body;
+        if (LEGACY_TEST_TOKEN.equals(token)) {
+            body = new UnsubscribeDetails("test", null, null, null);
+        } else if (tokens.verifyTest(token).isPresent()) {
+            UnsubscribeTokenService.TestClaims t = tokens.verifyTest(token).get();
+            Campaign c = campaigns.findByIdAndOrgId(t.campaignId(), t.orgId()).orElse(null);
+            body = new UnsubscribeDetails("test", "email", organizerName(t.orgId()), c == null ? null : c.getLocale());
+        } else {
+            UnsubscribeTokenService.Claims claims = tokens.verify(token)
+                    .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
+            body = new UnsubscribeDetails(consentState(claims), claims.channel(),
+                    organizerName(claims.orgId()), campaignLocale(claims));
         }
-        if (tokens.verify(token).isEmpty()) {
-            return page(HttpStatus.NOT_FOUND, "Link not valid", "This unsubscribe link isn't valid",
-                    "It may be incomplete or changed. Use the unsubscribe link in the most recent message from the same sender.",
-                    "");
-        }
-        String action = HtmlUtils.htmlEscape("/api/v1/public/unsubscribe/" + token);
-        String form = """
-                <form method="post" action="%s">
-                  <button type="submit"
-                          style="font:inherit;font-weight:700;padding:12px 24px;border:0;border-radius:8px;
-                                 background:#2d5cff;color:#fff;cursor:pointer;">
-                    Yes, unsubscribe me
-                  </button>
-                </form>
-                """.formatted(action);
-        return page(HttpStatus.OK, "Unsubscribe", "Unsubscribe?",
-                "Confirm and you will stop receiving marketing messages from this organizer.", form);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(body);
     }
 
-    /** Static strings only for the error pages, so no token is echoed. */
-    private static ResponseEntity<String> page(HttpStatus status, String title, String heading, String body,
-                                               String extraHtml) {
-        String html = """
-                <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-                <meta name="viewport" content="width=device-width,initial-scale=1">
-                <meta name="robots" content="noindex">
-                <title>%s</title></head>
-                <body style="font-family:sans-serif;text-align:center;padding:48px;color:#11091f;">
-                <h1 style="font-size:24px;margin:0 0 12px;">%s</h1>
-                <p style="margin:0 0 24px;color:#4a4458;">
-                  %s
-                </p>
-                %s</body></html>
-                """.formatted(title, heading, body, extraHtml);
-        return ResponseEntity.status(status)
-                .contentType(new MediaType(MediaType.TEXT_HTML, StandardCharsets.UTF_8))
-                .body(html);
+    /** A missing membership (erased) counts as already unsubscribed. */
+    private String consentState(UnsubscribeTokenService.Claims claims) {
+        Membership m = claims.membershipId() == null ? null
+                : memberships.findByIdAndOrgId(claims.membershipId(), claims.orgId()).orElse(null);
+        if (m == null) return "unsubscribed";
+        String status = "sms".equals(claims.channel()) ? m.getSmsConsentStatus() : m.getConsentStatus();
+        return "unsubscribed".equals(status) ? "unsubscribed" : "subscribed";
+    }
+
+    private String organizerName(UUID orgId) {
+        return organizations.findById(orgId).map(Organization::displayName).orElse(null);
+    }
+
+    private String campaignLocale(UnsubscribeTokenService.Claims claims) {
+        if (claims.campaignId() == null) return null;
+        return campaigns.findByIdAndOrgId(claims.campaignId(), claims.orgId()).map(Campaign::getLocale).orElse(null);
+    }
+
+    /**
+     * Links in emails already sent, and clients that open the header URL, land on the human page on the
+     * buyer site. Nothing is read or written here, so no bucket is consumed.
+     */
+    @GetMapping("/{token}")
+    public ResponseEntity<Void> redirectToPage(@PathVariable String token) {
+        return ResponseEntity.status(HttpStatus.SEE_OTHER)
+                .location(URI.create(emailProps.unsubscribePageUrl(token)))
+                .build();
     }
 }

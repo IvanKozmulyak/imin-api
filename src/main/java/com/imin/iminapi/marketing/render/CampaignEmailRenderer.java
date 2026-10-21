@@ -42,8 +42,6 @@ public class CampaignEmailRenderer {
     /** Art. 14 notice for an imported address: where it came from, and the privacy notice URL. */
     public record AddressSource(String platforms, String privacyUrl) {}
 
-    /** Default CTA label baked into the {@code {{tickets_button}}} placeholder when none is given. */
-    private static final String DEFAULT_TICKETS_LABEL = "Get tickets";
     /** Sanity cap on a custom button label ({@code {{tickets_button:Custom}}}). */
     private static final int MAX_TICKETS_LABEL = 40;
 
@@ -131,6 +129,20 @@ public class CampaignEmailRenderer {
                            ResolvedTemplate template, String brandName, String posterUrl,
                            String ticketsUrl, AiEmailDisclosure ai, OrganizerIdentity sender,
                            AddressSource addressSource) {
+        return render(subject, preheader, bodyMd, campaignId, channel, unsubscribeUrl,
+                template, brandName, posterUrl, ticketsUrl, ai, sender, addressSource, "en");
+    }
+
+    /**
+     * @param unsubscribeUrl the footer link (the buyer-site unsubscribe page)
+     * @param locale         language of everything IMIN adds around the organizer's text; null or unsupported gives English
+     */
+    public Rendered render(String subject, String preheader, String bodyMd,
+                           String campaignId, String channel, String unsubscribeUrl,
+                           ResolvedTemplate template, String brandName, String posterUrl,
+                           String ticketsUrl, AiEmailDisclosure ai, OrganizerIdentity sender,
+                           AddressSource addressSource, String locale) {
+        EmailShellCopy copy = EmailShellCopy.forLocale(locale);
         if (unsubscribeUrl == null || unsubscribeUrl.isBlank()) {
             throw new IllegalArgumentException(
                     "Cannot render campaign email without an unsubscribe URL (footer is mandatory)");
@@ -147,7 +159,7 @@ public class CampaignEmailRenderer {
         // Replace {{tickets_button}} AFTER styleBodyLinks so the CTA keeps its own button colours
         // (styleBodyLinks would otherwise prepend the accent style to it). The button href is
         // UTM-tagged inside this step, so it never double-tags with the body pass above.
-        bodyHtml = applyTicketsButton(bodyHtml, ticketsUrl, pal, channel, campaignId);
+        bodyHtml = applyTicketsButton(bodyHtml, ticketsUrl, pal, channel, campaignId, copy);
 
         String preheaderBlock = (preheader == null || preheader.isBlank()) ? ""
                 : "<div style=\"display:none;max-height:0;overflow:hidden;opacity:0;\">"
@@ -155,11 +167,11 @@ public class CampaignEmailRenderer {
 
         String headerBlock = headerBlock(tokens, brandName, posterUrl);
         List<String> footerParts = sender == null ? List.of() : sender.footerParts();
-        String sourceLine = addressSourceLine(addressSource);
+        String sourceLine = addressSourceLine(addressSource, copy);
         String privacyUrl = sourceLine == null || addressSource.privacyUrl() == null
                 ? "" : OrganizerIdentity.singleLine(addressSource.privacyUrl());
 
-        String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
+        String html = "<!DOCTYPE html><html lang=\"" + copy.lang() + "\"><head><meta charset=\"utf-8\"/>"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
                 + (ai == null ? "" : ai.htmlMeta())
                 + "<link href=\"https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Space+Mono&display=swap\" rel=\"stylesheet\"/>"
@@ -176,15 +188,15 @@ public class CampaignEmailRenderer {
                 + headerBlock
                 + "<tr><td style=\"padding:28px 32px;font-size:15px;line-height:1.6;color:"
                 + pal.text() + ";\">" + bodyHtml + "</td></tr>"
-                + footerBlock(pal, unsubscribeUrl, footerParts, sourceLine, privacyUrl)
+                + footerBlock(pal, unsubscribeUrl, footerParts, sourceLine, privacyUrl, copy)
                 + "</table></td></tr></table></body></html>";
 
-        String text = ticketsButtonText(bodyMd == null ? "" : bodyMd, ticketsUrl)
+        String text = ticketsButtonText(bodyMd == null ? "" : bodyMd, ticketsUrl, copy)
                 + "\n\n---\n"
                 + (footerParts.isEmpty() ? "" : String.join(" · ", footerParts) + "\n")
-                + (sourceLine == null ? "" : sourceLine + " " + PROCESSOR_SENTENCE
-                   + (privacyUrl.isEmpty() ? "." : "; retention and your rights: " + privacyUrl) + "\n")
-                + "Unsubscribe: " + unsubscribeUrl;
+                + (sourceLine == null ? "" : sourceLine + " " + copy.processor()
+                   + (privacyUrl.isEmpty() ? "." : copy.privacyTextTail() + privacyUrl) + "\n")
+                + copy.unsubscribe() + ": " + unsubscribeUrl;
 
         return new Rendered(html, text);
     }
@@ -198,22 +210,24 @@ public class CampaignEmailRenderer {
      * the button is not nested inside a {@code <p>}; any inline occurrence is replaced in place.
      */
     private String applyTicketsButton(String bodyHtml, String ticketsUrl,
-                                      TemplatePalette pal, String channel, String campaignId) {
+                                      TemplatePalette pal, String channel, String campaignId,
+                                      EmailShellCopy copy) {
         if (bodyHtml == null || bodyHtml.isEmpty()) return bodyHtml;
         boolean hasUrl = ticketsUrl != null && !ticketsUrl.isBlank();
         String url = hasUrl ? ticketsUrl.trim() : null;
-        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_BLOCK, hasUrl, url, pal, channel, campaignId, true);
-        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_INLINE, hasUrl, url, pal, channel, campaignId, false);
+        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_BLOCK, hasUrl, url, pal, channel, campaignId, true, copy);
+        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_INLINE, hasUrl, url, pal, channel, campaignId, false, copy);
         return bodyHtml;
     }
 
     private String replaceToken(String html, Pattern pattern, boolean hasUrl, String url,
-                                TemplatePalette pal, String channel, String campaignId, boolean block) {
+                                TemplatePalette pal, String channel, String campaignId, boolean block,
+                                EmailShellCopy copy) {
         Matcher m = pattern.matcher(html);
         StringBuilder out = new StringBuilder();
         while (m.find()) {
             String replacement = hasUrl
-                    ? ticketsButtonHtml(url, m.group(1), pal, channel, campaignId, block)
+                    ? ticketsButtonHtml(url, m.group(1), pal, channel, campaignId, block, copy)
                     : ""; // no linked event → drop the token
             m.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
@@ -223,13 +237,14 @@ public class CampaignEmailRenderer {
 
     /**
      * One CTA button. The label is taken from the token ({@code {{tickets_button:Buy now}}}),
-     * clamped and defaulted to {@link #DEFAULT_TICKETS_LABEL}; it comes from post-commonmark HTML
+     * clamped and defaulted to the campaign language's default label; it comes from post-commonmark HTML
      * so it is already escaped. The href is UTM-tagged through {@link UtmLinkRewriter} exactly like
      * body links.
      */
     private String ticketsButtonHtml(String url, String rawLabel, TemplatePalette pal,
-                                     String channel, String campaignId, boolean block) {
-        String label = (rawLabel == null || rawLabel.isBlank()) ? DEFAULT_TICKETS_LABEL : rawLabel.trim();
+                                     String channel, String campaignId, boolean block,
+                                     EmailShellCopy copy) {
+        String label = (rawLabel == null || rawLabel.isBlank()) ? copy.ticketsButton() : rawLabel.trim();
         if (label.length() > MAX_TICKETS_LABEL) label = label.substring(0, MAX_TICKETS_LABEL).trim();
         String anchor = "<a href=\"" + escape(url) + "\" "
                 + "style=\"display:inline-block;background:" + pal.buttonBg() + ";color:" + pal.buttonText()
@@ -246,13 +261,13 @@ public class CampaignEmailRenderer {
      * Plain-text counterpart of the button: the token becomes "{@code Label: <url>}" when a
      * URL exists, or is stripped when it does not.
      */
-    private static String ticketsButtonText(String bodyMd, String ticketsUrl) {
+    private static String ticketsButtonText(String bodyMd, String ticketsUrl, EmailShellCopy copy) {
         boolean hasUrl = ticketsUrl != null && !ticketsUrl.isBlank();
         Matcher m = TICKETS_TOKEN_INLINE.matcher(bodyMd);
         StringBuilder out = new StringBuilder();
         while (m.find()) {
             String label = (m.group(1) == null || m.group(1).isBlank())
-                    ? DEFAULT_TICKETS_LABEL : m.group(1).trim();
+                    ? copy.ticketsButton() : m.group(1).trim();
             String replacement = hasUrl ? label + ": " + ticketsUrl.trim() : "";
             m.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
@@ -305,34 +320,33 @@ public class CampaignEmailRenderer {
         return null;
     }
 
-    private static final String PROCESSOR_SENTENCE = "IMIN processes it on the organizer's behalf";
-
     /** The Art. 14 sentence naming where an imported address came from, or null when there is none. */
-    static String addressSourceLine(AddressSource addressSource) {
+    static String addressSourceLine(AddressSource addressSource, EmailShellCopy copy) {
         String src = addressSource == null ? "" : OrganizerIdentity.singleLine(addressSource.platforms());
-        return src.isEmpty() ? null : "This organizer received your address from " + src + ".";
+        return src.isEmpty() ? null : copy.addressSourceLine(src);
     }
 
     /** Mandatory footer: sender identity line (when known), address source (when imported), then unsubscribe. */
     private String footerBlock(TemplatePalette pal, String unsubscribeUrl, List<String> identity,
-                               String sourceLine, String privacyUrl) {
+                               String sourceLine, String privacyUrl, EmailShellCopy copy) {
         String identityLine = identity.isEmpty() ? ""
                 : "<div style=\"margin-bottom:6px;\">"
                   + identity.stream().map(CampaignEmailRenderer::escape)
                           .collect(java.util.stream.Collectors.joining(" &middot; "))
                   + "</div>";
         String sourceBlock = sourceLine == null ? ""
-                : "<div style=\"margin-bottom:6px;\">" + escape(sourceLine) + " " + escape(PROCESSOR_SENTENCE)
-                  + (privacyUrl.isEmpty() ? "." : "; see the <a href=\"" + escape(privacyUrl) + "\" style=\"color:"
-                     + pal.muted() + ";text-decoration:underline;\">privacy notice</a> for retention and your rights.")
+                : "<div style=\"margin-bottom:6px;\">" + escape(sourceLine) + " " + escape(copy.processor())
+                  + (privacyUrl.isEmpty() ? "." : escape(copy.privacySeeBefore()) + "<a href=\"" + escape(privacyUrl)
+                     + "\" style=\"color:" + pal.muted() + ";text-decoration:underline;\">"
+                     + escape(copy.privacyLinkText()) + "</a>" + escape(copy.privacySeeAfter()))
                   + "</div>";
         return "<tr><td style=\"padding:20px 32px 28px;border-top:1px solid " + pal.muted()
                 + "33;font-size:12px;line-height:1.5;color:" + pal.muted() + ";\">"
                 + identityLine
                 + sourceBlock
-                + "You received this because you are on this organizer's list. "
+                + escape(copy.footerReason()) + " "
                 + "<a href=\"" + escape(unsubscribeUrl) + "\" style=\"color:" + pal.muted()
-                + ";text-decoration:underline;\">Unsubscribe</a>."
+                + ";text-decoration:underline;\">" + escape(copy.unsubscribe()) + "</a>."
                 + "</td></tr>";
     }
 

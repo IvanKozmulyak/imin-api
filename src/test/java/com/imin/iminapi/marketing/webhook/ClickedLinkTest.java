@@ -10,7 +10,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
-/** Only the campaign event's own buyer page is a ticket click, and the unsubscribe link is never counted as a click. */
+/** Only the campaign event's own buyer page is a ticket click, and neither unsubscribe link is ever counted as a click. */
 class ClickedLinkTest {
 
     private static final String BUYER = "https://app.imin.wtf";
@@ -33,6 +33,14 @@ class ClickedLinkTest {
                         ClickedLink.UNSUBSCRIBE),
                 arguments("unsubscribe path on another host", "https://old-api.example/api/v1/public/unsubscribe/tok",
                         EVENT, ClickedLink.UNSUBSCRIBE),
+                arguments("buyer-site unsubscribe page", BUYER + "/unsubscribe/tok.en_42", EVENT,
+                        ClickedLink.UNSUBSCRIBE),
+                arguments("buyer-site unsubscribe page, upper-case host", "https://APP.IMIN.WTF/unsubscribe/tok", EVENT,
+                        ClickedLink.UNSUBSCRIBE),
+                arguments("unsubscribe page path on another host", "https://evil.example/unsubscribe/tok", EVENT,
+                        ClickedLink.OTHER),
+                arguments("buyer-site path that only starts like unsubscribe", BUYER + "/unsubscribed/tok", EVENT,
+                        ClickedLink.OTHER),
                 arguments("host-less event path", "/e/" + EVENT, EVENT, ClickedLink.UNKNOWN),
                 arguments("mailto", "mailto:hi@imin.wtf", EVENT, ClickedLink.UNKNOWN),
                 arguments("null", null, EVENT, ClickedLink.UNKNOWN),

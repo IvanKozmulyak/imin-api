@@ -33,6 +33,8 @@ package com.imin.iminapi.marketing.dto;
  *       ({@code MarketingEmailProperties.displayName}, the code {@code fromHeader} builds on):
  *       {@code "<organizer> via IMIN"}, else {@code emailFromName}, else null.</li>
  *   <li>{@code organizerName} — the org's brand name, else its name; null when the org is not found.</li>
+ *   <li>{@code defaultCampaignLocale} — language a new campaign starts in (en|es|fr|uk): the org's country
+ *       (FR/MC fr, UA uk, ES es), else the caller's dashboard language, else en.</li>
  *   <li>{@code sendingEnabled} — whether the marketing sender is configured well enough to
  *       send (a from-address is present).</li>
  * </ul>
@@ -49,5 +51,6 @@ public record MarketingHubMetricsDto(
         String emailFromName,
         String emailFromDisplayName,
         String organizerName,
-        boolean sendingEnabled
+        boolean sendingEnabled,
+        String defaultCampaignLocale
 ) {}

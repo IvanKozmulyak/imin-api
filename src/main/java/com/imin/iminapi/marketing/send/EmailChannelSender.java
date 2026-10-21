@@ -7,6 +7,7 @@ import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.service.CampaignEnded;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
+import com.imin.iminapi.marketing.render.EmailShellCopy;
 import com.imin.iminapi.marketing.render.MergeTags;
 import com.imin.iminapi.marketing.render.OrganizerIdentity;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
@@ -189,21 +190,23 @@ public class EmailChannelSender {
                 .map(CampaignRecipient::getMembershipId).filter(Objects::nonNull).distinct().toList());
 
         AiEmailDisclosure ai = c.aiDisclosure();
+        String locale = c.getLocale();
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
-            String unsubUrl = props.unsubscribeUrl(
-                    tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email"));
-            String firstName = r.getMembershipId() == null
-                    ? MergeTags.FIRST_NAME_FALLBACK
-                    : firstNameByMembership.getOrDefault(r.getMembershipId(), MergeTags.FIRST_NAME_FALLBACK);
+            String unsubToken = tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email");
+            // Footer opens the buyer page; the List-Unsubscribe header (RFC 8058 one-tap) posts to the API.
+            String unsubUrl = props.unsubscribeUrl(unsubToken);
+            String unsubPageUrl = props.unsubscribePageUrl(unsubToken);
+            String firstName = r.getMembershipId() == null ? null : firstNameByMembership.get(r.getMembershipId());
             String subject = MergeTags.apply(c.getSubject(), firstName, eventUrl);
             String bodyMd = MergeTags.apply(c.getBodyMd(), firstName, eventUrl);
             String preheader = MergeTags.apply(c.getPreheader(), firstName, eventUrl);
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     subject, preheader, bodyMd,
-                    c.getId().toString(), "email", unsubUrl,
+                    c.getId().toString(), "email", unsubPageUrl,
                     template, brandName, posterUrl, ticketsUrl, ai, sender,
-                    addressSource(r.getMembershipId() == null ? null : sourceByMembership.get(r.getMembershipId())));
+                    addressSource(r.getMembershipId() == null ? null : sourceByMembership.get(r.getMembershipId()), locale),
+                    locale);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
                     from, r.getEmail(), subject,
                     rendered.html(), rendered.text(), unsubUrl, ai));
@@ -464,16 +467,16 @@ public class EmailChannelSender {
         }
         Map<UUID, String> out = new HashMap<>();
         for (Membership m : mems) {
-            out.put(m.getMembershipId(),
-                    nameByConsumer.getOrDefault(m.getConsumerId(), MergeTags.FIRST_NAME_FALLBACK));
+            out.put(m.getMembershipId(), nameByConsumer.get(m.getConsumerId()));
         }
         return out;
     }
 
     /** Art. 14 notice for an imported member's first email; the privacy page lives on the buyer site. */
-    private CampaignEmailRenderer.AddressSource addressSource(String platforms) {
+    private CampaignEmailRenderer.AddressSource addressSource(String platforms, String locale) {
         if (platforms == null) return null;
         String base = props.getBuyerSiteBaseUrl() == null ? "" : props.getBuyerSiteBaseUrl().replaceAll("/+$", "");
-        return new CampaignEmailRenderer.AddressSource(platforms, base.isEmpty() ? null : base + "/legal/privacy");
+        return new CampaignEmailRenderer.AddressSource(platforms,
+                base.isEmpty() ? null : base + "/legal/privacy" + EmailShellCopy.forLocale(locale).privacyUrlSuffix());
     }
 }

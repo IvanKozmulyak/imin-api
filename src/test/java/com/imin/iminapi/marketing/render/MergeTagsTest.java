@@ -1,6 +1,8 @@
 package com.imin.iminapi.marketing.render;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,12 +20,22 @@ class MergeTagsTest {
         assertThat(MergeTags.firstName("Bohdan")).isEqualTo("Bohdan");
     }
 
-    @Test
-    void blankOrEmailDisplayNameFallsBackToNeutralGreeting() {
-        assertThat(MergeTags.apply("Hi {{firstName}}", null, null)).isEqualTo("Hi there");
-        assertThat(MergeTags.apply("Hi {{firstName}}", "  ", null)).isEqualTo("Hi there");
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "Hi {{firstName}},|Hi,",
+            "Bonjour {{firstName}} !|Bonjour !",
+            "Привіт, {{firstName}}!|Привіт!",
+            "{{firstName}}, your tickets|Your tickets",
+            "{{firstName}}, ваші квитки|Ваші квитки",
+            "{{firstName}}!|''",
+            "**{{firstName}}**,|''",
+            "Hi **{{firstName}}**, tickets are live|Hi, tickets are live",
+            "{{firstName}}! Doors at 8|Doors at 8"})
+    void missingNameIsDroppedWithItsPunctuation(String template, String expected) {
+        assertThat(MergeTags.apply(template, null, null)).isEqualTo(expected);
+        assertThat(MergeTags.apply(template, "  ", null)).isEqualTo(expected);
         // never greet someone with their email address
-        assertThat(MergeTags.apply("Hi {{firstName}}", "buyer@example.com", null)).isEqualTo("Hi there");
+        assertThat(MergeTags.apply(template, "buyer@example.com", null)).isEqualTo(expected);
     }
 
     @Test

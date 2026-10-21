@@ -314,6 +314,9 @@ public class MomentumService {
         // MomentumCopyGenerator wrote this copy: mark it for the Art.50(2) marker.
         c.setSubjectAiGenerated(c.getSubject() != null);
         c.setBodyAiGenerated(c.getBodyMd() != null || c.getPreheader() != null);
+        // Drafts written before the language was recorded were English.
+        String draftLocale = com.imin.iminapi.email.EmailLocale.normalizeOrNull(text(draft, "locale", null));
+        c.setLocale(draftLocale != null ? draftLocale : "en");
         c.setCreatedBy(principal.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);

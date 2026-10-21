@@ -313,4 +313,50 @@ class CampaignEmailRendererTest {
         assertThat(withSource("  ").html()).doesNotContain("received your address").doesNotContain("privacy notice");
         assertThat(withSource(null).text()).endsWith("---\nNight Org\nUnsubscribe: " + UNSUB);
     }
+
+    private static final String TICKETS = "https://app.imin.wtf/e/abc";
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "en|Get tickets|You received this because you are on this organizer's list.|Unsubscribe|This organizer received your address from Dice.|privacy notice|/legal/privacy#en",
+            "es|Conseguir entradas|Recibes este correo porque estás en la lista de este organizador.|Darse de baja|Este organizador recibió tu dirección a través de Dice.|aviso de privacidad|/legal/privacy#en",
+            "fr|Obtenir des billets|Vous recevez cet e-mail parce que vous figurez sur la liste de cet organisateur.|Se désinscrire|Cet organisateur a reçu votre adresse via Dice.|avis de confidentialité|/legal/privacy",
+            "uk|Отримати квитки|Ви отримали цей лист, бо ви у списку розсилки цього організатора.|Відписатися|Цей організатор отримав вашу адресу з Dice.|повідомлення про конфіденційність|/legal/privacy#en"})
+    void shellIsInTheCampaignLanguage(String locale, String button, String reason, String unsubscribe,
+                                      String art14, String privacyText, String privacyPath) {
+        String privacyUrl = "https://app.imin.wtf" + privacyPath;
+        CampaignEmailRenderer.Rendered r = renderer.render("S", "P", "Come along\n\n{{tickets_button}}", "camp-1", "email",
+                UNSUB, BuiltinTemplates.defaultTemplate(), null, null, TICKETS,
+                com.imin.iminapi.service.ai.provenance.AiEmailDisclosure.NONE,
+                new OrganizerIdentity("Night Org", null, null),
+                new CampaignEmailRenderer.AddressSource("Dice", privacyUrl), locale);
+
+        assertThat(r.html()).contains("<html lang=\"" + locale + "\">");
+        assertThat(r.html()).contains(">" + button + "</a>");
+        assertThat(r.html()).contains(reason.replace("'", "&#39;"));
+        assertThat(r.html()).contains(">" + unsubscribe + "</a>.");
+        assertThat(r.html()).contains(art14);
+        assertThat(r.html()).contains(">" + privacyText + "</a>");
+        assertThat(r.html()).contains("href=\"" + privacyUrl + "\"");
+        assertThat(r.html()).contains("href=\"" + UNSUB + "\"");
+        assertThat(r.text()).contains(button + ": " + TICKETS);
+        assertThat(r.text()).contains(art14).contains(privacyUrl);
+        assertThat(r.text()).endsWith(unsubscribe + ": " + UNSUB);
+        if (!"en".equals(locale)) {
+            for (String english : new String[] {"Get tickets", "You received this because", "Unsubscribe",
+                    "This organizer received", "IMIN processes", "privacy notice", "retention and your rights"}) {
+                assertThat(r.html()).as("html").doesNotContain(english);
+                assertThat(r.text()).as("text").doesNotContain(english);
+            }
+        }
+    }
+
+    @Test
+    void customTicketsButtonLabelIsKeptInAnyLanguage() {
+        CampaignEmailRenderer.Rendered r = renderer.render("S", "P", "{{tickets_button:Book now}}", "camp-1", "email",
+                UNSUB, BuiltinTemplates.defaultTemplate(), null, null, TICKETS,
+                com.imin.iminapi.service.ai.provenance.AiEmailDisclosure.NONE, OrganizerIdentity.NONE, null, "fr");
+        assertThat(r.html()).contains(">Book now</a>").doesNotContain("Obtenir des billets");
+        assertThat(r.text()).contains("Book now: " + TICKETS);
+    }
 }

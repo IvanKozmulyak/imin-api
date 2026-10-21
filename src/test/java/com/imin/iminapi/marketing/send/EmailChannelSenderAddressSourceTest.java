@@ -146,8 +146,8 @@ class EmailChannelSenderAddressSourceTest {
         row(first, m, "pending");
         String firstMail = sendOneAndCaptureHtml(first, m);
         assertThat(firstMail).contains(LINE + "Shotgun. IMIN processes it on the organizer&#39;s behalf; see the <a href=\"")
-                .contains(PRIVACY + "\"").contains(">privacy notice</a> for retention and your rights.")
-                .contains(LINE + "Shotgun. IMIN processes it on the organizer's behalf; retention and your rights: " + PRIVACY + "\n");
+                .contains(PRIVACY + "#en\"").contains(">privacy notice</a> for retention and your rights.")
+                .contains(LINE + "Shotgun. IMIN processes it on the organizer's behalf; retention and your rights: " + PRIVACY + "#en\n");
         assertThat(recipients.countByCampaignIdAndStatus(first.getId(), "sent")).isEqualTo(1L);
 
         Campaign second = campaign(orgId, "email", "sending");

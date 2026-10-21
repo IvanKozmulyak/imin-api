@@ -13,7 +13,9 @@ import com.imin.iminapi.marketing.template.TemplateTokens;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
@@ -53,13 +55,16 @@ public class CampaignTemplateService {
     private final CampaignEmailTemplateRepository templates;
     private final EventRepository events;
     private final OrganizationRepository organizations;
+    private final UserRepository users;
     private final TransactionTemplate readOnly;
     private final TransactionTemplate write;
 
     public CampaignTemplateService(@Qualifier(MarketingChatClient.NAME) ChatClient chat,
                                    CampaignEmailTemplateRepository templates,
                                    EventRepository events, OrganizationRepository organizations,
-                                   PlatformTransactionManager transactionManager) {
+                                   PlatformTransactionManager transactionManager,
+                                   UserRepository users) {
+        this.users = users;
         this.chat = chat;
         this.templates = templates;
         this.events = events;
@@ -124,12 +129,14 @@ public class CampaignTemplateService {
             Organization org = organizations.findById(p.orgId())
                     .orElseThrow(() -> ApiException.forbidden("Caller has no organization"));
             Event event = loadEvent(p.orgId(), req == null ? null : req.eventId());
-            return new Grounding(org, event, facts(org, event, hint));
+            String userLocale = users.findById(p.userId()).map(User::getLocale).orElse(null);
+            String language = CampaignLocale.promptLanguageName(CampaignLocale.defaultFor(org.getCountry(), userLocale));
+            return new Grounding(org, event, facts(org, event, hint), language);
         });
         Organization org = g.org();
         Event event = g.event();
 
-        GeneratedTemplateLlm out = callModel(g.facts());
+        GeneratedTemplateLlm out = callModel(g.facts(), g.language());
         // Untrusted model output → known-safe tokens (hex-only, whitelisted header) or 422.
         TemplateTokens tokens = TemplateTokenValidator.sanitize(out == null ? null : out.tokens());
         String name = templateName(out == null ? null : out.name(), org, event);
@@ -147,7 +154,7 @@ public class CampaignTemplateService {
     }
 
     /** The org, linked event and prompt facts; read in one transaction, used after it closes. */
-    private record Grounding(Organization org, Event event, String facts) {}
+    private record Grounding(Organization org, Event event, String facts, String language) {}
 
     /** Delete an org template (404 no-leak when missing / another org's). Builtins are code, not rows. */
     @Transactional
@@ -158,16 +165,16 @@ public class CampaignTemplateService {
     }
 
     /** Single, non-looping LLM call. Any failure surfaces as null → validator yields the classic fallback. */
-    private GeneratedTemplateLlm callModel(String facts) {
+    private GeneratedTemplateLlm callModel(String facts, String language) {
         try {
-            return chat.prompt().user(prompt(facts)).call().entity(GeneratedTemplateLlm.class);
+            return chat.prompt().user(prompt(facts, language)).call().entity(GeneratedTemplateLlm.class);
         } catch (Exception e) {
             log.warn("Template-generate LLM call failed; using classic fallback tokens: {}", e.getMessage());
             return null;
         }
     }
 
-    private String prompt(String facts) {
+    private String prompt(String facts, String language) {
         return """
                 You are an email art director for an events ticketing platform. Design a
                 reusable EMAIL TEMPLATE STYLE (colours, header treatment, font) for one
@@ -193,10 +200,11 @@ public class CampaignTemplateService {
                 - Body text on the card MUST stay clearly readable (strong text/card contrast).
                 - Prefer "posterHero" only for image-led events; otherwise "wordmark" or "banner".
                 - fontStack must be plain font names separated by commas (no @import, no url()).
+                - Any header title text must be in %s.
 
                 Organizer & event:
                 %s
-                """.formatted(facts);
+                """.formatted(language, facts);
     }
 
     /** Grounding block: org name + stored brand colours, and the event vibe when linked. */
@@ -214,7 +222,7 @@ public class CampaignTemplateService {
             if (notBlank(event.getName())) sb.append("Event: ").append(event.getName().trim()).append('\n');
             if (notBlank(event.getGenre())) sb.append("Genre/vibe: ").append(event.getGenre().trim()).append('\n');
             if (notBlank(event.getType())) sb.append("Type: ").append(event.getType().trim()).append('\n');
-            if (event.getStartsAt() != null) sb.append("Date: ").append(event.getStartsAt()).append('\n');
+            if (event.getStartsAt() != null) sb.append("Date: ").append(EventStartFact.describe(event.getStartsAt(), event.getTimezone())).append('\n');
             if (notBlank(event.getPosterUrl())) sb.append("Has a poster image: yes\n");
         }
         if (notBlank(hint)) {

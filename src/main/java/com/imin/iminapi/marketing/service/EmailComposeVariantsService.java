@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audience.service.SegmentService;
@@ -117,7 +118,7 @@ public class EmailComposeVariantsService {
         Event event = g.event();
         boolean hasEvent = event != null;
 
-        EmailComposeVariantsLlm out = callModel(prompt(g.facts(), hasEvent, count));
+        EmailComposeVariantsLlm out = callModel(prompt(g.facts(), hasEvent, count, campaign.getLocale()));
 
         List<EmailVariant> valid = new ArrayList<>();
         if (out != null && out.variants() != null) {
@@ -131,7 +132,7 @@ public class EmailComposeVariantsService {
         recordOffered(campaign.getId(), valid);
         if (valid.isEmpty()) {
             // Model failed or everything was rejected — never return nothing for a valid campaign.
-            valid.add(fallbackVariant(campaign, event, hasEvent));
+            valid.add(fallbackVariant(campaign, event, hasEvent, campaign.getLocale()));
         }
         return new EmailComposeVariantsResponse(valid);
     }
@@ -260,18 +261,44 @@ public class EmailComposeVariantsService {
 
     // ---- deterministic fallback (never return zero variants for a valid campaign) ----
 
-    private static EmailVariant fallbackVariant(Campaign campaign, Event event, boolean hasEvent) {
+    /** Fallback sentences per campaign language; {@code {{firstName}}} stays a token filled at send. */
+    private record FallbackCopy(String invitedNamed, String invited, String preheaderNamed, String preheader,
+                                String greeting, String seeYouAt, String details, String closing) {}
+
+    private static FallbackCopy fallbackCopy(String locale) {
+        return switch (EmailLocale.normalize(locale)) {
+            case "fr" -> new FallbackCopy("Vous êtes invité : %s", "Vous êtes invité",
+                    "Réservez votre place pour %s", "Réservez votre place : tous les détails à l'intérieur",
+                    "Bonjour {{firstName}},", "Nous serions ravis de vous voir à **%s**. ",
+                    "Voici les détails et tout ce qu'il faut savoir avant le jour J.", "À très vite !");
+            case "es" -> new FallbackCopy("Estás invitado: %s", "Estás invitado",
+                    "Reserva tu plaza para %s", "Reserva tu plaza: los detalles dentro",
+                    "Hola {{firstName}},", "Nos encantaría verte en **%s**. ",
+                    "Aquí tienes los detalles y todo lo que necesitas saber antes del día.", "¡Esperamos verte allí!");
+            case "uk" -> new FallbackCopy("Вас запрошено: %s", "Вас запрошено",
+                    "Збережіть своє місце на %s", "Збережіть своє місце: подробиці всередині",
+                    "Привіт, {{firstName}}!", "Будемо раді бачити вас на **%s**. ",
+                    "Ось подробиці та все, що потрібно знати перед днем події.", "До зустрічі!");
+            default -> new FallbackCopy("You're invited: %s", "You're invited",
+                    "Save your spot for %s", "Save your spot — details inside",
+                    "Hi {{firstName}},", "We'd love to see you at **%s**. ",
+                    "Here are the details and everything you need to know before the day.", "Hope to see you there!");
+        };
+    }
+
+    private static EmailVariant fallbackVariant(Campaign campaign, Event event, boolean hasEvent, String locale) {
+        FallbackCopy t = fallbackCopy(locale);
         String name = baseName(event, campaign);
-        String subject = clampSubject(name != null ? "You're invited: " + name : "You're invited");
-        String preheader = name != null ? "Save your spot for " + name : "Save your spot — details inside";
+        String subject = clampSubject(name != null ? t.invitedNamed().formatted(name) : t.invited());
+        String preheader = name != null ? t.preheaderNamed().formatted(name) : t.preheader();
         if (preheader.length() > MAX_PREHEADER) preheader = preheader.substring(0, MAX_PREHEADER).trim();
         StringBuilder body = new StringBuilder();
-        body.append("Hi there,\n\n");
+        body.append(t.greeting()).append("\n\n");
         if (name != null) {
-            body.append("We'd love to see you at **").append(name).append("**. ");
+            body.append(t.seeYouAt().formatted(name));
         }
-        body.append("Here are the details and everything you need to know before the day.\n\n");
-        body.append("Hope to see you there!");
+        body.append(t.details()).append("\n\n");
+        body.append(t.closing());
         if (hasEvent) {
             body.append("\n\n{{tickets_button}}");
         }
@@ -291,12 +318,12 @@ public class EmailComposeVariantsService {
 
     // ---- prompt + grounding facts ----
 
-    private String prompt(String facts, boolean hasEvent, int count) {
+    private String prompt(String facts, boolean hasEvent, int count, String locale) {
         String ticketsRule = hasEvent
                 ? """
                   - This campaign HAS a linked event, so include the LITERAL token {{tickets_button}}
                     on its own line EXACTLY ONCE, placed after the main pitch. It is replaced with a
-                    real "Get tickets" button at send time. Do NOT write your own link, URL, or button
+                    real tickets button, labelled in the email's language, at send time. Do NOT write your own link, URL, or button
                     text — just the token.
                   """
                 : """
@@ -319,6 +346,8 @@ public class EmailComposeVariantsService {
                   subject in the inbox.
                 - bodyMarkdown: PLAIN MARKDOWN ONLY (paragraphs, **bold**, and [links](https://...) are
                   fine) — absolutely NO HTML tags. A few short, warm, specific paragraphs.
+                - Write the subject, preheader and body in %s. Keep the literal tokens {{tickets_button}}
+                  and {{firstName}} exactly as written, untranslated.
                 - Do NOT write an unsubscribe line or footer — the system appends the legal footer
                   automatically.
                 %s
@@ -332,7 +361,7 @@ public class EmailComposeVariantsService {
 
                 Campaign details:
                 %s
-                """.formatted(count, count, ticketsRule, facts);
+                """.formatted(count, count, CampaignLocale.promptLanguageName(locale), ticketsRule, facts);
     }
 
     /**
@@ -348,7 +377,7 @@ public class EmailComposeVariantsService {
 
         if (event != null && notBlank(event.getName())) {
             sb.append("Event: ").append(event.getName().trim()).append('\n');
-            if (event.getStartsAt() != null) sb.append("Date: ").append(event.getStartsAt()).append('\n');
+            if (event.getStartsAt() != null) sb.append("Date: ").append(EventStartFact.describe(event.getStartsAt(), event.getTimezone())).append('\n');
             String venue = venueLabel(event);
             if (venue != null) sb.append("Venue: ").append(venue).append('\n');
             if (notBlank(event.getGenre())) sb.append("Genre: ").append(event.getGenre().trim()).append('\n');

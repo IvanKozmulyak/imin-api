@@ -2,8 +2,6 @@ package com.imin.iminapi.marketing.email;
 
 import com.imin.iminapi.marketing.unsubscribe.PublicUnsubscribeController;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 import java.net.URI;
@@ -56,19 +54,6 @@ class UnsubscribeUrlTest {
         String url = props().unsubscribeUrl("tok_abc123");
         assertThat(URI.create(url).getQuery()).isNull();
         assertThat(url).doesNotContain("/optout");
-    }
-
-    @Test
-    void oneUrlServesBothVerbs() throws Exception {
-        // RFC 8058 one-click POSTs to the List-Unsubscribe-Post URL, and a human
-        // clicking the footer GETs the same one. If either mapping disappears,
-        // half the recipients lose their opt-out silently.
-        assertThat(PublicUnsubscribeController.class
-                .getMethod("oneClick", String.class, jakarta.servlet.http.HttpServletRequest.class)
-                .getAnnotation(PostMapping.class)).isNotNull();
-        assertThat(PublicUnsubscribeController.class
-                .getMethod("confirmPage", String.class, jakarta.servlet.http.HttpServletRequest.class)
-                .getAnnotation(GetMapping.class)).isNotNull();
     }
 
     @Test

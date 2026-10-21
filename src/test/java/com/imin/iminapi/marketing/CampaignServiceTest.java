@@ -45,6 +45,7 @@ import static org.mockito.Mockito.verify;
 @IminIntegrationTest
 class CampaignServiceTest {
 
+    @Autowired com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
     @Autowired CampaignService service;
     @Autowired CampaignEmailProvider provider;
     @Autowired MarketingEmailProperties marketingProps;
@@ -238,7 +239,11 @@ class CampaignServiceTest {
         CampaignEmailProvider.OutgoingEmail e = sentTest();
         assertThat(e.to()).isEqualTo(callerEmail);
         assertThat(e.subject()).isEqualTo("[TEST] Subject line");
-        assertThat(e.unsubscribeUrl()).contains("preview");
+        // A signed test token: the header posts to the API, the footer opens the buyer page; neither unsubscribes anyone.
+        String token = e.unsubscribeUrl().substring(e.unsubscribeUrl().lastIndexOf('/') + 1);
+        assertThat(e.unsubscribeUrl()).contains("/api/v1/public/unsubscribe/").doesNotContain("preview");
+        assertThat(unsubscribeTokens.verifyTest(token)).isPresent();
+        assertThat(e.html()).contains("href=\"https://app.imin.wtf/unsubscribe/" + token + "\"");
     }
 
     @Test
@@ -254,7 +259,8 @@ class CampaignServiceTest {
         UUID orgId = orgs.save(o).getId();
         orgIds.add(orgId);
         CampaignDto d = service.create(principal(orgId),
-                new CreateCampaignRequest("email", "Footer", null, null, "Subject", "Pre", "Body", null));
+                new CreateCampaignRequest("email", "Footer", null, null, "Subject", "Pre", "Body", null,
+                        null, null, "en"));
 
         service.testSend(principal(orgId), d.id(), null);
 
@@ -262,6 +268,18 @@ class CampaignServiceTest {
         assertThat(e.from()).isEqualTo("\"Night via IMIN\" <contact@imin.support>");
         assertThat(e.html()).contains("Night &middot; Night SAS &middot; legal@night.test");
         assertThat(e.text()).contains("Night · Night SAS · legal@night.test\nUnsubscribe: ");
+    }
+
+    @Test
+    void test_send_ofAFrenchCampaign_isInFrench() {
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "Fr", null, null,
+                "Sujet", "Pre", "Bonjour", null, null, null, "fr"));
+
+        service.testSend(principal(ORG), d.id(), null);
+
+        CampaignEmailProvider.OutgoingEmail e = sentTest();
+        assertThat(e.html()).contains("<html lang=\"fr\"").contains("Se désinscrire");
+        assertThat(e.text()).contains("Se désinscrire");
     }
 
     @Test

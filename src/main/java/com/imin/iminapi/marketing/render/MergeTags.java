@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.render;
 
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -17,10 +18,21 @@ public final class MergeTags {
     private static final Pattern FIRST_NAME = Pattern.compile("\\{\\{\\s*firstName\\s*\\}\\}", Pattern.CASE_INSENSITIVE);
     private static final Pattern EVENT_URL = Pattern.compile("\\{\\{\\s*eventUrl\\s*\\}\\}", Pattern.CASE_INSENSITIVE);
 
-    /** Neutral greeting fallback when we have no usable name for the recipient. */
-    public static final String FIRST_NAME_FALLBACK = "there";
-
     private MergeTags() {}
+
+    private static final String FIRST_NAME_TAG = "\\{\\{\\s*firstName\\s*\\}\\}";
+    /** Token opening a line, with its trailing comma/colon, glued to the next word. */
+    private static final Pattern LEADING_NAME = Pattern.compile(
+            "(?m)^([ \\t]*)" + FIRST_NAME_TAG + "[ \\t]*[,:]?[ \\t]*(\\p{L})", Pattern.CASE_INSENSITIVE);
+    /** Token opening a line, followed only by punctuation: nothing worth keeping. */
+    private static final Pattern LEADING_NAME_PUNCT = Pattern.compile(
+            "(?m)^([ \\t]*)" + FIRST_NAME_TAG + "[ \\t]*[,;:!?.]+[ \\t]*", Pattern.CASE_INSENSITIVE);
+    /** Bold or italic markers wrapped tightly around the token, which would be left empty. */
+    private static final Pattern EMPHASIZED_NAME = Pattern.compile(
+            "(\\*{1,3}|_{1,3})[ \\t]*" + FIRST_NAME_TAG + "[ \\t]*\\1", Pattern.CASE_INSENSITIVE);
+    /** Token with the ", " or spaces that precede it. */
+    private static final Pattern TRAILING_NAME = Pattern.compile(
+            "(?:,[ \\t]*|[ \\t]+)" + FIRST_NAME_TAG, Pattern.CASE_INSENSITIVE);
 
     /**
      * Substitute the recipient tokens in an organizer-authored string (subject or
@@ -28,40 +40,50 @@ public final class MergeTags {
      * HTML-special characters is still escaped by the renderer downstream.
      *
      * @param text      subject line or body markdown (null-safe → returns null)
-     * @param firstName resolved first name, or null/blank → {@link #FIRST_NAME_FALLBACK}
+     * @param firstName resolved first name; null, blank or email-shaped removes the token with its adjacent
+     *                  punctuation ("Hi {{firstName}}," becomes "Hi,") instead of inventing a name
      * @param eventUrl  the linked-event buyer URL, or null/blank → tag removed
      */
     public static String apply(String text, String firstName, String eventUrl) {
         if (text == null || text.isEmpty()) return text;
         String name = firstName(firstName);
-        String out = FIRST_NAME.matcher(text).replaceAll(java.util.regex.Matcher.quoteReplacement(name));
+        String out;
+        if (name != null) {
+            out = FIRST_NAME.matcher(text).replaceAll(Matcher.quoteReplacement(name));
+        } else {
+            out = EMPHASIZED_NAME.matcher(text).replaceAll("{{firstName}}");
+            out = replaceLeading(out);
+            out = LEADING_NAME_PUNCT.matcher(out).replaceAll("$1");
+            out = TRAILING_NAME.matcher(out).replaceAll("");
+            out = FIRST_NAME.matcher(out).replaceAll("");
+        }
         String url = eventUrl == null ? "" : eventUrl.trim();
-        out = EVENT_URL.matcher(out).replaceAll(java.util.regex.Matcher.quoteReplacement(url));
+        out = EVENT_URL.matcher(out).replaceAll(Matcher.quoteReplacement(url));
         return out;
+    }
+
+    private static String replaceLeading(String text) {
+        Matcher m = LEADING_NAME.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String next = new String(Character.toChars(Character.toUpperCase(m.group(2).codePointAt(0))));
+            m.appendReplacement(sb, Matcher.quoteReplacement(m.group(1) + next));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /**
      * Derive a greetable first name from a stored display name: the first
-     * whitespace-separated token. An email-shaped or blank display name yields the
-     * fallback — we never greet someone with their email address.
+     * whitespace-separated token. A blank or email-shaped display name yields null:
+     * we never greet someone with their email address.
      */
     public static String firstName(String displayName) {
-        if (displayName == null) return FIRST_NAME_FALLBACK;
+        if (displayName == null) return null;
         String trimmed = displayName.trim();
-        if (trimmed.isEmpty() || trimmed.contains("@")) return FIRST_NAME_FALLBACK;
+        if (trimmed.isEmpty() || trimmed.contains("@")) return null;
         int sp = trimmed.indexOf(' ');
         String first = sp > 0 ? trimmed.substring(0, sp) : trimmed;
-        return first.isEmpty() ? FIRST_NAME_FALLBACK : first;
-    }
-
-    /** demo/self-check */
-    public static void main(String[] args) {
-        assert "Hey Ivan, see https://x/e/1".equals(
-                apply("Hey {{firstName}}, see {{eventUrl}}", "Ivan Kozmulyak", "https://x/e/1"));
-        assert "Hi there".equals(apply("Hi {{ FIRSTNAME }}", null, null));
-        assert "Hi there".equals(apply("Hi {{firstName}}", "buyer@example.com", null)); // email → fallback
-        assert "".equals(apply("{{eventUrl}}", null, "  "));                            // blank url → removed
-        assert "Ann".equals(firstName("Ann-Marie Lee".replace("-", " ")));
-        System.out.println("MergeTags OK");
+        return first.isEmpty() ? null : first;
     }
 }

@@ -54,7 +54,9 @@ public record CampaignDetailDto(
         /** Attributed revenue in minor units, as {@link CampaignDto#revMinor}: null until the campaign has sent. */
         Long revMinor,
         /** Live skip-reason counts over the campaign's skipped rows, mid-send diverts included; null when it has no rows. */
-        java.util.Map<String, Long> skipReasons
+        java.util.Map<String, Long> skipReasons,
+        /** Language of the fan-facing shell and unsubscribe page: en|es|fr|uk. Never null. */
+        String locale
 ) {
     public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
                                          String triggerType, String failureReason, String eventName, Long revMinor,
@@ -66,6 +68,6 @@ public record CampaignDetailDto(
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
                 c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType,
-                c.getAttempts(), failureReason, eventName, revMinor, skipReasons);
+                c.getAttempts(), failureReason, eventName, revMinor, skipReasons, c.getLocale());
     }
 }

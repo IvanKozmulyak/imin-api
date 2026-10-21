@@ -4,12 +4,14 @@ import java.net.URI;
 import java.util.Locale;
 import java.util.UUID;
 
-/** Which link a Resend click hit: TICKET (the campaign event's buyer page or below), UNSUBSCRIBE (unsubscribe path on any
- *  host), OTHER, or UNKNOWN (no link, or no absolute URL with a host). Hosts match in any case; never throws. */
+/** Which link a Resend click hit: TICKET (the campaign event's buyer page or below), UNSUBSCRIBE (the API unsubscribe path
+ *  on any host, or the buyer site's unsubscribe page), OTHER, or UNKNOWN (no link, or no absolute URL with a host).
+ *  Hosts match in any case; never throws. */
 public enum ClickedLink {
     TICKET, UNSUBSCRIBE, OTHER, UNKNOWN;
 
     static final String UNSUBSCRIBE_PATH = "/api/v1/public/unsubscribe";
+    static final String UNSUBSCRIBE_PAGE_PATH = "/unsubscribe";
 
     public static ClickedLink classify(String link, UUID campaignEventId, String buyerSiteBaseUrl,
                                        String apiPublicBaseUrl) {
@@ -27,6 +29,8 @@ public enum ClickedLink {
             // Any host: older emails may carry a different API base host.
             if (isAtOrBelow(path, UNSUBSCRIBE_PATH)) return UNSUBSCRIBE;
             Base buyer = Base.of(buyerSiteBaseUrl);
+            // The footer link opens the buyer site's unsubscribe page.
+            if (host.equals(buyer.host()) && isAtOrBelow(path, buyer.path() + UNSUBSCRIBE_PAGE_PATH)) return UNSUBSCRIBE;
             if (campaignEventId != null && host.equals(buyer.host())
                     && isAtOrBelow(path, buyer.path() + "/e/" + campaignEventId)) {
                 return TICKET;

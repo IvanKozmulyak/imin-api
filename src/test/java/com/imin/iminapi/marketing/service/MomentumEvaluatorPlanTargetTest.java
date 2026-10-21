@@ -12,6 +12,8 @@ import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -60,10 +62,11 @@ class MomentumEvaluatorPlanTargetTest {
     final AudiencePlanProperties planProps = new AudiencePlanProperties();
     final ConsentGate consentGate = mock(ConsentGate.class);
     final CampaignRecipientRepository recipients = mock(CampaignRecipientRepository.class);
+    final OrganizationRepository organizations = mock(OrganizationRepository.class);
     final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, salesTotals, suggestions,
             new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher,
             new AllCampaignsConsent(planProps, consentGate),
-            recipients, mock(MembershipRepository.class));
+            recipients, mock(MembershipRepository.class), organizations);
 
     UUID orgId;
     UUID repeatId;
@@ -99,9 +102,9 @@ class MomentumEvaluatorPlanTargetTest {
                 new SendGateService.GateResult(inv.getArgument(1), List.of()));
         when(planTarget.best(event)).thenReturn(Optional.empty());
         when(planTarget.snapshot(eq(orgId), eq("Night Kit"), any(MomentumPlanTarget.Target.class))).thenReturn(snapshotId);
-        when(copy.generate(any(), any(), any(), any(), any(), any(), any()))
+        when(copy.generate(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenAnswer(inv -> new MomentumDraftPayload("s", "p", "b",
-                        ((UUID) inv.getArgument(6)).toString(), null, "why"));
+                        ((UUID) inv.getArgument(6)).toString(), null, "why", inv.getArgument(7)));
     }
 
     @Test
@@ -113,7 +116,7 @@ class MomentumEvaluatorPlanTargetTest {
 
         verify(sendGate).evaluate(orgId, planMembers);
         verify(planTarget).snapshot(orgId, "Night Kit", t);
-        verify(copy).generate(any(), any(), any(), any(), any(), any(), eq(snapshotId));
+        verify(copy).generate(any(), any(), any(), any(), any(), any(), eq(snapshotId), any());
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + snapshotId + "\"");
         verify(segments, never()).defaultTargetSegmentId(any());
         verify(planTarget, never()).discard(any(), any());
@@ -122,11 +125,17 @@ class MomentumEvaluatorPlanTargetTest {
 
     @Test
     void noPlanTarget_keepsRepeat() {
+        Organization org = new Organization();
+        org.setCountry("FR");
+        when(organizations.findById(orgId)).thenReturn(Optional.of(org));
+
         evaluator.evaluateOne(event, NOW);
 
         verify(sendGate).evaluate(orgId, repeatMembers);
         verify(planTarget, never()).snapshot(any(), any(), any(MomentumPlanTarget.Target.class));
-        assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
+        // The draft keeps the language it was written in, so approving it later gives the same shell.
+        assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"")
+                .contains("\"locale\":\"fr\"");
     }
 
     @Test
@@ -160,7 +169,7 @@ class MomentumEvaluatorPlanTargetTest {
         evaluator.evaluateOne(event, NOW);
 
         verify(sendGate).evaluate(orgId, repeatMembers);
-        verify(copy).generate(any(), any(), any(), any(), any(), any(), eq(repeatId));
+        verify(copy).generate(any(), any(), any(), any(), any(), any(), eq(repeatId), any());
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
         verify(planTarget, never()).discard(any(), any());
         verify(notifier).notifyOwner(orgId, "launch_push", "why");
@@ -173,7 +182,7 @@ class MomentumEvaluatorPlanTargetTest {
         evaluator.evaluateOne(event, NOW);
 
         verify(suggestions, never()).save(any());
-        verify(copy, never()).generate(any(), any(), any(), any(), any(), any(), any());
+        verify(copy, never()).generate(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -192,7 +201,7 @@ class MomentumEvaluatorPlanTargetTest {
     void failingDiscard_isSuppressed_andTheOriginalErrorSurfaces() {
         when(planTarget.best(event)).thenReturn(Optional.of(new MomentumPlanTarget.Target("loyal", "same", planMembers)));
         IllegalStateException boom = new IllegalStateException("copy failed");
-        doThrow(boom).when(copy).generate(any(), any(), any(), any(), any(), any(), any());
+        doThrow(boom).when(copy).generate(any(), any(), any(), any(), any(), any(), any(), any());
         IllegalStateException cleanup = new IllegalStateException("delete failed");
         doThrow(cleanup).when(planTarget).discard(orgId, snapshotId);
 
@@ -305,7 +314,7 @@ class MomentumEvaluatorPlanTargetTest {
         evaluator.evaluateOne(event, NOW);
 
         verify(suggestions, never()).save(any());
-        verify(copy, never()).generate(any(), any(), any(), any(), any(), any(), any());
+        verify(copy, never()).generate(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

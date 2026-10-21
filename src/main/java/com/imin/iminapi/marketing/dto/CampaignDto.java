@@ -49,7 +49,9 @@ public record CampaignDto(
          * paid orders. Campaigns that sent before V62 also read 0 — their orders carry no
          * utm_campaign and cannot be back-filled, because the tag was never captured.
          */
-        Long revMinor
+        Long revMinor,
+        /** Language of the fan-facing shell and unsubscribe page: en|es|fr|uk. Never null. */
+        String locale
 ) {
     /**
      * Projection with no attributed revenue — for campaigns that cannot have any yet
@@ -67,6 +69,6 @@ public record CampaignDto(
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
-                c.getCreatedAt(), c.getUpdatedAt(), revMinor);
+                c.getCreatedAt(), c.getUpdatedAt(), revMinor, c.getLocale());
     }
 }

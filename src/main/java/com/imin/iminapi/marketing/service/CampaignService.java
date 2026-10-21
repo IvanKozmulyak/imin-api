@@ -93,6 +93,7 @@ public class CampaignService {
     private final com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions;
     private final Clock clock;
     private final QuietHours quietHours;
+    private final com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -113,9 +114,11 @@ public class CampaignService {
                            com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms,
                            com.imin.iminapi.repository.AuditLogRepository auditLogs,
                            com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions,
-                           Clock clock, QuietHours quietHours) {
+                           Clock clock, QuietHours quietHours,
+                           com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens) {
         this.clock = clock;
         this.quietHours = quietHours;
+        this.unsubscribeTokens = unsubscribeTokens;
         this.auditLogs = auditLogs;
         this.momentumSuggestions = momentumSuggestions;
         this.campaigns = campaigns;
@@ -159,6 +162,7 @@ public class CampaignService {
         c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
         c.setSubjectAiGenerated(Boolean.TRUE.equals(req.subjectAiGenerated()));
         c.setBodyAiGenerated(Boolean.TRUE.equals(req.bodyAiGenerated()));
+        c.setLocale(req.locale() != null ? req.locale() : defaultLocale(p));
         c.setCreatedBy(p.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);
@@ -293,6 +297,7 @@ public class CampaignService {
         if (req.preheader() != null) c.setPreheader(req.preheader());
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());
         if (req.templateKey() != null) c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
+        if (req.locale() != null) c.setLocale(req.locale());
         // AI provenance is sticky: the client's true, or saved text a model offered for this campaign.
         if (Boolean.TRUE.equals(req.subjectAiGenerated())
                 || aiSuggestions.wasOffered(c.getId(), CampaignAiSuggestions.SUBJECT, req.subject())) {
@@ -305,6 +310,13 @@ public class CampaignService {
         }
         c.setUpdatedAt(Instant.now());
         return CampaignDto.from(campaigns.save(c));
+    }
+
+    /** A new campaign's language: the org country, else the caller's dashboard language, else English. */
+    private String defaultLocale(AuthPrincipal p) {
+        Organization org = organizationOrNull(p.orgId());
+        String userLocale = users.findById(p.userId()).map(User::getLocale).orElse(null);
+        return CampaignLocale.defaultFor(org == null ? null : org.getCountry(), userLocale);
     }
 
     /** An invitation arm keeps its segment and event, so its experiment link and holdout skip stay intact. */
@@ -344,6 +356,7 @@ public class CampaignService {
         copy.setSubjectAiGenerated(src.isSubjectAiGenerated());
         copy.setBodyAiGenerated(src.isBodyAiGenerated());
         copy.setTemplateKey(src.getTemplateKey());
+        copy.setLocale(src.getLocale());
         copy.setBodyTemplate(src.getBodyTemplate());
         copy.setSenderId(src.getSenderId());
         copy.setCreatedBy(p.userId());
@@ -449,8 +462,10 @@ public class CampaignService {
         }
         String to = callerEmail(p);   // always the organizer — requestedEmail is advisory only
         Organization org = organizationOrNull(c.getOrgId());
-        String unsubUrl = emailProps.unsubscribeUrl("preview");
-        CampaignEmailRenderer.Rendered rendered = renderForTest(c, org, unsubUrl);
+        // The test link names the campaign but unsubscribes nobody; the header keeps the API URL like a real send.
+        String testToken = unsubscribeTokens.signTest(c.getOrgId(), c.getId());
+        String unsubUrl = emailProps.unsubscribeUrl(testToken);
+        CampaignEmailRenderer.Rendered rendered = renderForTest(c, org, emailProps.unsubscribePageUrl(testToken));
         // Same provider, From and headers as the real batch send, so the test shows what fans will get.
         provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
                 emailProps.fromHeader(org == null ? null : org.displayName()), to,
@@ -463,8 +478,8 @@ public class CampaignService {
      * Render a test send through the EXACT same {@link CampaignEmailRenderer} path as the real
      * batch send ({@code EmailChannelSender}): resolved template shell, brand header, poster hero,
      * {@code {{tickets_button}}} CTA, and the mandatory unsubscribe footer. There is no recipient
-     * row for a self-test, so a preview unsubscribe token stands in for the per-recipient signed
-     * one — the footer is still present and honest, it just resolves to a preview optout.
+     * row for a self-test, so a signed test token stands in for the per-recipient one — the footer is
+     * still present and honest, it opens the page in its "this was a test email" state.
      */
     private CampaignEmailRenderer.Rendered renderForTest(Campaign c, Organization org, String unsubUrl) {
         // resolve() coalesces null/blank/unknown template_key to the classic builtin, so a pre-V66
@@ -474,20 +489,20 @@ public class CampaignService {
         Event event = linkedEvent(c);
         String posterUrl = event == null ? null : event.getPosterUrl();
         String ticketsUrl = event == null ? null : emailProps.getBuyerSiteBaseUrl() + "/e/" + event.getId();
-        // A test send has no recipient, so resolve merge tags to a preview sample: the
-        // neutral first-name fallback and the real event URL — so the tester sees resolved
-        // text, not raw {{firstName}}/{{eventUrl}} tokens.
+        // A test send has no recipient, so there is no first name (the token is dropped, as for a
+        // fan with no name); {{eventUrl}} resolves to the real event URL.
         String eventUrl = ticketsUrl != null ? ticketsUrl : emailProps.getBuyerSiteBaseUrl();
         String subject = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getSubject(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
+                c.getSubject(), null, eventUrl);
         String bodyMd = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getBodyMd(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
+                c.getBodyMd(), null, eventUrl);
         String preheader = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getPreheader(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
+                c.getPreheader(), null, eventUrl);
         return renderer.render(
                 subject, preheader, bodyMd,
                 c.getId().toString(), "email", unsubUrl,
-                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure(), OrganizerIdentity.of(org));
+                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure(), OrganizerIdentity.of(org),
+                null, c.getLocale());
     }
 
     /** Refuses a campaign that needs a legal identity the org lacks; the org is read only when one is needed. */

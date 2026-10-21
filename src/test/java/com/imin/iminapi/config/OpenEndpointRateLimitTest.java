@@ -154,11 +154,12 @@ class OpenEndpointRateLimitTest {
     }
 
     @Test
-    void unsubscribe_consumes_its_bucket_on_both_verbs() throws Exception {
+    void postConsumesTheUnsubscribeBucketButPageReadsDoNot() throws Exception {
         mvc.perform(post("/api/v1/public/unsubscribe/not-a-real-token"));
         mvc.perform(get("/api/v1/public/unsubscribe/not-a-real-token"));
+        mvc.perform(get("/api/v1/public/unsubscribe/not-a-real-token/details"));
         assertThat(limiter.calls()).filteredOn(c -> c.bucket().equals("unsubscribe"))
-                .containsExactly(new Call("unsubscribe", LOCAL_IP), new Call("unsubscribe", LOCAL_IP));
+                .containsExactly(new Call("unsubscribe", LOCAL_IP));
     }
 
     /** Under the limit the beacon lands, which is what makes the over-limit case below meaningful. */

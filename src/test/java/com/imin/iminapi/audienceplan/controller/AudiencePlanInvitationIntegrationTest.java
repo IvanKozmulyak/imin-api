@@ -200,12 +200,14 @@ class AudiencePlanInvitationIntegrationTest {
                 e.getId())) {
             UUID campaignId = (UUID) x.get("campaign_id");
             Map<String, Object> c = jdbc.queryForMap(
-                    "select origin, status, event_id, segment_id, channel, scheduled_at from campaigns where id = ?", campaignId);
+                    "select origin, status, event_id, segment_id, channel, scheduled_at, locale from campaigns where id = ?", campaignId);
             assertThat(c.get("origin")).isEqualTo("audience_plan");
             assertThat(c.get("status")).isEqualTo("draft");
             assertThat(c.get("event_id")).isEqualTo(e.getId());
             assertThat(c.get("channel")).isEqualTo("email");
             assertThat(c.get("scheduled_at")).isNull();
+            // The org is French, so the arm goes out with the French shell, not the column default.
+            assertThat(c.get("locale")).isEqualTo("fr");
             Map<String, Object> s = jdbc.queryForMap("select origin, kind, snapshot_ids from segments where id = ?",
                     c.get("segment_id"));
             assertThat(s.get("origin")).isEqualTo("audience_plan");

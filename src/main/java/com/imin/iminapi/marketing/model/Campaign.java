@@ -88,6 +88,10 @@ public class Campaign {
     @Column(name = "body_ai_generated", nullable = false)
     private boolean bodyAiGenerated;
 
+    /** Language of everything IMIN adds around the organizer's text: en|es|fr|uk (V193). */
+    @Column(nullable = false)
+    private String locale = "en";
+
     // sms-only (forward-compat, unused in Phase 1)
     @Column(name = "body_template")
     private String bodyTemplate;

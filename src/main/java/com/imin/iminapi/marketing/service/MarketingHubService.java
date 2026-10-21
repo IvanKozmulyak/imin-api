@@ -11,7 +11,9 @@ import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +46,7 @@ public class MarketingHubService {
     private final MarketingEmailProperties emailProps;
     private final AllCampaignsConsent allCampaignsConsent;
     private final OrganizationRepository organizations;
+    private final UserRepository users;
 
     public MarketingHubService(MembershipRepository memberships,
                                SendGateService sendGate,
@@ -53,7 +56,9 @@ public class MarketingHubService {
                                CampaignAttributionService attribution,
                                MarketingEmailProperties emailProps,
                                AllCampaignsConsent allCampaignsConsent,
-                               OrganizationRepository organizations) {
+                               OrganizationRepository organizations,
+                               UserRepository users) {
+        this.users = users;
         this.memberships = memberships;
         this.sendGate = sendGate;
         this.suggestions = suggestions;
@@ -133,7 +138,9 @@ public class MarketingHubService {
                 emailFromName,
                 emailFromDisplayName,
                 organizerName,
-                sendingEnabled);
+                sendingEnabled,
+                CampaignLocale.defaultFor(org == null ? null : org.getCountry(),
+                        users.findById(principal.userId()).map(User::getLocale).orElse(null)));
     }
 
     /** The caller's org for the sender name. A missing org leaves the organizer name out. */

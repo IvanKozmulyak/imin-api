@@ -78,7 +78,7 @@ class AudiencePlanCampaignPatchLockTest {
         Campaign c = draft("audience_plan");
 
         Throwable t = catchThrowable(() -> service.patch(owner(), c.getId(), new PatchCampaignRequest(
-                null, null, null, null, null, null, null, null, null, "sms")));
+                null, null, null, null, null, null, null, null, null, "sms", null)));
 
         assertThat(t).isInstanceOfSatisfying(ApiException.class, e -> {
             assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);

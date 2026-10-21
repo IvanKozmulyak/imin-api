@@ -11,6 +11,8 @@ import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -62,6 +64,7 @@ public class MomentumEvaluator {
     private final AllCampaignsConsent allCampaignsConsent;
     private final CampaignRecipientRepository recipients;
     private final MembershipRepository memberships;
+    private final OrganizationRepository organizations;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
@@ -71,7 +74,8 @@ public class MomentumEvaluator {
                              MomentumNotifier notifier, MomentumPlanTarget planTarget,
                              ApplicationEventPublisher publisher,
                              AllCampaignsConsent allCampaignsConsent,
-                             CampaignRecipientRepository recipients, MembershipRepository memberships) {
+                             CampaignRecipientRepository recipients, MembershipRepository memberships,
+                             OrganizationRepository organizations) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -88,6 +92,7 @@ public class MomentumEvaluator {
         this.allCampaignsConsent = allCampaignsConsent;
         this.recipients = recipients;
         this.memberships = memberships;
+        this.organizations = organizations;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -299,11 +304,12 @@ public class MomentumEvaluator {
         MomentumDraftPayload draft = copy.generate(
                 fired,
                 e.getName(),
-                e.getStartsAt() == null ? null : e.getStartsAt().toString(),
+                EventStartFact.describe(e.getStartsAt(), e.getTimezone()),
                 e.getVenueName(),
                 triggerContext(fired, m),
                 e.getPosterUrl(),
-                segmentId);
+                segmentId,
+                orgLocale(e.getOrgId()));
 
         MomentumSuggestion s = new MomentumSuggestion();
         s.setId(UUID.randomUUID());
@@ -316,6 +322,11 @@ public class MomentumEvaluator {
         s.setSuggestedAt(now);
         suggestions.save(s);
         return draft.why();
+    }
+
+    /** The org's default campaign language; an unknown country leaves English. */
+    private String orgLocale(UUID orgId) {
+        return CampaignLocale.defaultFor(organizations.findById(orgId).map(Organization::getCountry).orElse(null), null);
     }
 
     /** First matching rule, evaluated most-urgent first (spec §6.1). */
@@ -377,7 +388,8 @@ public class MomentumEvaluator {
                 + "\"bodyMd\":" + jsonStr(d.bodyMd()) + ","
                 + "\"segmentId\":" + jsonStr(d.segmentId()) + ","
                 + "\"posterUrl\":" + jsonStr(d.posterUrl()) + ","
-                + "\"why\":" + jsonStr(d.why())
+                + "\"why\":" + jsonStr(d.why()) + ","
+                + "\"locale\":" + jsonStr(d.locale())
                 + "}";
     }
 

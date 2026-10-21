@@ -55,7 +55,7 @@ class MarketingHubServiceTest {
         when(campaigns.findByOrgCreatedSince(eq(orgId), any())).thenReturn(List.of());
         return new MarketingHubService(memberships, sendGate, suggestions, events,
                 campaigns, attribution, props, new AllCampaignsConsent(planProps, consentGate),
-                mock(OrganizationRepository.class));
+                mock(OrganizationRepository.class), mock(com.imin.iminapi.repository.UserRepository.class));
     }
 
     private final AudiencePlanProperties planProps = new AudiencePlanProperties();

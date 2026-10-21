@@ -10,6 +10,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -39,14 +40,23 @@ class EmailChannelSenderTest {
     @Autowired CampaignEmailProvider provider;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired com.imin.iminapi.marketing.email.MarketingEmailProperties props;
+    @Autowired com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService tokens;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final Set<String> ownAddresses = new HashSet<>();
+    private final List<UUID> realOrgIds = new ArrayList<>();
+    private final List<UUID> consumerIds = new ArrayList<>();
 
     /** The campaigns are left 'sending', which the global claim would reclaim once stale. */
     @AfterEach
     void deleteOwnCampaigns() {
         CampaignRows.delete(jdbc, orgIds);
+        OrgRows.delete(jdbc, realOrgIds);
+        for (UUID id : consumerIds) {
+            jdbc.update("delete from memberships where consumer_id = ?", id);
+            jdbc.update("delete from consumers where consumer_id = ?", id);
+        }
     }
 
     /** The one email this test's campaign handed to the provider. */
@@ -185,5 +195,43 @@ class EmailChannelSenderTest {
         List<CampaignRecipient> pending = recipients.findByCampaignIdAndStatus(c.getId(), "pending");
         assertThat(pending).hasSize(1);
         assertThat(pending.get(0).getAttemptCount()).isEqualTo((short) 1);
+    }
+
+    @Test
+    void frenchCampaignGoesOutInFrenchWithTheFooterOnTheBuyerPage() {
+        Campaign c = campaignWithPending(1);
+        // A real org and member, so the token can be verified back to this recipient.
+        UUID orgId = fx.org().getId();
+        realOrgIds.add(orgId);
+        orgIds.add(orgId);
+        c.setOrgId(orgId);
+        UUID consumer = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        consumerIds.add(consumer);
+        jdbc.update("insert into consumers (consumer_id, normalized_email) values (?, ?)", consumer, fx.email("member"));
+        jdbc.update("insert into memberships (membership_id, org_id, consumer_id, status, consent_status, consent_basis)"
+                + " values (?, ?, ?, 'active', 'subscribed', 'explicit')", member, orgId, consumer);
+        jdbc.update("update campaign_recipients set membership_id = ? where campaign_id = ?", member, c.getId());
+        c.setLocale("fr");
+        c.setBodyMd("Bonjour {{firstName}},\n\nVenez nombreux.");
+        campaigns.save(c);
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+
+        sender.sendNextBatch(c);
+
+        CampaignEmailProvider.OutgoingEmail sent = sentEmail();
+        String token = sent.unsubscribeUrl().substring(sent.unsubscribeUrl().lastIndexOf('/') + 1);
+        assertThat(sent.html()).contains("<html lang=\"fr\">");
+        assertThat(sent.html()).contains("Se désinscrire").contains("Vous recevez cet e-mail");
+        // A fan with no name is greeted without one, never "Bonjour there,".
+        assertThat(sent.html()).contains("<p>Bonjour,</p>").doesNotContain("Bonjour there");
+        // The footer opens the buyer page; the one-tap header posts to the API, with the same token.
+        assertThat(sent.html()).contains("href=\"" + props.unsubscribePageUrl(token) + "\"");
+        assertThat(sent.unsubscribeUrl()).isEqualTo(props.unsubscribeUrl(token));
+        assertThat(tokens.verify(token)).hasValueSatisfying(claims -> {
+            assertThat(claims.membershipId()).isEqualTo(member);
+            assertThat(claims.campaignId()).isEqualTo(c.getId());
+        });
+        assertThat(sent.html()).doesNotContain("href=\"" + props.unsubscribeUrl(token) + "\"");
     }
 }

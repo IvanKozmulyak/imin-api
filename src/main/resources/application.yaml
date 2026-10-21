@@ -252,15 +252,12 @@ imin:
     from-name: ${IMIN_MARKETING_FROM_NAME:IMIN}
     # Longest wait for one marketing-copy model answer (compose, subject, template, Momentum); one 5xx retry.
     llm-timeout: ${IMIN_MARKETING_LLM_TIMEOUT:45s}
-    # The buyer site root — the {{eventUrl}} fallback when a campaign has no
-    # linked event. It does NOT build the unsubscribe link any more; that URL
-    # was https://app.imin.wtf/optout?token=… and it 404'd in production,
-    # because imin-public has never served /optout.
+    # The buyer site root: the {{eventUrl}} fallback when a campaign has no linked
+    # event, and the base of the footer's unsubscribe page link ({root}/unsubscribe/{token}).
     buyer-site-base-url: ${IMIN_MARKETING_BUYER_SITE_BASE_URL:https://app.imin.wtf}
-    # Where the opt-out actually lives. PublicUnsubscribeController serves both
-    # verbs on one URL: POST is RFC 8058 one-click, GET is the human page.
-    # Defaults to prod, never localhost: an unset env var here would put a
-    # dead link in a real inbox, which is the defect this replaced.
+    # Where the opt-out write lives. It is the RFC 8058 List-Unsubscribe header target
+    # (POST); a GET here redirects to the buyer-site page. Defaults to prod, never
+    # localhost: an unset env var must not put a dead link in a real inbox.
     api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:https://api.imin.wtf}
     # HMAC key for the opt-out tokens — the marketing unsubscribe link AND the
     # notify-me one. Its own key: it used to fall back to imin.ticket.signing-secret,

@@ -76,13 +76,16 @@ public class InvitationService {
     private final AuditLogger audit;
     private final Clock clock;
     private final TimingArmScheduler timing;
+    private final com.imin.iminapi.repository.OrganizationRepository organizations;
 
     public InvitationService(AudiencePlanAccess access, EventRepository events, AudiencePlanRepository plans,
                              AudiencePlanSegmentRepository planSegments, AudienceExperimentRepository experiments,
                              AudienceAssignmentRepository assignments, PlanService planService,
                              CandidateLoader candidates, ExperimentService experimentService,
                              SegmentRepository segments, CampaignRepository campaigns, AudiencePlanLogic logic,
-                             ResponseModel model, AuditLogger audit, Clock clock, TimingArmScheduler timing) {
+                             ResponseModel model, AuditLogger audit, Clock clock, TimingArmScheduler timing,
+                             com.imin.iminapi.repository.OrganizationRepository organizations) {
+        this.organizations = organizations;
         this.access = access;
         this.events = events;
         this.plans = plans;
@@ -227,6 +230,9 @@ public class InvitationService {
         c.setOrigin(AudiencePlanAccess.CAMPAIGN_ORIGIN);
         c.setSegmentId(segment.getId());
         c.setEventId(event.getId());
+        c.setLocale(com.imin.iminapi.marketing.service.CampaignLocale.defaultFor(
+                organizations.findById(principal.orgId()).map(com.imin.iminapi.model.Organization::getCountry).orElse(null),
+                null));
         c.setCreatedBy(principal.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);

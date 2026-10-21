@@ -40,8 +40,9 @@ import java.time.Instant;
  *   <li>{@code oneClickUnsubscribe} — {@code true}, unconditionally and truthfully: every
  *       campaign email built by {@code CampaignEmailProvider} carries
  *       {@code List-Unsubscribe} + {@code List-Unsubscribe-Post: List-Unsubscribe=One-Click}
- *       (RFC 8058) pointing at the owned {@code /api/v1/public/unsubscribe/{token}} endpoint.
- *       There is no code path that sends a campaign email without them.</li>
+ *       (RFC 8058) pointing at the owned {@code /api/v1/public/unsubscribe/{token}} endpoint on the API.
+ *       The footer link goes to the buyer-site page instead. There is no code path that sends a
+ *       campaign email without them.</li>
  *   <li>{@code sentLast30d} — org-scoped count of recipient rows whose email left in the last 30 days
  *       (windowed on {@code sent_at}), bounced and complained included: the campaign pages' Sent, via
  *       {@code CampaignRecipientRepository#countSentForOrgSince}. {@code sentLast24h} stays the enforced cap count.</li>

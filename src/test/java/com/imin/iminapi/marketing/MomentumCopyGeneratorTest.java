@@ -44,7 +44,8 @@ class MomentumCopyGeneratorTest {
                 "Warehouse 9, Kyiv",
                 "72 hours left, 40 tickets remain",
                 posterUrl,   // event poster
-                segmentId);
+                segmentId,
+                "en");
 
         assertThat(out.subject()).isEqualTo("40 tickets left");
         assertThat(out.bodyMd()).contains("40 tickets remain");

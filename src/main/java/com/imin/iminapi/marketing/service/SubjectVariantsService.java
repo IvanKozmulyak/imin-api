@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.SubjectVariantsLlm;
 import com.imin.iminapi.marketing.dto.SubjectVariantsResponse;
@@ -78,7 +79,7 @@ public class SubjectVariantsService {
     }
 
     /** The campaign id, the fallback name and the prompt facts; read in one transaction, used after it closes. */
-    private record Grounding(UUID campaignId, String baseName, String facts) {}
+    private record Grounding(UUID campaignId, String baseName, String facts, String locale) {}
 
     /**
      * Facts are read in a read-only transaction that closes before the model call, so a slow provider
@@ -94,11 +95,11 @@ public class SubjectVariantsService {
             Campaign campaign = campaigns.findByIdAndOrgId(campaignId, p.orgId())
                     .orElseThrow(() -> ApiException.notFound("Campaign"));
             Event event = loadEvent(p.orgId(), campaign.getEventId());
-            return new Grounding(campaign.getId(), baseName(event, campaign), facts(event, campaign, currentSubject));
+            return new Grounding(campaign.getId(), baseName(event, campaign), facts(event, campaign, currentSubject), campaign.getLocale());
         });
 
-        List<String> modelVariants = callModel(g.facts());
-        List<String> result = cleanAndPad(modelVariants, g.baseName());
+        List<String> modelVariants = callModel(g.facts(), g.locale());
+        List<String> result = cleanAndPad(modelVariants, g.baseName(), g.locale());
         recordOffered(g.campaignId(), modelVariants, result);
         return new SubjectVariantsResponse(result);
     }
@@ -121,9 +122,9 @@ public class SubjectVariantsService {
     }
 
     /** Single, non-looping LLM call. Any failure degrades to the deterministic fallback (never a 5xx). */
-    private List<String> callModel(String facts) {
+    private List<String> callModel(String facts, String locale) {
         try {
-            SubjectVariantsLlm out = chat.prompt().user(prompt(facts)).call().entity(SubjectVariantsLlm.class);
+            SubjectVariantsLlm out = chat.prompt().user(prompt(facts, locale)).call().entity(SubjectVariantsLlm.class);
             return out == null ? List.of() : out.variants();
         } catch (Exception e) {
             log.warn("Subject-variants LLM call failed; using deterministic fallback: {}", e.getMessage());
@@ -131,7 +132,7 @@ public class SubjectVariantsService {
         }
     }
 
-    private String prompt(String facts) {
+    private String prompt(String facts, String locale) {
         return """
                 You are an expert email marketer for an events ticketing app.
                 Write exactly THREE distinct email SUBJECT LINE alternatives for the campaign below.
@@ -141,6 +142,7 @@ public class SubjectVariantsService {
                 Rules for every subject:
                 - max 60 characters, plain text, no emoji, no surrounding quotes
                 - punchy and specific to THIS event, never generic filler
+                - written in %s
 
                 Return JSON ONLY, matching this schema exactly:
 
@@ -148,7 +150,7 @@ public class SubjectVariantsService {
 
                 Campaign details:
                 %s
-                """.formatted(facts);
+                """.formatted(CampaignLocale.promptLanguageName(locale), facts);
     }
 
     /**
@@ -161,7 +163,7 @@ public class SubjectVariantsService {
         if (event != null && notBlank(event.getName())) {
             sb.append("Event name: ").append(event.getName().trim()).append('\n');
             if (event.getStartsAt() != null) {
-                sb.append("Date: ").append(event.getStartsAt()).append('\n');
+                sb.append("Date: ").append(EventStartFact.describe(event.getStartsAt(), event.getTimezone())).append('\n');
             }
             String venue = venueLabel(event);
             if (venue != null) sb.append("Venue: ").append(venue).append('\n');
@@ -237,7 +239,7 @@ public class SubjectVariantsService {
      * keep at most three), then pad to exactly three with deterministic, event-grounded fallbacks.
      * The result is always exactly three non-empty, distinct subjects.
      */
-    private List<String> cleanAndPad(List<String> raw, String baseName) {
+    private List<String> cleanAndPad(List<String> raw, String baseName, String locale) {
         // LinkedHashSet on the lowercased key preserves order while de-duplicating.
         Set<String> seenKeys = new LinkedHashSet<>();
         List<String> out = new ArrayList<>();
@@ -249,7 +251,7 @@ public class SubjectVariantsService {
                 if (out.size() == WANT) return out;
             }
         }
-        for (String fb : fallbacks(baseName)) {
+        for (String fb : fallbacks(baseName, locale)) {
             if (out.size() == WANT) break;
             String v = normalize(fb);
             if (v != null && seenKeys.add(v.toLowerCase(Locale.ROOT))) out.add(v);
@@ -258,7 +260,7 @@ public class SubjectVariantsService {
         // unreachable in practice — but it makes the "exactly three, never empty" contract total.
         int n = 1;
         while (out.size() < WANT) {
-            String v = "Your invite is waiting " + (n++);
+            String v = fallbacks(null, locale).get(1) + " " + (n++);
             if (seenKeys.add(v.toLowerCase(Locale.ROOT))) out.add(v);
         }
         return out;
@@ -277,23 +279,32 @@ public class SubjectVariantsService {
         return v.isBlank() ? null : v;
     }
 
-    /** Deterministic distinct-angle fallbacks, grounded in the event/campaign name when present. */
-    private static List<String> fallbacks(String baseName) {
+    /** Deterministic distinct-angle fallbacks in the campaign language, grounded in the event/campaign name when present. */
+    private static List<String> fallbacks(String baseName, String locale) {
+        String lang = EmailLocale.normalize(locale);
         if (notBlank(baseName)) {
             String n = baseName.trim();
-            return List.of(
-                    "Don't miss " + n,
-                    n + ": your spot is waiting",
-                    "Last chance for " + n,
-                    "Going fast — " + n,
-                    "You're invited: " + n);
+            return switch (lang) {
+                case "fr" -> List.of("Ne manquez pas " + n, n + " : votre place vous attend",
+                        "Dernière chance pour " + n, "Ça part vite : " + n, "Vous êtes invité : " + n);
+                case "es" -> List.of("No te pierdas " + n, n + ": tu plaza te espera",
+                        "Última oportunidad para " + n, "Se agota rápido: " + n, "Estás invitado: " + n);
+                case "uk" -> List.of("Не пропустіть " + n, n + ": ваше місце чекає",
+                        "Останній шанс потрапити на " + n, "Квитки розходяться швидко: " + n, "Вас запрошено: " + n);
+                default -> List.of("Don't miss " + n, n + ": your spot is waiting",
+                        "Last chance for " + n, "Going fast — " + n, "You're invited: " + n);
+            };
         }
-        return List.of(
-                "Don't miss out",
-                "Your spot is waiting",
-                "Last chance to join",
-                "Going fast",
-                "You're invited");
+        return switch (lang) {
+            case "fr" -> List.of("Ne manquez pas ça", "Votre place vous attend",
+                    "Dernière chance de nous rejoindre", "Ça part vite", "Vous êtes invité");
+            case "es" -> List.of("No te lo pierdas", "Tu plaza te espera",
+                    "Última oportunidad para unirte", "Se agota rápido", "Estás invitado");
+            case "uk" -> List.of("Не пропустіть", "Ваше місце чекає",
+                    "Останній шанс приєднатися", "Квитки розходяться швидко", "Вас запрошено");
+            default -> List.of("Don't miss out", "Your spot is waiting",
+                    "Last chance to join", "Going fast", "You're invited");
+        };
     }
 
     private static boolean notBlank(String s) {
