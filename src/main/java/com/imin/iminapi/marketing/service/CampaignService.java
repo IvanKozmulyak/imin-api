@@ -36,6 +36,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,6 +55,8 @@ import java.util.stream.Collectors;
 @Service
 public class CampaignService {
 
+    /** A send is stored this far ahead, so the organizer can still take it back. */
+    private static final Duration SEND_UNDO_WINDOW = Duration.ofSeconds(60);
     static final Set<String> CHANNELS = Set.of("email", "sms");
     private static final int MAX_NAME = 120;
     /** Recipient statuses of a row that left the queue: what {@code stats.sent} and the cancel audit count. */
@@ -84,6 +88,8 @@ public class CampaignService {
     private final com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms;
     private final com.imin.iminapi.repository.AuditLogRepository auditLogs;
     private final com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions;
+    private final Clock clock;
+    private final QuietHours quietHours;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -103,7 +109,10 @@ public class CampaignService {
                            SendPathGuard sendPathGuard,
                            com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms,
                            com.imin.iminapi.repository.AuditLogRepository auditLogs,
-                           com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions) {
+                           com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions,
+                           Clock clock, QuietHours quietHours) {
+        this.clock = clock;
+        this.quietHours = quietHours;
         this.auditLogs = auditLogs;
         this.momentumSuggestions = momentumSuggestions;
         this.campaigns = campaigns;
@@ -268,8 +277,10 @@ public class CampaignService {
                     "Only draft campaigns can be edited");
         }
         requirePlanTargetKept(c, req);
+        String channel = req.channel() == null ? null : requireChannel(req.channel());
         if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) timingArms.disarm(c);
         if (req.name() != null) c.setName(requireName(req.name()));
+        if (channel != null) c.setChannel(channel);
         // mkt-edge-8: PatchableUuid distinguishes "absent" (the component is null — leave the
         // link alone) from "present and null" (PatchableUuid.NULL — unlink). The composer
         // PATCHes {segmentId: null, eventId: null} when the organizer de-selects, and that
@@ -300,6 +311,11 @@ public class CampaignService {
         if (!AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) return;
         boolean segmentChanged = req.segmentId() != null && !Objects.equals(req.segmentId().value(), c.getSegmentId());
         boolean eventChanged = req.eventId() != null && !Objects.equals(req.eventId().value(), c.getEventId());
+        boolean channelChanged = req.channel() != null && !req.channel().equals(c.getChannel());
+        if (channelChanged) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "The channel of an audience plan campaign cannot be changed");
+        }
         if (segmentChanged || eventChanged) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "The segment and event of an audience plan campaign cannot be changed");
@@ -402,8 +418,8 @@ public class CampaignService {
     }
 
     /** A past schedule would dispatch at once while the UI says "scheduled"; 2 min absorbs client clock skew. */
-    private static void requireNotPast(Instant scheduledAt) {
-        if (scheduledAt != null && scheduledAt.isBefore(Instant.now().minusSeconds(120))) {
+    private void requireNotPast(Instant scheduledAt) {
+        if (scheduledAt != null && scheduledAt.isBefore(clock.instant().minusSeconds(120))) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
                     "Scheduled time has already passed", Map.of("scheduledAt", "must be in the future"));
         }
@@ -549,7 +565,10 @@ public class CampaignService {
             requireReadyToSend(c);
             requireNotPast(scheduledAt);
         }
-        Instant when = scheduledAt != null ? scheduledAt : Instant.now();
+        Instant now = clock.instant();
+        // Send-now and any time sooner than the undo window are stored a full window ahead; arms keep their own time.
+        Instant when = scheduledAt != null && scheduledAt.isAfter(now.plus(SEND_UNDO_WINDOW))
+                ? scheduledAt : now.plus(SEND_UNDO_WINDOW);
         // An invitation arm owns its send time; a slump arm is only armed here and waits for Momentum.
         if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) {
             var arm = timingArms.onApproval(c, scheduledAt).orElse(null);
@@ -576,7 +595,37 @@ public class CampaignService {
             eventPublisher.publishEvent(
                     new com.imin.iminapi.predictor.service.PredictorMarketingEvents.CampaignScheduled(c.getEventId()));
         }
-        return new CampaignSendResponse(when, false);
+        Organization org = organizationOrNull(principal.orgId());
+        String tz = org == null ? null : org.getTimezone();
+        return new CampaignSendResponse(when, false,
+                Math.max(0, Duration.between(now, when).getSeconds()),
+                quietHours.heldUntil(tz, when), quietHours.zoneOf(tz).getId());
+    }
+
+    /**
+     * Guarded scheduled→draft for a campaign that has not started (attempts 0): the Undo of a send and the
+     * "move back to drafts" of a scheduled one. ADMIN only, like send. A campaign the dispatcher has claimed,
+     * or that Retry scheduled again, is a 409 INVALID_STATE.
+     */
+    @Transactional
+    public CampaignDto unschedule(AuthPrincipal principal, UUID campaignId) {
+        Campaign c = require(principal.orgId(), campaignId);
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "undo a send");
+        // One compare-and-set owns the state check: not scheduled, attempts > 0 or already claimed leaves 0 rows.
+        if (campaigns.unscheduleIfNotStarted(campaignId, principal.orgId(), clock.instant()) == 0) {
+            throw notUnschedulable();
+        }
+        // A fired slump arm must not re-fire on a draft, as an edit disarms it.
+        if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) timingArms.disarm(c);
+        audit.record(principal, AuditActions.CAMPAIGN_SEND_UNDONE, "campaign", campaignId,
+                "Campaign moved back to drafts before sending");
+        return CampaignDto.from(require(principal.orgId(), campaignId));
+    }
+
+    private static ApiException notUnschedulable() {
+        return new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                "Only a scheduled campaign that hasn't started can go back to drafts");
     }
 
     /**

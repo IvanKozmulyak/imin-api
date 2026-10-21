@@ -84,6 +84,16 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
            + "WHERE id = :id AND org_id = :orgId AND status IN ('scheduled', 'sending')", nativeQuery = true)
     int cancelIfActive(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
 
+    /**
+     * Guarded scheduled→draft for a campaign no dispatcher has started (attempts 0, so never a Retry); 0 rows means
+     * it was claimed, canceled or is not scheduled. The claim flips status in its own locked transaction, so exactly one wins.
+     */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaigns SET status = 'draft', scheduled_at = NULL, updated_at = :now "
+           + "WHERE id = :id AND org_id = :orgId AND status = 'scheduled' AND attempts = 0", nativeQuery = true)
+    int unscheduleIfNotStarted(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
+
     /** Guarded failed→scheduled while attempts remain; 0 rows means another retry got there first. */
     @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
     @org.springframework.transaction.annotation.Transactional

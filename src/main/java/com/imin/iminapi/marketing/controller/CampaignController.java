@@ -77,6 +77,7 @@ public class CampaignController {
         return service.detailWithStats(principal, id);
     }
 
+    /** Draft-only partial update; {@code channel} ({@code email}|{@code sms}) switches the channel, except on audience-plan campaigns (409). */
     @PatchMapping("/{id}")
     public CampaignDto patch(
             @AuthenticationPrincipal AuthPrincipal principal,
@@ -111,7 +112,9 @@ public class CampaignController {
     /**
      * Draft→scheduled. <b>OWNER/ADMIN only</b> (mkt-edge-2) — a MEMBER gets
      * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
-     * The body carries the stored send time, or {@code armed} for an audience-plan slump arm.
+     * The body carries the stored send time, or {@code armed} for an audience-plan slump arm. A send without
+     * {@code scheduledAt}, or with one sooner than 60 s ahead, is stored 60 s ahead so it can be undone; the body
+     * also gives {@code secondsUntilScheduled}, {@code quietUntil} (non-null when the org's quiet hours hold it) and {@code timeZone}.
      * A draft that is not ready is {@code 400 FIELD_INVALID} with {@code fields} keyed {@code subject},
      * {@code bodyMd}, {@code segmentId} (required), {@code audience} (empty) or {@code scheduledAt} (more than 2 min in the past); a non-draft is {@code 409 INVALID_STATE}.
      */
@@ -123,6 +126,16 @@ public class CampaignController {
             @RequestBody(required = false) SendRequest body) {
         java.time.Instant scheduledAt = body == null ? null : body.scheduledAt();
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(service.send(id, principal, idempotencyKey, scheduledAt));
+    }
+
+    /**
+     * Guarded scheduled→draft (the Undo of a send): <b>OWNER/ADMIN only</b>. 200 with the draft; 409 INVALID_STATE
+     * when the campaign is not scheduled, already started or was scheduled again by a retry; 404 for another org's.
+     */
+    @PostMapping("/{id}/unschedule")
+    public ResponseEntity<CampaignDto> unschedule(
+            @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
+        return ResponseEntity.ok(service.unschedule(principal, id));
     }
 
     /**

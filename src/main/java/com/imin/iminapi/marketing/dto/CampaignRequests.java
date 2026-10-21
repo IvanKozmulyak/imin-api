@@ -67,11 +67,20 @@ public final class CampaignRequests {
             /** True marks the subject AI-generated. False or absent never clears it (sticky). */
             Boolean subjectAiGenerated,
             /** True marks the preheader/body AI-generated. False or absent never clears it (sticky). */
-            Boolean bodyAiGenerated
+            Boolean bodyAiGenerated,
+            /** {@code email} or {@code sms}; applied only when non-null (draft-only, refused on audience-plan campaigns). */
+            String channel
     ) {
         public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
                                     String subject, String preheader, String bodyMd, String templateKey) {
-            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null);
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null);
+        }
+
+        public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
+                                    String subject, String preheader, String bodyMd, String templateKey,
+                                    Boolean subjectAiGenerated, Boolean bodyAiGenerated) {
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
+                    subjectAiGenerated, bodyAiGenerated, null);
         }
     }
 

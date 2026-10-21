@@ -14,11 +14,14 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.marketing.service.CampaignService;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +39,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -70,6 +74,8 @@ class CampaignControllerTest {
     @Autowired MembershipRepository memberships;
     @Autowired SegmentRepository segments;
     @Autowired CampaignRecipientRepository recipients;
+    @Autowired MutableClock clock;
+    @Autowired CampaignDispatcher dispatcher;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -87,6 +93,7 @@ class CampaignControllerTest {
     // A valid send leaves a scheduled campaign the dispatcher would claim.
     @AfterEach
     void tearDown() {
+        clock.reset();
         CampaignRows.delete(jdbc, orgIds);
     }
 
@@ -368,6 +375,158 @@ class CampaignControllerTest {
         r.setOpenedAt(openedAt);
         r.setClickedAt(clickedAt);
         recipients.save(r);
+    }
+
+    /** A mis-click must leave a full minute to Undo: the stored time is never sooner than now + 60 s. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(value = {
+            "no scheduledAt,          ",
+            "ten seconds ahead,       10",
+            "thirty seconds past,     -30"})
+    void sendNow_waitsOutTheUndoWindow(String label, Long offsetSeconds) throws Exception {
+        Instant now = Instant.parse("2026-07-14T10:00:00Z");   // 12:00 Paris
+        orgTimezone(owner, "Europe/Paris");
+        clock.setInstant(now);
+        UUID id = readyCampaign(owner);
+        UUID control = readyCampaign(owner);
+        String body = offsetSeconds == null ? "{}" : "{\"scheduledAt\":\"" + now.plusSeconds(offsetSeconds) + "\"}";
+
+        send(owner, id, body)
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.scheduledAt").value(now.plusSeconds(60).toString()))
+                .andExpect(jsonPath("$.secondsUntilScheduled").value(60))
+                .andExpect(jsonPath("$.quietUntil").value(nullValue()))
+                .andExpect(jsonPath("$.timeZone").value("Europe/Paris"));
+        jdbc.update("UPDATE campaigns SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
+                java.sql.Timestamp.from(now.minusSeconds(5)), control);
+
+        assertThat(campaigns.findByIdAndOrgId(id, owner.orgId()).orElseThrow().getScheduledAt())
+                .isEqualTo(now.plusSeconds(60));
+        assertThat(dispatcher.claimDueCampaignIds(now.plusSeconds(30))).contains(control).doesNotContain(id);
+        assertThat(dispatcher.claimDueCampaignIds(now.plusSeconds(61))).contains(id);
+    }
+
+    /** At 23:00 the screen must say when the mail really starts, in the org's zone, not that it is sending. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("quietHoursCases")
+    void sendDuringQuietHours_saysWhenItStarts(String label, String timezone, String nowAt,
+                                               String expectedUntil, String expectedZone) throws Exception {
+        orgTimezone(owner, timezone);
+        clock.setInstant(Instant.parse(nowAt));
+        UUID id = readyCampaign(owner);
+
+        var res = send(owner, id, "{}").andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.timeZone").value(expectedZone));
+        if (expectedUntil == null) {
+            res.andExpect(jsonPath("$.quietUntil").value(nullValue()));
+        } else {
+            res.andExpect(jsonPath("$.quietUntil").value(expectedUntil));
+        }
+    }
+
+    static Stream<Arguments> quietHoursCases() {
+        return Stream.of(
+                Arguments.of("23:30 Paris waits for the next morning", "Europe/Paris",
+                        "2026-07-14T21:30:00Z", "2026-07-15T07:00:00Z", "Europe/Paris"),
+                // 22:30Z is already 15 July in Paris, so a UTC computation names the wrong day and hour.
+                Arguments.of("00:30 Paris on a different calendar day than UTC", "Europe/Paris",
+                        "2026-07-14T22:30:00Z", "2026-07-15T07:00:00Z", "Europe/Paris"),
+                Arguments.of("noon Paris is not quiet", "Europe/Paris", "2026-07-14T10:00:00Z", null, "Europe/Paris"),
+                Arguments.of("no org zone falls back to UTC", "", "2026-07-14T22:30:00Z",
+                        "2026-07-15T09:00:00Z", "UTC"));
+    }
+
+    /** Undo puts the campaign back in drafts, editable, with nothing sent and the dispatcher never claiming it. */
+    @Test
+    void unschedule_returnsTheCampaignToDraftAndNothingIsSent() throws Exception {
+        Instant now = Instant.parse("2026-07-14T10:00:00Z");
+        orgTimezone(owner, "Europe/Paris");
+        clock.setInstant(now);
+        UUID id = readyCampaign(owner);
+        UUID control = readyCampaign(owner);
+        send(owner, id, "{}").andExpect(status().isAccepted());
+        send(owner, control, "{}").andExpect(status().isAccepted());
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/unschedule", id).with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("draft"))
+                .andExpect(jsonPath("$.scheduledAt").value(nullValue()));
+
+        assertThat(dispatcher.claimDueCampaignIds(now.plusSeconds(61))).contains(control).doesNotContain(id);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM campaign_recipients WHERE campaign_id = ?",
+                Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_logs WHERE action = 'CAMPAIGN_SEND_UNDONE' "
+                + "AND target_id = ?", Integer.class, id)).isEqualTo(1);
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"subject\":\"Edited after undo\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subject").value("Edited after undo"));
+    }
+
+    /** Undo only exists for a scheduled first attempt, for an admin, on the caller's own campaign. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "sending,                      sending,   0, own,   OWNER,  409, INVALID_STATE",
+            "sent,                         sent,      0, own,   OWNER,  409, INVALID_STATE",
+            "failed,                       failed,    0, own,   OWNER,  409, INVALID_STATE",
+            "draft,                        draft,     0, own,   OWNER,  409, INVALID_STATE",
+            "scheduled again by a retry,   scheduled, 1, own,   OWNER,  409, INVALID_STATE",
+            "a member,                     scheduled, 0, own,   MEMBER, 403, FORBIDDEN",
+            "another org's campaign,       scheduled, 0, other, OWNER,  404, NOT_FOUND"})
+    void unschedule_refusals(String label, String status, int attempts, String whose, String role,
+                             int expected, String code) throws Exception {
+        AuthPrincipal campaignOwner = "own".equals(whose) ? owner : otherOwner;
+        UUID id = draft(campaignOwner, null, null).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+        jdbc.update("UPDATE campaigns SET attempts = ?, scheduled_at = CASE WHEN status = 'scheduled' "
+                + "THEN now() + interval '1 hour' END WHERE id = ?", attempts, id);
+        AuthPrincipal caller = new AuthPrincipal(owner.userId(), owner.orgId(), UserRole.valueOf(role), UUID.randomUUID());
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/unschedule", id).with(auth(caller)))
+                .andExpect(status().is(expected))
+                .andExpect(jsonPath("$.error.code").value(code));
+
+        assertThat(campaigns.findByIdAndOrgId(id, campaignOwner.orgId())).get()
+                .extracting(Campaign::getStatus).isEqualTo(status);
+    }
+
+    /** An old SMS draft becomes a sendable email once its channel can be patched. */
+    @Test
+    void patchChannel_turnsAnSmsDraftIntoASendableEmail() throws Exception {
+        flips.set(marketingProps, "fromAddress", "contact@imin.support");
+        UUID id = service.create(owner, new CreateCampaignRequest("sms", "Old text", null, null,
+                null, null, null, null)).id();
+
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"channel\":\"fax\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"channel\":\"email\",\"subject\":\"Hello\",\"bodyMd\":\"Body\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.channel").value("email"));
+
+        mvc.perform(get("/api/v1/marketing/campaigns/{id}", id).with(auth(owner)))
+                .andExpect(jsonPath("$.channel").value("email"));
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/test-send", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isNoContent());
+    }
+
+    private void orgTimezone(AuthPrincipal p, String timezone) {
+        jdbc.update("UPDATE organizations SET timezone = ? WHERE id = ?", timezone, p.orgId());
+    }
+
+    private UUID readyCampaign(AuthPrincipal p) {
+        return service.create(p, new CreateCampaignRequest("email", "Launch night",
+                segmentOf(p.orgId(), "subscribed"), null, "Subject", null, "Body", null)).id();
+    }
+
+    private org.springframework.test.web.servlet.ResultActions send(AuthPrincipal p, UUID id, String body) throws Exception {
+        return mvc.perform(post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(p))
+                .header("Idempotency-Key", "key-" + UUID.randomUUID())
+                .contentType(MediaType.APPLICATION_JSON).content(body));
     }
 
     @Test

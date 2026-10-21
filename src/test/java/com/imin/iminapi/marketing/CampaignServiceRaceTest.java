@@ -3,6 +3,7 @@ package com.imin.iminapi.marketing;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.security.ApiException;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,6 +57,7 @@ class CampaignServiceRaceTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired DataSource dataSource;
+    @Autowired CampaignDispatcher dispatcher;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final List<ExecutorService> executors = new ArrayList<>();
@@ -161,6 +164,52 @@ class CampaignServiceRaceTest {
         Map<String, Object> row = jdbc.queryForMap("SELECT status, attempts FROM campaigns WHERE id = ?", c.getId());
         assertThat(row.get("status")).isEqualTo("failed");
         assertThat(((Number) row.get("attempts")).intValue()).isEqualTo(3);
+    }
+
+    /** Undo against the dispatcher's claim: whichever commits first wins, and the loser is told honestly. */
+    @ParameterizedTest(name = "claim first: {0}")
+    @ValueSource(booleans = {true, false})
+    void anUndoRacingTheDispatcherClaim_exactlyOneWins(boolean claimFirst) throws Exception {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = draft(org.getId());
+        // Due already, at a noon-UTC instant so the org's quiet hours never hold the claim.
+        Instant claimAt = Instant.parse("2030-01-01T12:00:00Z");
+        jdbc.update("UPDATE campaigns SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
+                java.sql.Timestamp.from(claimAt.minusSeconds(60)), c.getId());
+
+        if (claimFirst) {
+            String undoTag = tag("undo");
+            Throwable refused;
+            // A claim transaction that has flipped the row to sending and not yet committed.
+            Connection holder = dataSource.getConnection();
+            try {
+                holder.setAutoCommit(false);
+                try (Statement st = holder.createStatement()) {
+                    st.execute("UPDATE campaigns SET status = 'sending' WHERE id = '" + c.getId() + "'");
+                }
+                Future<?> undo = executor().submit(() -> tagged(undoTag, () -> service.unschedule(owner, c.getId())));
+                awaitBlocked(undoTag, false);
+                holder.commit();
+                refused = catchThrowable(() -> undo.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+            } finally {
+                try {
+                    holder.rollback();
+                } catch (SQLException ignored) {
+                    // Committed on the happy path; the close below still returns the connection.
+                }
+                holder.close();
+            }
+            assertConflict(refused);
+            assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                    .as("the claim won; Undo did not draft a campaign that is sending").isEqualTo("sending");
+        } else {
+            service.unschedule(owner, c.getId());
+            assertThat(dispatcher.claimDueCampaignIds(claimAt)).doesNotContain(c.getId());
+            assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                    .isEqualTo("draft");
+        }
     }
 
     /** The two ways a draft gets scheduled: the organizer's send, and the slump arm's flip in TimingArmScheduler.fireSlump. */

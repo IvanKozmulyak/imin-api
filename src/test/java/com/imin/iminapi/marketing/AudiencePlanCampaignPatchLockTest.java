@@ -74,6 +74,20 @@ class AudiencePlanCampaignPatchLockTest {
     }
 
     @Test
+    void changingTheChannel_is409_andTheChannelStays() {
+        Campaign c = draft("audience_plan");
+
+        Throwable t = catchThrowable(() -> service.patch(owner(), c.getId(), new PatchCampaignRequest(
+                null, null, null, null, null, null, null, null, null, "sms")));
+
+        assertThat(t).isInstanceOfSatisfying(ApiException.class, e -> {
+            assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(e.code()).isEqualTo(ErrorCode.INVALID_STATE);
+        });
+        assertThat(reload(c).getChannel()).isEqualTo("email");
+    }
+
+    @Test
     void changingTheSegment_is409_andNothingIsSaved() {
         Campaign c = draft("audience_plan");
         assertRefusedAndUnchanged(c, retarget(PatchableUuid.of(UUID.randomUUID()), null));

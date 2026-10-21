@@ -76,6 +76,7 @@ public final class AuditActions {
      * the only campaign mutation that left no record of who did it.
      */
     public static final String CAMPAIGN_SENT = "CAMPAIGN_SENT";
+    public static final String CAMPAIGN_SEND_UNDONE = "CAMPAIGN_SEND_UNDONE";
     /**
      * The recipient log — every targeted contact's raw address — was opened. Written once per
      * read of the FIRST page only: the log is paged and polled, so a row per page would bury

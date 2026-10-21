@@ -21,13 +21,20 @@ public class QuietHours {
     public static final LocalTime EMAIL_QUIET_END = LocalTime.of(9, 0);
 
     public boolean isEmailQuiet(String timezone, Instant now) {
-        ZoneId zone = resolveZone(timezone);
+        ZoneId zone = zoneOf(timezone);
         LocalTime local = now.atZone(zone).toLocalTime();
         // Window wraps midnight: quiet if >= 22:00 OR < 09:00.
         return !local.isBefore(EMAIL_QUIET_START) || local.isBefore(EMAIL_QUIET_END);
     }
 
-    private ZoneId resolveZone(String timezone) {
+    /** The next 09:00 org time when {@code at} falls in the quiet window, else null. */
+    public Instant heldUntil(String timezone, Instant at) {
+        if (!isEmailQuiet(timezone, at)) return null;
+        return com.imin.iminapi.audienceplan.engine.ArmTimes.outOfQuietHours(at, zoneOf(timezone));
+    }
+
+    /** The org's zone; a blank or unknown id falls back to UTC. */
+    public ZoneId zoneOf(String timezone) {
         if (timezone == null || timezone.isBlank()) return ZoneId.of("UTC");
         try { return ZoneId.of(timezone); }
         catch (Exception e) { return ZoneId.of("UTC"); }
