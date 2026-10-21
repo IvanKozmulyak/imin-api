@@ -29,30 +29,31 @@ public record DsarRecords(
         FanFeatureRecord fanFeatures,
         List<ImportProvenanceRecord> importProvenance,
         EmailEngagementRecord emailEngagement,
-        List<ConsentConfirmationRecord> consentConfirmations
+        List<ConsentConfirmationRecord> consentConfirmations,
+        List<CheckoutReminderRecord> checkoutReminders
 ) {
     /** The same records with the plan-tool features attached; null when none were computed. */
     public DsarRecords withFanFeatures(FanFeatureRecord features) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                features, importProvenance, emailEngagement, consentConfirmations);
+                features, importProvenance, emailEngagement, consentConfirmations, checkoutReminders);
     }
 
     /** The same records with the CSV-import provenance rows attached. */
     public DsarRecords withImportProvenance(List<ImportProvenanceRecord> rows) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, rows, emailEngagement, consentConfirmations);
+                fanFeatures, rows, emailEngagement, consentConfirmations, checkoutReminders);
     }
 
     /** The same records with the email open and click timestamps; null when none are held. */
     public DsarRecords withEmailEngagement(EmailEngagementRecord engagement) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, importProvenance, engagement, consentConfirmations);
+                fanFeatures, importProvenance, engagement, consentConfirmations, checkoutReminders);
     }
 
     /** The same records with the door QR, survey and site follow confirmation emails sent to this person. */
     public DsarRecords withConsentConfirmations(List<ConsentConfirmationRecord> rows) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, importProvenance, emailEngagement, rows);
+                fanFeatures, importProvenance, emailEngagement, rows, checkoutReminders);
     }
 
     public record OrderRecord(
@@ -149,6 +150,26 @@ public record DsarRecords(
             Instant expiresAt,
             Instant usedAt,
             Short pendingScore) {}
+
+    /**
+     * An unfinished-checkout reminder kept because this person ticked the organizer's box: the
+     * address and ticked sentence while held, and what happened to the reminder.
+     */
+    public record CheckoutReminderRecord(
+            UUID id,
+            UUID eventId,
+            UUID tierId,
+            int qty,
+            String email,
+            String consentProof,
+            String consentTextVersion,
+            String locale,
+            Instant startedAt,
+            String status,
+            String reason,
+            Instant sentAt,
+            Instant unsubscribedAt,
+            UUID boughtOrderId) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(

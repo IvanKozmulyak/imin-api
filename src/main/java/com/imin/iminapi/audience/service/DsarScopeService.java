@@ -1,6 +1,7 @@
 package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.dto.DsarRecords;
+import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
 import com.imin.iminapi.marketing.repository.MetaCapiEventRepository;
 import com.imin.iminapi.model.Event;
@@ -68,6 +69,7 @@ public class DsarScopeService {
     private final NotifySubscriptionRepository notifySubscriptions;
     private final AuditLogRepository auditLogs;
     private final ReferralPerkUnlockRepository perkUnlocks;
+    private final CheckoutReminderRepository checkoutReminders;
 
     public DsarScopeService(OrderRepository orders,
                             TicketRepository tickets,
@@ -76,7 +78,8 @@ public class DsarScopeService {
                             MetaCapiEventRepository metaCapiEvents,
                             NotifySubscriptionRepository notifySubscriptions,
                             AuditLogRepository auditLogs,
-                            ReferralPerkUnlockRepository perkUnlocks) {
+                            ReferralPerkUnlockRepository perkUnlocks,
+                            CheckoutReminderRepository checkoutReminders) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -85,6 +88,7 @@ public class DsarScopeService {
         this.notifySubscriptions = notifySubscriptions;
         this.auditLogs = auditLogs;
         this.perkUnlocks = perkUnlocks;
+        this.checkoutReminders = checkoutReminders;
     }
 
     /** Art.15: every record this org holds for {@code normalizedEmail}. */
@@ -146,8 +150,17 @@ public class DsarScopeService {
                                 s.getId(), s.getEventId(), s.getEmail(), s.getCreatedAt()))
                         .toList();
 
+        List<DsarRecords.CheckoutReminderRecord> reminderRecords =
+                checkoutReminders.findForOrgAndEmail(orgId, normalizedEmail).stream()
+                        .map(r -> new DsarRecords.CheckoutReminderRecord(r.getId(), r.getEventId(), r.getTierId(),
+                                r.getQty(), r.getEmailNormalized(), r.getConsentProof(), r.getConsentTextVersion(),
+                                r.getBuyerLocale(), r.getStartedAt(), r.getStatus().name(),
+                                r.getReason() == null ? null : r.getReason().name(), r.getSentAt(),
+                                r.getUnsubscribedAt(), r.getRecoveredOrderId()))
+                        .toList();
+
         return new DsarRecords(orderRecords, ticketRecords, funnelRecords, metaRecords, notifyRecords, null,
-                new ArrayList<>(), null, new ArrayList<>());
+                new ArrayList<>(), null, new ArrayList<>(), reminderRecords);
     }
 
     /**
@@ -182,8 +195,11 @@ public class DsarScopeService {
         // the actor address.
         int auditRedacted = auditLogs.redactActorEmail(orgId, normalizedEmail);
 
+        // Checkout reminders: keyed by address alone, so a buyer with no order or membership is reached too.
+        int remindersWiped = checkoutReminders.wipeForOrg(orgId, normalizedEmail, java.time.Instant.now());
+
         String summary = "funnel=" + funnelDeleted + " metaCapiRedacted=" + metaRedacted
-                + " auditActorRedacted=" + auditRedacted
+                + " auditActorRedacted=" + auditRedacted + " checkoutRemindersWiped=" + remindersWiped
                 + " ordersRetained=" + buyerOrders.size();
         log.info("[dsar] out-of-scope erase org={} {}", orgId, summary);
         return summary;
@@ -227,6 +243,7 @@ public class DsarScopeService {
 
     private static DsarRecords empty() {
         return new DsarRecords(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
-                new ArrayList<>(), new ArrayList<>(), null, new ArrayList<>(), null, new ArrayList<>());
+                new ArrayList<>(), new ArrayList<>(), null, new ArrayList<>(), null, new ArrayList<>(),
+                new ArrayList<>());
     }
 }

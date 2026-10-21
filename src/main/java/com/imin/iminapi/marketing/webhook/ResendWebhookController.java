@@ -2,6 +2,8 @@ package com.imin.iminapi.marketing.webhook;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
+import com.imin.iminapi.checkoutreminder.service.CheckoutReminderDeliveryProjector;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -28,7 +30,9 @@ import java.util.UUID;
  * <p>Response contract: 200 on an accepted OR duplicate event (Resend must not
  * keep retrying a valid delivery), 401 on signature failure (never silently
  * accept a forgery), 200 (no-op) when the message id can't be resolved to a
- * recipient (out-of-band or already-purged row — nothing to project).
+ * recipient (out-of-band or already-purged row — nothing to project). A message id
+ * with no campaign recipient may be a checkout reminder's, projected by
+ * {@link CheckoutReminderDeliveryProjector}.
  *
  * <p>Opens and clicks are projected onto the recipient row like every other type, but claimed by svix id
  * alone (no message, campaign or recipient id), so {@code provider_events} keeps no per-person event log.
@@ -45,17 +49,20 @@ public class ResendWebhookController {
     private final ProviderEventDedupService dedup;
     private final ResendWebhookProjector projector;
     private final CampaignRecipientRepository recipientRepo;
+    private final CheckoutReminderDeliveryProjector reminderProjector;
 
     public ResendWebhookController(SvixSignatureVerifier verifier,
                                    ResendWebhookProperties props,
                                    ProviderEventDedupService dedup,
                                    ResendWebhookProjector projector,
-                                   CampaignRecipientRepository recipientRepo) {
+                                   CampaignRecipientRepository recipientRepo,
+                                   CheckoutReminderDeliveryProjector reminderProjector) {
         this.verifier = verifier;
         this.props = props;
         this.dedup = dedup;
         this.projector = projector;
         this.recipientRepo = recipientRepo;
+        this.reminderProjector = reminderProjector;
     }
 
     @PostMapping("/resend")
@@ -114,10 +121,13 @@ public class ResendWebhookController {
             return ResponseEntity.ok().build();
         }
 
+        CheckoutReminder reminder = r == null ? reminderProjector.find(messageId).orElse(null) : null;
         if (r != null) {
             // org id is derived inside the projector from the campaign (recipient
             // rows carry no org_id — spec §2.2 V53).
             projector.project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt, clickLink);
+        } else if (reminder != null) {
+            reminderProjector.project(reminder, email, type, bounceType, occurredAt);
         } else {
             log.info("[resend-webhook] no recipient for messageId={} type={} — logged only", messageId, type);
         }

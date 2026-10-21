@@ -125,7 +125,8 @@ class StripeWebhookServiceConnectTest {
                 mock(SettlementIngestService.class),
                 mock(com.imin.iminapi.dispute.DisputeIngestService.class),
                 mock(CheckoutAmountVerifier.class),
-                java.time.Clock.systemUTC());
+                java.time.Clock.systemUTC(),
+                mock(org.springframework.context.ApplicationEventPublisher.class));
         svc.setConnectMirror(mirror);
         return svc;
     }

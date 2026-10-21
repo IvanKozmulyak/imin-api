@@ -12,6 +12,7 @@ import com.imin.iminapi.buyer.repository.BuyerIdentityRepository;
 import com.imin.iminapi.buyer.repository.BuyerPasswordResetTokenRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.repository.BuyerVerificationAttemptRepository;
+import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -91,6 +92,7 @@ public class BuyerAccountErasureService {
     private final DsarService dsarService;
     private final AuditLogger auditLogger;
     private final JdbcTemplate jdbc;
+    private final CheckoutReminderRepository checkoutReminders;
 
     public BuyerAccountErasureService(BuyerAccountRepository accounts,
                                       BuyerAccountEmailRepository emails,
@@ -104,7 +106,8 @@ public class BuyerAccountErasureService {
                                       NotifySubscriptionRepository notifySubscriptions,
                                       DsarService dsarService,
                                       AuditLogger auditLogger,
-                                      JdbcTemplate jdbc) {
+                                      JdbcTemplate jdbc,
+                                      CheckoutReminderRepository checkoutReminders) {
         this.accounts = accounts;
         this.emails = emails;
         this.sessions = sessions;
@@ -118,6 +121,7 @@ public class BuyerAccountErasureService {
         this.dsarService = dsarService;
         this.auditLogger = auditLogger;
         this.jdbc = jdbc;
+        this.checkoutReminders = checkoutReminders;
     }
 
     /** What one account's erasure removed — logged, and asserted in tests. */
@@ -212,6 +216,9 @@ public class BuyerAccountErasureService {
         // buyer-initiated erasure those rows are squarely the buyer's data.
         int notifyRemoved = addressSet.isEmpty() ? 0
                 : notifySubscriptions.deleteByEmailIn(addressSet);
+        // Checkout reminders likewise: every org's rows for these addresses lose them, counts kept.
+        int remindersWiped = addressSet.isEmpty() ? 0
+                : checkoutReminders.wipeForEmails(addressSet, Instant.now());
 
         // ── 4. The buyer tables, in §7.2's order. ───────────────────────────
         // Enumerated even where an FK cascade from buyer_accounts would cover
@@ -276,9 +283,9 @@ public class BuyerAccountErasureService {
                 orgs, consumersDeleted, notifyRemoved, tombstoned);
 
         log.info("[buyer] erased account={} addresses={} memberships={} orgs={} consumers={} "
-                        + "notify={} saved={} prefs={} devices={} attempts={} optouts={} tombstoned={}",
+                        + "notify={} reminders={} saved={} prefs={} devices={} attempts={} optouts={} tombstoned={}",
                 accountId, addressSet.size(), membershipsErased, orgs.size(), consumersDeleted,
-                notifyRemoved, savedEvents, prefs, pushDevices, attemptRows, optoutRows, tombstoned);
+                notifyRemoved, remindersWiped, savedEvents, prefs, pushDevices, attemptRows, optoutRows, tombstoned);
 
         return result;
     }

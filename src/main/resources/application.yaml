@@ -940,6 +940,14 @@ imin:
       # GET /events/{id}/story-kit/assets/{key} and /zip read stored images; a phone fetches all of them per kit shown.
       capacity: 120
       window-minutes: 10
+    checkout-reminder-preview:
+      # GET /api/v1/marketing/checkout-reminders/preview, keyed per user id; each call renders the email.
+      capacity: 60
+      window-minutes: 10
+    checkout-reminder-test:
+      # POST /api/v1/marketing/checkout-reminders/test, keyed per user id; each call sends a real email.
+      capacity: 10
+      window-minutes: 60
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a
@@ -1043,6 +1051,17 @@ imin:
     staff-user-ids: ${IMIN_MODERATION_STAFF_USER_IDS:}
     # Appeal address in hold notices and the dashboard banner (acceptable-use §5).
     appeal-email: ${IMIN_MODERATION_APPEAL_EMAIL:hello@imin.wtf}
+  checkout-reminder:
+    # One email to a buyer who ticked the organizer's box and left Stripe Checkout unpaid. Off until the privacy
+    # text describing it is live: off = nothing is captured and nothing is sent. Defaults match CheckoutReminderProperties.
+    enabled: ${IMIN_CHECKOUT_REMINDER_ENABLED:false}
+    delay-minutes: 60
+    min-lead-hours: 3
+    max-age-hours: 24
+    low-stock-below: 10
+    outcome-window-days: 7
+    keep-sent-days: 365
+    max-keep-unsent-days: 180
 
 # resendTracking reports TRACKING_OFF (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

@@ -1,0 +1,27 @@
+{{organizer}}
+
+Твої квитки ще не оплачені
+──────────────────────────
+
+Ми їх не тримаємо, але вони ще в продажу.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+{{lineItem}}    {{total}} {{feeLabel}}
+
+{{lowStockLine}}
+{{clampLine}}
+{{promoLine}}
+
+Завершити замовлення:
+
+    {{finishUrl}}
+
+Це наше єдине нагадування про це замовлення.
+
+—
+Твоя позначка: «{{consentProof}}»
+Відписатися: {{unsubscribeUrl}}
+{{legalFooter}} · Надіслано IMIN для {{organizer}}

@@ -89,4 +89,10 @@ public final class AuditActions {
     public static final String REFERRAL_PERK_STOPPED = "REFERRAL_PERK_STOPPED";
     public static final String REFERRAL_PERK_GIVEN = "REFERRAL_PERK_GIVEN";
     public static final String REFERRAL_PERK_GIVEN_UNDONE = "REFERRAL_PERK_GIVEN_UNDONE";
+
+    // ---- Unfinished checkout reminder ----
+    /** The org's one-email reminder to buyers who ticked its box and left checkout unpaid was turned on. */
+    public static final String CHECKOUT_REMINDER_ENABLED = "CHECKOUT_REMINDER_ENABLED";
+    /** Turned off; the reminders still waiting were dropped. */
+    public static final String CHECKOUT_REMINDER_DISABLED = "CHECKOUT_REMINDER_DISABLED";
 }

@@ -1,0 +1,27 @@
+{{organizer}}
+
+Tes billets ne sont pas payés
+─────────────────────────────
+
+Ils ne sont pas gardés, mais toujours en vente.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+{{lineItem}}    {{total}} {{feeLabel}}
+
+{{lowStockLine}}
+{{clampLine}}
+{{promoLine}}
+
+Terminer ma commande :
+
+    {{finishUrl}}
+
+Notre seul rappel pour cette commande.
+
+—
+Tu as coché « {{consentProof}} »
+Se désinscrire : {{unsubscribeUrl}}
+{{legalFooter}} · Envoyé par IMIN pour {{organizer}}

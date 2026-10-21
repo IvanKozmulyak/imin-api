@@ -334,6 +334,30 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<Object[]> revenueRowsByUtmSource(@Param("orgId") UUID orgId);
 
     /**
+     * Rows {@code [String orderId, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor, String currency]}
+     * for the org's LIVE-mode orders among {@code orderIds}; same net rule as {@link #revenueRowsByUtmSource}.
+     * Callers keep {@code orderIds} non-empty.
+     */
+    @Query("""
+            select cast(o.id as String), o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST),
+                   o.currency
+              from Order o
+             where o.orgId = :orgId
+               and o.id in :orderIds
+               and o.testMode = false
+            """)
+    List<Object[]> revenueRowsByOrderIdIn(@Param("orgId") UUID orgId, @Param("orderIds") Collection<UUID> orderIds);
+
+    /** Any order for the night from this address, test mode included: ticket ownership counts it. */
+    @Query("select count(o) > 0 from Order o where o.eventId = :eventId and o.emailNormalized = :email")
+    boolean existsForEventAndEmail(@Param("eventId") UUID eventId, @Param("email") String email);
+
+    /**
      * All orders for an org scoped to a buyer's normalized email.
      * Used by the audience membership projector (S1 derive-from-source).
      */

@@ -9,6 +9,7 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.checkoutreminder.service.CheckoutReminderService;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.RateLimiter;
@@ -28,6 +29,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
 import java.time.Instant;
+import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -44,6 +47,8 @@ import java.util.UUID;
  * </ul>
  *
  * <p>The token never expires (see {@link UnsubscribeTokenService}).
+ * A checkout-reminder token resolves to (organizer, address) instead of a membership, with the
+ * same responses, plus a 500 when its opt-out could not be recorded, so the mail client retries.
  */
 @RestController
 @RequestMapping("/api/v1/public/unsubscribe")
@@ -62,12 +67,14 @@ public class PublicUnsubscribeController {
     private final MembershipRepository memberships;
     private final OrganizationRepository organizations;
     private final MarketingEmailProperties emailProps;
+    private final CheckoutReminderService checkoutReminders;
 
     public PublicUnsubscribeController(UnsubscribeTokenService tokens, ConsentService consentService,
                                        RateLimiter rateLimiter,
                                        CampaignRecipientRepository campaignRecipients,
                                        CampaignRepository campaigns, MembershipRepository memberships,
-                                       OrganizationRepository organizations, MarketingEmailProperties emailProps) {
+                                       OrganizationRepository organizations, MarketingEmailProperties emailProps,
+                                       CheckoutReminderService checkoutReminders) {
         this.campaigns = campaigns;
         this.memberships = memberships;
         this.organizations = organizations;
@@ -76,6 +83,7 @@ public class PublicUnsubscribeController {
         this.consentService = consentService;
         this.rateLimiter = rateLimiter;
         this.campaignRecipients = campaignRecipients;
+        this.checkoutReminders = checkoutReminders;
     }
 
     @PostMapping("/{token}")
@@ -87,6 +95,12 @@ public class PublicUnsubscribeController {
         rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
         // A test email's link, signed or the legacy literal, unsubscribes nobody.
         if (LEGACY_TEST_TOKEN.equals(token) || tokens.verifyTest(token).isPresent()) return "test";
+        Optional<UUID> reminderId = tokens.verifyReminder(token);
+        if (reminderId.isPresent()) {
+            // Sticky opt-out from this organizer, plus the membership's unsubscribe when there is one.
+            checkoutReminders.unsubscribe(reminderId.get());
+            return "unsubscribed";
+        }
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
         // The recipient acted on this sender themselves — their mail client's
@@ -130,6 +144,11 @@ public class PublicUnsubscribeController {
             UnsubscribeTokenService.TestClaims t = tokens.verifyTest(token).get();
             Campaign c = campaigns.findByIdAndOrgId(t.campaignId(), t.orgId()).orElse(null);
             body = new UnsubscribeDetails("test", "email", organizerName(t.orgId()), c == null ? null : c.getLocale());
+        } else if (tokens.verifyReminder(token).isPresent()) {
+            CheckoutReminder r = checkoutReminders.find(tokens.verifyReminder(token).get())
+                    .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
+            body = new UnsubscribeDetails(r.getUnsubscribedAt() != null ? "unsubscribed" : "subscribed", "email",
+                    organizerName(r.getOrgId()), r.getBuyerLocale());
         } else {
             UnsubscribeTokenService.Claims claims = tokens.verify(token)
                     .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));

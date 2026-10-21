@@ -1,0 +1,27 @@
+{{organizer}}
+
+Tus entradas aún no están pagadas
+─────────────────────────────────
+
+No te las guardamos, pero siguen a la venta.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+{{lineItem}}    {{total}} {{feeLabel}}
+
+{{lowStockLine}}
+{{clampLine}}
+{{promoLine}}
+
+Termina tu pedido:
+
+    {{finishUrl}}
+
+Es nuestro único recordatorio para este pedido.
+
+—
+Marcaste «{{consentProof}}»
+Darte de baja: {{unsubscribeUrl}}
+{{legalFooter}} · Enviado por IMIN para {{organizer}}

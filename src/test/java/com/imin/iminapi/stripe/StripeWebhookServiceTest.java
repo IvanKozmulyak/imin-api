@@ -95,7 +95,7 @@ class StripeWebhookServiceTest {
         props.setWebhookSecretV1(SECRET);
         svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup,
                 paidCheckoutService, refundService, settlementIngest, disputeIngest, amountVerifier,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), mock(org.springframework.context.ApplicationEventPublisher.class));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────

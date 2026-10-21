@@ -309,6 +309,17 @@ public class AudienceController {
         return ResponseEntity.accepted().build();
     }
 
+    /**
+     * Art.17 for an address with no member to open: 204 when this org's records for it are erased
+     * now, 202 when it belongs to a member and took the member's erase (30-day grace). OWNER/ADMIN only.
+     */
+    @PostMapping("/erase-address")
+    public ResponseEntity<Void> dsarEraseAddress(@AuthenticationPrincipal AuthPrincipal principal,
+                                                  @Valid @RequestBody EraseAddressRequest body) {
+        boolean erasedNow = dsarService.eraseAddress(principal.orgId(), body.email(), principal);
+        return erasedNow ? ResponseEntity.noContent().build() : ResponseEntity.accepted().build();
+    }
+
     @PostMapping("/members/{id}/object")
     public ResponseEntity<Void> dsarObject(@AuthenticationPrincipal AuthPrincipal principal,
                                             @PathVariable UUID id) {
@@ -376,4 +387,5 @@ public class AudienceController {
                           @NotBlank @Size(max = 2000) String proofText) {}
     record UnsubRequest(UUID membershipId, String source) {}
     record RectifyRequest(String displayName, String city, String notes) {}
+    record EraseAddressRequest(@NotBlank @Size(max = 254) String email) {}
 }

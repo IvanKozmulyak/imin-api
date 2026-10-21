@@ -1,0 +1,27 @@
+{{organizer}}
+
+Your tickets aren't paid yet
+────────────────────────────
+
+They're not held for you, but still on sale.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+{{lineItem}}    {{total}} {{feeLabel}}
+
+{{lowStockLine}}
+{{clampLine}}
+{{promoLine}}
+
+Finish your order:
+
+    {{finishUrl}}
+
+Our only reminder for this order.
+
+—
+You ticked "{{consentProof}}"
+Unsubscribe: {{unsubscribeUrl}}
+{{legalFooter}} · Sent by IMIN for {{organizer}}

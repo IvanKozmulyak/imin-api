@@ -150,6 +150,14 @@ public class RateLimitConfig {
     private int buyerVerifyEmailCapacity;
     @Value("${imin.ratelimit.buyer-verify-email.window-minutes}")
     private int buyerVerifyEmailWindow;
+    @Value("${imin.ratelimit.checkout-reminder-preview.capacity}")
+    private int checkoutReminderPreviewCapacity;
+    @Value("${imin.ratelimit.checkout-reminder-preview.window-minutes}")
+    private int checkoutReminderPreviewWindow;
+    @Value("${imin.ratelimit.checkout-reminder-test.capacity}")
+    private int checkoutReminderTestCapacity;
+    @Value("${imin.ratelimit.checkout-reminder-test.window-minutes}")
+    private int checkoutReminderTestWindow;
 
     @Value("${imin.ratelimit.story-kit.capacity}")
     private int storyKitCapacity;
@@ -359,6 +367,15 @@ public class RateLimitConfig {
         configs.put("buyer-verify-email", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerVerifyEmailCapacity,
                         Duration.ofMinutes(buyerVerifyEmailWindow)))
+                .build());
+        // Checkout reminder preview and test send, keyed per user id; the test sends a real email.
+        configs.put("checkout-reminder-preview", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(checkoutReminderPreviewCapacity,
+                        Duration.ofMinutes(checkoutReminderPreviewWindow)))
+                .build());
+        configs.put("checkout-reminder-test", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(checkoutReminderTestCapacity,
+                        Duration.ofMinutes(checkoutReminderTestWindow)))
                 .build());
 
         // Instagram kit renders (CPU + storage writes), keyed per user id.

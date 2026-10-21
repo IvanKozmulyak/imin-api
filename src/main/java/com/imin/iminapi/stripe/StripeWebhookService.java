@@ -1,5 +1,6 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.checkoutreminder.service.CheckoutSessionExpired;
 import com.imin.iminapi.refund.RefundService;
 import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.PromoCodeRepository;
@@ -20,6 +21,7 @@ import com.stripe.net.Webhook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -87,6 +89,7 @@ public class StripeWebhookService {
     private final com.imin.iminapi.dispute.DisputeIngestService disputeIngest;
     private final CheckoutAmountVerifier amountVerifier;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
     /**
      * Proxied self-reference so {@link #handleV1Endpoint} can invoke
@@ -120,7 +123,8 @@ public class StripeWebhookService {
                                 SettlementIngestService settlementIngest,
                                 com.imin.iminapi.dispute.DisputeIngestService disputeIngest,
                                 CheckoutAmountVerifier amountVerifier,
-                                Clock clock) {
+                                Clock clock,
+                                ApplicationEventPublisher events) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
@@ -132,6 +136,7 @@ public class StripeWebhookService {
         this.disputeIngest = disputeIngest;
         this.amountVerifier = amountVerifier;
         this.clock = clock;
+        this.events = events;
     }
 
     @Autowired
@@ -675,7 +680,8 @@ public class StripeWebhookService {
      * Handle {@code checkout.session.expired}: the buyer never paid, so the seat
      * hold must be released back to the pool. Idempotency is enforced at the
      * top of {@link #handleV1Transactional} so a delivered-twice expiry can't
-     * double-release.
+     * double-release. After the release it publishes {@link CheckoutSessionExpired}, which the
+     * unfinished-checkout reminder reads only once this transaction has committed.
      */
     private void onCheckoutSessionExpired(com.stripe.model.Event event) {
         EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
@@ -696,6 +702,7 @@ public class StripeWebhookService {
                 session.getId(), reservationId);
         if (reservationId != null) {
             inventoryService.releaseReservation(reservationId, "WEBHOOK_EXPIRED");
+            publishExpired(session);
             return;
         }
         // Fallback: legacy session created before the metadata-passthrough deploy
@@ -704,6 +711,12 @@ public class StripeWebhookService {
             log.info("[stripe-webhook] released reservation for session {} via session-id fallback",
                     session.getId());
         }
+        publishExpired(session);
+    }
+
+    private void publishExpired(Session session) {
+        events.publishEvent(new CheckoutSessionExpired(session.getId(), session.getCreated(),
+                session.getCustomerEmail(), session.getMetadata()));
     }
 
     /**

@@ -12,7 +12,7 @@ import java.util.UUID;
 
 /**
  * Signs opaque opt-out tokens for the owned {@code /api/v1/public/unsubscribe/{token}}
- * endpoint (spec §2.4/§3/§7) and for the notify-me opt-out. Token =
+ * endpoint (spec §2.4/§3/§7), the notify-me opt-out and the checkout reminder. Token =
  * base64url(payload) + "." + base64url(hmac). Stateless — no DB lookup is
  * needed to resolve who is unsubscribing; the HMAC is the integrity proof.
  *
@@ -42,9 +42,10 @@ import java.util.UUID;
 @Service
 public class UnsubscribeTokenService {
 
-    /** Distinguishes the two token shapes so one verifier cannot accept the other's token. */
+    /** Distinguishes the token shapes so one verifier cannot accept another's token. */
     private static final String NOTIFY_PREFIX = "notify:";
     private static final String TEST_PREFIX = "test:";
+    private static final String REMINDER_PREFIX = "reminder:";
 
     private final byte[] secret;
     private final byte[] legacySecret;
@@ -69,7 +70,8 @@ public class UnsubscribeTokenService {
 
     public Optional<Claims> verify(String token) {
         return verifiedPayload(token).flatMap(payload -> {
-            if (payload.startsWith(NOTIFY_PREFIX) || payload.startsWith(TEST_PREFIX)) return Optional.empty();
+            if (payload.startsWith(NOTIFY_PREFIX) || payload.startsWith(TEST_PREFIX)
+                    || payload.startsWith(REMINDER_PREFIX)) return Optional.empty();
             String[] parts = payload.split(":", 4);
             if (parts.length != 4) return Optional.empty();
             try {
@@ -112,14 +114,28 @@ public class UnsubscribeTokenService {
     }
 
     public Optional<UUID> verifyNotify(String token) {
-        return verifiedPayload(token).flatMap(payload -> {
-            if (!payload.startsWith(NOTIFY_PREFIX)) return Optional.empty();
-            try {
-                return Optional.of(UUID.fromString(payload.substring(NOTIFY_PREFIX.length())));
-            } catch (IllegalArgumentException e) {
-                return Optional.empty();
-            }
-        });
+        return verifiedPayload(token).flatMap(payload -> prefixedId(payload, NOTIFY_PREFIX));
+    }
+
+    /**
+     * Opt-out token for one unfinished-checkout reminder. It resolves to the reminder's (organizer,
+     * address); the buyer usually has no audience membership for a campaign token to name.
+     */
+    public String signReminder(UUID reminderId) {
+        return signPayload(REMINDER_PREFIX + reminderId);
+    }
+
+    public Optional<UUID> verifyReminder(String token) {
+        return verifiedPayload(token).flatMap(payload -> prefixedId(payload, REMINDER_PREFIX));
+    }
+
+    private static Optional<UUID> prefixedId(String payload, String prefix) {
+        if (!payload.startsWith(prefix)) return Optional.empty();
+        try {
+            return Optional.of(UUID.fromString(payload.substring(prefix.length())));
+        } catch (IllegalArgumentException e) {
+            return Optional.empty();
+        }
     }
 
     private String signPayload(String payload) {

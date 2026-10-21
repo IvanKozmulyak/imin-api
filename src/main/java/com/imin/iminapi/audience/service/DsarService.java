@@ -23,8 +23,10 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -394,6 +396,37 @@ public class DsarService {
         // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
                 "DSAR erase executed");
+    }
+
+    /**
+     * Art.17 for an address rather than a member: the person may have left only records keyed by
+     * address (an unpaid checkout's reminder, a notify-me sign-up), so no member erase reaches them.
+     * With a member in this org it takes the member's erase, grace period included, and answers false.
+     * Otherwise this org's records for the address go now, the erasure ledger stops a rebuild from
+     * retained orders, and it answers true.
+     */
+    @Transactional
+    public boolean eraseAddress(UUID orgId, String rawEmail, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "erase a data subject's record");
+        String normalizedEmail = EmailNormalizer.normalize(rawEmail);
+        if (normalizedEmail == null || normalizedEmail.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Enter the address to erase",
+                    Map.of("email", "required"));
+        }
+        Membership member = consumerRepo.findByNormalizedEmail(normalizedEmail)
+                .flatMap(c -> membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()))
+                .orElse(null);
+        if (member != null) {
+            // Already requested: a second request must not push the erase date back.
+            if (!"erase_pending".equals(member.getStatus())) requestErase(orgId, member.getMembershipId(), principal);
+            return false;
+        }
+        notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
+        scopeService.eraseOutOfScopeRecords(orgId, normalizedEmail);
+        recordErasure(orgId, normalizedEmail);
+        auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "organization", orgId,
+                "DSAR erase executed for an address with no audience member");
+        return true;
     }
 
     /**
