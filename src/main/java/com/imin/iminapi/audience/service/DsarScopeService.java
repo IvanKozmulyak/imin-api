@@ -8,12 +8,15 @@ import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.referral.ReferralPerkUnlock;
+import com.imin.iminapi.referral.ReferralPerkUnlockRepository;
 import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.util.OrderNumber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -64,6 +67,7 @@ public class DsarScopeService {
     private final MetaCapiEventRepository metaCapiEvents;
     private final NotifySubscriptionRepository notifySubscriptions;
     private final AuditLogRepository auditLogs;
+    private final ReferralPerkUnlockRepository perkUnlocks;
 
     public DsarScopeService(OrderRepository orders,
                             TicketRepository tickets,
@@ -71,7 +75,8 @@ public class DsarScopeService {
                             FunnelEventRepository funnelEvents,
                             MetaCapiEventRepository metaCapiEvents,
                             NotifySubscriptionRepository notifySubscriptions,
-                            AuditLogRepository auditLogs) {
+                            AuditLogRepository auditLogs,
+                            ReferralPerkUnlockRepository perkUnlocks) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -79,6 +84,7 @@ public class DsarScopeService {
         this.metaCapiEvents = metaCapiEvents;
         this.notifySubscriptions = notifySubscriptions;
         this.auditLogs = auditLogs;
+        this.perkUnlocks = perkUnlocks;
     }
 
     /** Art.15: every record this org holds for {@code normalizedEmail}. */
@@ -95,11 +101,19 @@ public class DsarScopeService {
             events.findById(eventId).map(Event::getName).ifPresent(n -> eventNames.put(eventId, n));
         }
 
+        Map<UUID, ReferralPerkUnlock> unlocks = orderIds.isEmpty() ? Map.of()
+                : perkUnlocks.findAllById(orderIds).stream()
+                        .collect(java.util.stream.Collectors.toMap(ReferralPerkUnlock::getOrderId, u -> u));
         List<DsarRecords.OrderRecord> orderRecords = buyerOrders.stream()
-                .map(o -> new DsarRecords.OrderRecord(
-                        o.getId(), o.getEventId(), eventNames.get(o.getEventId()), o.getEmail(),
-                        o.getTotalMinor(), o.getApplicationFeeMinor(), o.getCurrency(),
-                        o.getPaymentMethod(), o.getCreatedAt()))
+                .map(o -> {
+                    ReferralPerkUnlock u = unlocks.get(o.getId());
+                    return new DsarRecords.OrderRecord(
+                            o.getId(), o.getEventId(), eventNames.get(o.getEventId()), o.getEmail(),
+                            o.getTotalMinor(), o.getApplicationFeeMinor(), o.getCurrency(),
+                            o.getPaymentMethod(), o.getCreatedAt(), o.getReferralCode(),
+                            o.getReferredByOrderId() == null ? null : OrderNumber.code(o.getReferredByOrderId()),
+                            u == null ? null : u.getUnlockedAt(), u == null ? null : u.getGivenAt());
+                })
                 .toList();
 
         List<DsarRecords.TicketRecord> ticketRecords = orderIds.isEmpty() ? List.of()

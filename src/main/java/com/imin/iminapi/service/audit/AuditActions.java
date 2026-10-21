@@ -83,4 +83,10 @@ public final class AuditActions {
      * the trail rather than be one.
      */
     public static final String CAMPAIGN_RECIPIENTS_VIEWED = "CAMPAIGN_RECIPIENTS_VIEWED";
+
+    // ---- Crew links (V199) ----
+    public static final String REFERRAL_PERK_SAVED = "REFERRAL_PERK_SAVED";
+    public static final String REFERRAL_PERK_STOPPED = "REFERRAL_PERK_STOPPED";
+    public static final String REFERRAL_PERK_GIVEN = "REFERRAL_PERK_GIVEN";
+    public static final String REFERRAL_PERK_GIVEN_UNDONE = "REFERRAL_PERK_GIVEN_UNDONE";
 }

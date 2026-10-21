@@ -137,6 +137,37 @@ class AudienceDsarScopeTest {
         assertThat(records.notifySubscriptions()).hasSize(1);
     }
 
+    /** Art.15 covers the crew link: this order's code, the order it was credited to, and its perk timestamps. */
+    @Test
+    void exportIncludesReferralLinkage() {
+        UUID membershipId = seedSubjectWithEverything();
+        com.imin.iminapi.model.Order subject = orderRepo.findByOrgIdAndNormalizedEmail(orgId, subjectEmail).get(0);
+        com.imin.iminapi.model.Order referrer = new com.imin.iminapi.model.Order();
+        referrer.setEventId(eventId);
+        referrer.setOrgId(orgId);
+        referrer.setEmail(bystanderEmail);
+        referrer.setTotalMinor(2500L);
+        referrer.setCurrency("EUR");
+        referrer.setPaymentMethod("stripe");
+        referrer.setToken(UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+        referrer = orderRepo.save(referrer);
+        // Insert-only on the entity, as at fulfilment; here the link is written after the fact.
+        jdbc.update("update orders set referred_by_order_id = ? where id = ?", referrer.getId(), subject.getId());
+        Instant unlockedAt = Instant.parse("2026-10-30T20:14:00Z");
+        Instant givenAt = Instant.parse("2026-11-07T22:02:00Z");
+        jdbc.update("insert into referral_perk_unlocks (order_id, event_id, label, threshold, unlocked_at, given_at, "
+                + "given_via) values (?, ?, 'Skip the line', 3, ?, ?, 'gate')", subject.getId(), eventId,
+                java.sql.Timestamp.from(unlockedAt), java.sql.Timestamp.from(givenAt));
+
+        DsarRecords records = dsarService.exportRecords(orgId, membershipId, owner);
+
+        DsarRecords.OrderRecord o = records.orders().get(0);
+        assertThat(o.referralCode()).isEqualTo(subject.getReferralCode()).isNotBlank();
+        assertThat(o.referredByOrderNumber()).isEqualTo(referrer.getId().toString().substring(0, 8));
+        assertThat(o.perkUnlockedAt()).isEqualTo(unlockedAt);
+        assertThat(o.perkGivenAt()).isEqualTo(givenAt);
+    }
+
     /** A ticket token is a bearer credential — the export must never print it raw. */
     @Test
     void export_hashes_the_ticket_token() {

@@ -255,6 +255,14 @@ public class Order {
     @Column(name = "idempotency_key", length = 128)
     private String idempotencyKey;
 
+    /** This order's crew-link code (V199), generated in {@link #onWrite()}. Insert-only, so no save can change it. */
+    @Column(name = "referral_code", nullable = false, unique = true, length = 16, updatable = false)
+    private String referralCode;
+
+    /** The order whose crew link this one was bought with (V199), set by ReferralLinker at fulfilment. Insert-only. */
+    @Column(name = "referred_by_order_id", updatable = false)
+    private UUID referredByOrderId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
@@ -270,5 +278,6 @@ public class Order {
     void onWrite() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         emailNormalized = EmailNormalizer.normalize(email);
+        if (referralCode == null) referralCode = com.imin.iminapi.referral.ReferralCode.random();
     }
 }

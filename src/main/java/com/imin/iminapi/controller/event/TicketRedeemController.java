@@ -1,5 +1,6 @@
 package com.imin.iminapi.controller.event;
 
+import com.imin.iminapi.referral.ReferralPerkService;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
@@ -26,6 +27,9 @@ import java.util.UUID;
  * <p>Authenticated organizer-side endpoint for the gate scanner. Body carries
  * the signed QR payload; the service performs HMAC verification + an atomic
  * UPDATE so double-scans cleanly return {@code already_redeemed}.
+ *
+ * <p>Response: {@code result}, {@code ticket} (not on wrong_event), and {@code perk {label, givenAt}} on
+ * redeemed / already_redeemed when the ticket's order unlocked a crew perk.
  */
 @RestController
 public class TicketRedeemController {
@@ -45,10 +49,12 @@ public class TicketRedeemController {
 
     private final TicketRedeemService service;
     private final AuditLogger audit;
+    private final ReferralPerkService perks;
 
-    public TicketRedeemController(TicketRedeemService service, AuditLogger audit) {
+    public TicketRedeemController(TicketRedeemService service, AuditLogger audit, ReferralPerkService perks) {
         this.service = service;
         this.audit = audit;
+        this.perks = perks;
     }
 
     @PostMapping("/api/v1/orgs/{orgId}/events/{eventId}/tickets/redeem")
@@ -100,7 +106,29 @@ public class TicketRedeemController {
             }
             body.put("ticket", tk);
         }
+        // A crew perk this ticket's order unlocked, for staff to hand over; never on wrong_event or invalid.
+        if (r.ticket() != null && (r.outcome() == TicketRedeemService.Outcome.REDEEMED
+                || r.outcome() == TicketRedeemService.Outcome.ALREADY_REDEEMED)) {
+            perkOf(eventId, r.ticket().getOrderId()).ifPresent(perk -> body.put("perk", perk));
+        }
         return ResponseEntity.ok(body);
+    }
+
+    /** Re-evaluates first (heals a missed async unlock); a failure here never turns a valid ticket away. */
+    private java.util.Optional<Map<String, Object>> perkOf(UUID eventId, UUID orderId) {
+        try {
+            if (!perks.perksEnabled()) return java.util.Optional.empty();
+            perks.evaluate(orderId);
+            return perks.unlockOf(eventId, orderId).map(u -> {
+                Map<String, Object> perk = new LinkedHashMap<>();
+                perk.put("label", u.getLabel());
+                perk.put("givenAt", u.getGivenAt() == null ? null : u.getGivenAt().toString());
+                return perk;
+            });
+        } catch (RuntimeException e) {
+            log.warn("[gate-redeem] crew perk lookup failed for event {}: {}", eventId, e.getClass().getSimpleName());
+            return java.util.Optional.empty();
+        }
     }
 
     /**

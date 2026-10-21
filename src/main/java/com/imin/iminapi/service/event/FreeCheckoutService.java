@@ -9,6 +9,7 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.referral.ReferralLinker;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -54,6 +55,7 @@ public class FreeCheckoutService {
     private final Clock clock;
     private final org.springframework.context.ApplicationEventPublisher publisher;
     private final com.imin.iminapi.stripe.StripeProperties stripeProps;
+    private final ReferralLinker referralLinker;
 
     public FreeCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -62,7 +64,8 @@ public class FreeCheckoutService {
                                 EmailProperties emailProps,
                                 Clock clock,
                                 org.springframework.context.ApplicationEventPublisher publisher,
-                                com.imin.iminapi.stripe.StripeProperties stripeProps) {
+                                com.imin.iminapi.stripe.StripeProperties stripeProps,
+                                ReferralLinker referralLinker) {
         this.orders = orders;
         this.tickets = tickets;
         this.promos = promos;
@@ -71,6 +74,7 @@ public class FreeCheckoutService {
         this.clock = clock;
         this.publisher = publisher;
         this.stripeProps = stripeProps;
+        this.referralLinker = referralLinker;
     }
 
     /**
@@ -175,7 +179,9 @@ public class FreeCheckoutService {
         order.setAdsConsent(adsConsent);
         order.setMarketingOptIn(marketingOptIn);
         order.setBuyerLocale(EmailLocale.normalizeOrNull(buyerLocale));
-        (attribution == null ? CheckoutAttribution.NONE : attribution).applyTo(order);
+        CheckoutAttribution attr = attribution == null ? CheckoutAttribution.NONE : attribution;
+        attr.applyTo(order);
+        referralLinker.link(order, attr.referralCode());
         (consent == null ? CheckoutConsent.NONE : consent).applyTo(order);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());

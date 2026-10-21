@@ -13,6 +13,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.service.audience.SmsConsentService;
+import com.imin.iminapi.referral.ReferralService;
 import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.ticket.AppleWalletPassService;
 import com.imin.iminapi.service.ticket.AppleWalletProperties;
@@ -67,6 +68,7 @@ class WalletContractTest {
     @Autowired GoogleWalletProvisioner provisioner;
     @Autowired SmsConsentService smsConsentService;
     @Autowired PublicEventService publicEventService;
+    @Autowired ReferralService referralService;
     /** The context's own Apple service: unconfigured, since the test yaml has no imin.apple-wallet block. */
     @Autowired AppleWalletPassService unconfiguredApple;
     @Autowired @Qualifier("requestMappingHandlerAdapter") RequestMappingHandlerAdapter handlerAdapter;
@@ -110,7 +112,7 @@ class WalletContractTest {
     private MockMvc standalone(WalletOffers offers) {
         return MockMvcBuilders
                 .standaloneSetup(new PublicOrderController(orders, tickets, events, qrSigner, offers,
-                        ticketProps, smsConsentService, publicEventService))
+                        ticketProps, smsConsentService, publicEventService, referralService))
                 .setMessageConverters(handlerAdapter.getMessageConverters().toArray(HttpMessageConverter[]::new))
                 .build();
     }

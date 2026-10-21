@@ -71,7 +71,7 @@ public class StripePaymentIntentController {
         }
         int quantity = body.quantity() == null ? 1 : body.quantity();
         CheckoutAttribution attribution = new CheckoutAttribution(
-                body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
+                body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId(), body.referralCode());
 
         // Consent evidence captured on the native buy sheet (V97), threaded exactly as
         // StripeCheckoutController does for the hosted flow. Without it a native order recorded
@@ -111,5 +111,8 @@ public class StripePaymentIntentController {
                                         // "not captured", which is what every pre-V97 order is.
                                         Boolean acceptedTerms,
                                         @Size(max = 500) String marketingOptInProofText,
-                                        @Size(max = 32) String marketingOptInTextVersion) {}
+                                        @Size(max = 32) String marketingOptInTextVersion,
+                                        // Crew-link code, mirroring CheckoutRequest. An Idempotency-Key replay
+                                        // keeps the first call's code, so a client rotates the key when it changes.
+                                        String referralCode) {}
 }

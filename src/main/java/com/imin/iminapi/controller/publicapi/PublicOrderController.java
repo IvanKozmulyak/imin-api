@@ -9,6 +9,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketState;
+import com.imin.iminapi.referral.ReferralService;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -17,6 +18,8 @@ import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.TicketProperties;
 import com.imin.iminapi.service.ticket.WalletOffers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,6 +51,8 @@ import java.util.stream.Collectors;
 @RestController
 public class PublicOrderController {
 
+    private static final Logger log = LoggerFactory.getLogger(PublicOrderController.class);
+
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final EventRepository events;
@@ -56,6 +61,7 @@ public class PublicOrderController {
     private final TicketProperties ticketProps;
     private final SmsConsentService smsConsentService;
     private final PublicEventService publicEventService;
+    private final ReferralService referralService;
 
     public PublicOrderController(OrderRepository orders,
                                   TicketRepository tickets,
@@ -64,7 +70,8 @@ public class PublicOrderController {
                                   WalletOffers wallet,
                                   TicketProperties ticketProps,
                                   SmsConsentService smsConsentService,
-                                  PublicEventService publicEventService) {
+                                  PublicEventService publicEventService,
+                                  ReferralService referralService) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -73,6 +80,7 @@ public class PublicOrderController {
         this.ticketProps = ticketProps;
         this.smsConsentService = smsConsentService;
         this.publicEventService = publicEventService;
+        this.referralService = referralService;
     }
 
     @GetMapping("/api/v1/public/orders/{token}")
@@ -103,11 +111,22 @@ public class PublicOrderController {
                 receiptLines(ticketRows),
                 subtotalOf(ticketRows),
                 discountOf(order, ticketRows),
-                order.getApplicationFeeMinor());
+                order.getApplicationFeeMinor(),
+                referralOf(order, event, ticketRows));
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .body(body);
+    }
+
+    /** The crew block, or null when computing it throws: the buyer's tickets never depend on it. */
+    private PublicOrderResponse.Referral referralOf(Order order, Event event, List<Ticket> ticketRows) {
+        try {
+            return referralService.forOrder(order, event, ticketRows);
+        } catch (RuntimeException e) {
+            log.warn("[public-order] crew block skipped for event {}: {}", event.getId(), e.getClass().getSimpleName());
+            return null;
+        }
     }
 
     @GetMapping("/api/v1/public/tickets/{token}")

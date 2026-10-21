@@ -38,6 +38,83 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByStripePaymentIntentId(String paymentIntentId);
     Optional<Order> findByStripeSessionId(String sessionId);
 
+    /** The order behind a crew-link code (V199, unique). */
+    Optional<Order> findByReferralCode(String referralCode);
+
+    /** Issued, legacy 'pre' or redeemed tickets on LIVE-mode orders bought with this order's crew link. */
+    @Query(value = """
+            SELECT count(t.id)
+              FROM tickets t
+              JOIN orders f ON f.id = t.order_id
+             WHERE f.referred_by_order_id = :referrerId
+               AND f.test_mode = false
+               AND t.state IN ('issued', 'pre', 'redeemed')
+            """, nativeQuery = true)
+    long countValidReferredTickets(@Param("referrerId") UUID referrerId);
+
+    /**
+     * Net revenue inputs of the event's LIVE-mode orders bought with a crew link: one row
+     * {@code [String referrerId, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor]} per order, same
+     * shape and filters as {@link #revenueRowsByUtmSource}; fold with {@code NetOrderRevenue.sumByKey}.
+     */
+    @Query("""
+            select str(o.referredByOrderId), o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST)
+              from Order o
+             where o.eventId = :eventId
+               and o.referredByOrderId is not null
+               and o.testMode = false
+            """)
+    List<Object[]> revenueRowsByReferrer(@Param("eventId") UUID eventId);
+
+    /**
+     * Crew-link leaderboard rows {@code [UUID orderId, String email, Long tickets, Instant unlockedAt,
+     * Instant givenAt, String givenVia, String unlockLabel, Short unlockThreshold]}: LIVE referrer orders of the event
+     * with at least one valid ticket bought with their link, or an unlock row. Most tickets first, then the earliest
+     * unlock.
+     */
+    @Query(value = REFERRERS_CTE + """
+            SELECT id, email, tickets, unlocked_at, given_at, given_via, unlock_label, unlock_threshold
+              FROM referrers
+             ORDER BY tickets DESC, unlocked_at ASC NULLS LAST, id
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<Object[]> referrerRows(@Param("eventId") UUID eventId, @Param("limit") int limit);
+
+    /**
+     * {@code [Long rows, Long referrers, Long tickets]} over the same set as {@link #referrerRows}, uncapped;
+     * {@code referrers} counts a buyer whose several orders' links sold once.
+     */
+    @Query(value = REFERRERS_CTE + """
+            SELECT count(*), count(DISTINCT coalesce(email_normalized, id::text)), coalesce(sum(tickets), 0)
+              FROM referrers
+            """, nativeQuery = true)
+    List<Object[]> referrerTotals(@Param("eventId") UUID eventId);
+
+    String REFERRERS_CTE = """
+            WITH linked AS (
+                SELECT r.id, r.email, r.email_normalized,
+                       (SELECT count(t.id)
+                          FROM tickets t
+                          JOIN orders f ON f.id = t.order_id
+                         WHERE f.referred_by_order_id = r.id
+                           AND f.test_mode = false
+                           AND t.state IN ('issued', 'pre', 'redeemed')) AS tickets,
+                       u.unlocked_at, u.given_at, u.given_via, u.label AS unlock_label, u.threshold AS unlock_threshold
+                  FROM orders r
+                  LEFT JOIN referral_perk_unlocks u ON u.order_id = r.id
+                 WHERE r.event_id = :eventId
+                   AND r.test_mode = false
+                   AND EXISTS (SELECT 1 FROM orders f WHERE f.referred_by_order_id = r.id)
+            ), referrers AS (
+                SELECT * FROM linked WHERE tickets > 0 OR unlocked_at IS NOT NULL
+            )
+            """;
+
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId);
 
     /** The event's LIVE-mode orders, newest first (Overview recent buyers, event-scope pulse). */

@@ -9,6 +9,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.referral.ReferralLinker;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -64,6 +65,7 @@ public class PaidCheckoutService {
     private final MetaCapiOutboxWriter metaCapiOutboxWriter;
     private final StripeProperties stripeProps;
     private final DisputeIngestService disputeIngest;
+    private final ReferralLinker referralLinker;
 
     public PaidCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -73,7 +75,8 @@ public class PaidCheckoutService {
                                 ApplicationEventPublisher publisher,
                                 MetaCapiOutboxWriter metaCapiOutboxWriter,
                                 StripeProperties stripeProps,
-                                DisputeIngestService disputeIngest) {
+                                DisputeIngestService disputeIngest,
+                                ReferralLinker referralLinker) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -83,6 +86,7 @@ public class PaidCheckoutService {
         this.metaCapiOutboxWriter = metaCapiOutboxWriter;
         this.stripeProps = stripeProps;
         this.disputeIngest = disputeIngest;
+        this.referralLinker = referralLinker;
     }
 
     /**
@@ -205,7 +209,8 @@ public class PaidCheckoutService {
         // session/PI metadata. Missing keys → null: sessions created before V62 that were
         // still in flight at deploy, and organic buyers who arrived with no tags at all.
         // This is what makes per-campaign revenue a true per-order sum rather than an estimate.
-        CheckoutAttribution.fromMetadata(meta).applyTo(order);
+        CheckoutAttribution attribution = CheckoutAttribution.fromMetadata(meta);
+        attribution.applyTo(order);
         // Terms acceptance + the verbatim marketing-checkbox sentence the buyer read
         // (V97), stamped into the metadata at checkout. Missing keys → not recorded,
         // which is what every order placed before the buyer site sent them has.
@@ -215,6 +220,8 @@ public class PaidCheckoutService {
         // don't support) → null ⇒ English emails, same as every historical order.
         order.setBuyerLocale(EmailLocale.normalizeOrNull(meta.get("buyer_locale")));
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
+        // After email and test mode are set: the linker compares both with the referrer's order.
+        referralLinker.link(order, attribution.referralCode());
 
         String promoIdRaw = meta.get("promo_id");
         if (promoIdRaw != null && !promoIdRaw.isBlank()) {

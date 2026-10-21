@@ -10,6 +10,9 @@ import java.util.UUID;
  *
  * <p>Tokenized; the buyer-id and the database UUIDs are never exposed. {@code orderNumber}
  * is the 8-char human reference (first 8 chars of the order UUID), never the full id.
+ *
+ * <p>{@code referral} (crew link, V199) is null when no ticket of the order is issued or redeemed, when the event
+ * is cancelled, deleted or over, and for a test-mode order (its friends' tickets are not counted).
  */
 public record PublicOrderResponse(
         String token,
@@ -24,7 +27,8 @@ public record PublicOrderResponse(
         List<Line> lines,
         long subtotalMinor,
         long discountMinor,
-        long feeMinor) {
+        long feeMinor,
+        Referral referral) {
 
     /**
      * One receipt row: tickets grouped by {@code (tier_id, price_minor)}.
@@ -69,4 +73,21 @@ public record PublicOrderResponse(
      */
     public record Ticket(String token, String tierName, String state, String qrPayload,
                          TicketWallets wallet) {}
+
+    /**
+     * The buyer's crew link: {@code code} goes into {@code /e/{eventId}?ref={code}}. {@code shareable} is false while
+     * nothing can be bought (event not public, sales paused by imin, every enabled tier sold out, closed or not
+     * yet open). {@code tickets} counts issued or redeemed tickets on LIVE orders bought with the link.
+     * {@code perk} is null when the event offers none, it was stopped, or perks are off platform-wide;
+     * {@code unlock} is null until the threshold is reached (and always while perks are off).
+     */
+    public record Referral(String code, boolean shareable, long tickets, Perk perk, Unlock unlock) {}
+
+    public record Perk(String label, int threshold) {}
+
+    /**
+     * {@code label} is the snapshot the buyer was promised. {@code unlockedAt} is null when the unlock is computed
+     * live and its row has not been written yet; {@code givenAt} is null until staff mark it given.
+     */
+    public record Unlock(String label, Instant unlockedAt, Instant givenAt) {}
 }

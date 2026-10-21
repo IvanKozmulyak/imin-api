@@ -1,5 +1,7 @@
 package com.imin.iminapi.model;
 
+import com.imin.iminapi.referral.ReferralCode;
+
 import java.util.Map;
 
 /**
@@ -19,14 +21,19 @@ import java.util.Map;
  * {@code anon_id} 64 — mirroring {@code event_funnel_events}) and blank is normalized to
  * null, so an over-long or empty inbound param can never fail the insert or masquerade as
  * a real tag.
+ *
+ * <p>{@code referralCode} (V199) is the crew-link {@code ?ref=} code. It is kept only when it is 6-16 letters or
+ * digits; anything else becomes null, so a link a messenger mangled never fails checkout or overflows metadata.
  */
-public record CheckoutAttribution(String utmSource, String utmMedium, String utmCampaign, String anonId) {
+public record CheckoutAttribution(String utmSource, String utmMedium, String utmCampaign, String anonId,
+                                  String referralCode) {
 
     /** Metadata keys used on the Stripe Session/PaymentIntent. */
     public static final String META_UTM_SOURCE = "utm_source";
     public static final String META_UTM_MEDIUM = "utm_medium";
     public static final String META_UTM_CAMPAIGN = "utm_campaign";
     public static final String META_ANON_ID = "anon_id";
+    public static final String META_REF = "ref";
 
     private static final int UTM_MAX = 128;
     private static final int ANON_ID_MAX = 64;
@@ -39,11 +46,18 @@ public record CheckoutAttribution(String utmSource, String utmMedium, String utm
         utmMedium = clean(utmMedium, UTM_MAX);
         utmCampaign = clean(utmCampaign, UTM_MAX);
         anonId = clean(anonId, ANON_ID_MAX);
+        referralCode = ReferralCode.isWellFormed(referralCode) ? referralCode : null;
+    }
+
+    /** The pre-V199 shape: no crew-link code. */
+    public CheckoutAttribution(String utmSource, String utmMedium, String utmCampaign, String anonId) {
+        this(utmSource, utmMedium, utmCampaign, anonId, null);
     }
 
     /** True when nothing at all was captured — lets callers skip writing empty metadata. */
     public boolean isEmpty() {
-        return utmSource == null && utmMedium == null && utmCampaign == null && anonId == null;
+        return utmSource == null && utmMedium == null && utmCampaign == null && anonId == null
+                && referralCode == null;
     }
 
     /** Add the non-null fields to a Stripe metadata map. Absent fields are omitted, not sent as "null". */
@@ -52,6 +66,7 @@ public record CheckoutAttribution(String utmSource, String utmMedium, String utm
         if (utmMedium != null) metadata.put(META_UTM_MEDIUM, utmMedium);
         if (utmCampaign != null) metadata.put(META_UTM_CAMPAIGN, utmCampaign);
         if (anonId != null) metadata.put(META_ANON_ID, anonId);
+        if (referralCode != null) metadata.put(META_REF, referralCode);
     }
 
     /** Rebuild from Stripe metadata at fulfilment. Missing keys → null (pre-V62 sessions in flight). */
@@ -61,10 +76,14 @@ public record CheckoutAttribution(String utmSource, String utmMedium, String utm
                 metadata.get(META_UTM_SOURCE),
                 metadata.get(META_UTM_MEDIUM),
                 metadata.get(META_UTM_CAMPAIGN),
-                metadata.get(META_ANON_ID));
+                metadata.get(META_ANON_ID),
+                metadata.get(META_REF));
     }
 
-    /** Stamp the attribution onto an order. Central so free + paid paths can't drift. */
+    /**
+     * Stamp the attribution onto an order. Central so free + paid paths can't drift. The referral code is not
+     * stamped here: ReferralLinker resolves it to the referrer's order first.
+     */
     public void applyTo(Order order) {
         order.setUtmSource(utmSource);
         order.setUtmMedium(utmMedium);

@@ -64,7 +64,12 @@ public record DsarRecords(
             long bookingFeeMinor,
             String currency,
             String paymentMethod,
-            Instant createdAt) {}
+            Instant createdAt,
+            // Crew link (V199): this order's code, the order it was bought through, and its perk timestamps.
+            String referralCode,
+            String referredByOrderNumber,
+            Instant perkUnlockedAt,
+            Instant perkGivenAt) {}
 
     public record TicketRecord(
             UUID id,

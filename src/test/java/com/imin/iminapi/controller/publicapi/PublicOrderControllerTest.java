@@ -9,13 +9,18 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -47,6 +52,8 @@ class PublicOrderControllerTest {
     @Autowired Clock clock;
     @Autowired EventRepository events;
     @Autowired MetaPixelConnectionRepository metaPixelConnections;
+    @Autowired TicketTierRepository tiers;
+    @Autowired JdbcTemplate jdbc;
 
     final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -161,7 +168,9 @@ class PublicOrderControllerTest {
                 // Receipt breakdown (spec §4.6). All four are money the buyer was
                 // already shown at checkout, restated so the receipt reconciles to
                 // the charge; none is new information about them.
-                "lines", "subtotalMinor", "discountMinor", "feeMinor");
+                "lines", "subtotalMinor", "discountMinor", "feeMinor",
+                // The buyer's own crew-link code and counts (no friend identity, no other order's data).
+                "referral");
         assertThat(fieldNames(root))
                 .as("Top-level keys leaked or missing. " +
                     "If this fails, you added a field to PublicOrderResponse. " +
@@ -187,6 +196,67 @@ class PublicOrderControllerTest {
                     "If this fails, you added a field to PublicOrderResponse.Ticket. " +
                     "Verify it is safe to expose, then update this test's allowlist.")
                 .isEqualTo(expectedTicketKeys);
+
+        assertThat(fieldNames(root.get("referral")))
+                .as("referral keys leaked or missing. Verify it is safe to expose, then update this allowlist.")
+                .isEqualTo(Set.of("code", "shareable", "tickets", "perk", "unlock"));
+    }
+
+    enum NotGoing { EVERY_TICKET_REFUNDED, EVENT_CANCELLED, EVENT_ENDED, TEST_MODE_ORDER }
+
+    @ParameterizedTest
+    @EnumSource(NotGoing.class)
+    void referralBlockIsNullWhenTheBuyerIsNotGoing(NotGoing c) throws Exception {
+        Fixture f = persistOrderWithTicket(c == NotGoing.EVERY_TICKET_REFUNDED ? Ticket.STATE_REFUNDED : "issued");
+        if (c == NotGoing.EVENT_CANCELLED) {
+            f.event.setStatus(EventStatus.CANCELLED);
+            events.save(f.event);
+        } else if (c == NotGoing.EVENT_ENDED) {
+            f.event.setStartsAt(clock.instant().minus(10, ChronoUnit.HOURS));
+            f.event.setEndsAt(clock.instant().minus(2, ChronoUnit.HOURS));
+            events.save(f.event);
+        } else if (c == NotGoing.TEST_MODE_ORDER) {
+            // A test-mode order's link would never credit a live friend's order.
+            jdbc.update("UPDATE orders SET test_mode = true WHERE id = ?", f.order.getId());
+        }
+
+        mvc.perform(get("/api/v1/public/orders/" + f.order.getToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.referral").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    enum NothingOnSale { EVERY_ENABLED_TIER_SOLD_OUT, SALE_CLOSED, SALES_SUSPENDED }
+
+    @ParameterizedTest
+    @EnumSource(NothingOnSale.class)
+    void referralIsNotShareableWhenNothingIsOnSale(NothingOnSale c) throws Exception {
+        Fixture f = persistOrderWithTicket("issued");
+        TicketTier onSale = fx.tier(f.event, 1500, 100);
+        mvc.perform(get("/api/v1/public/orders/" + f.order.getToken()))
+                .andExpect(jsonPath("$.referral.code").value(f.order.getReferralCode()))
+                .andExpect(jsonPath("$.referral.shareable").value(true));
+
+        switch (c) {
+            case EVERY_ENABLED_TIER_SOLD_OUT -> {
+                onSale.setSold(100);
+                tiers.save(onSale);
+                TicketTier disabledWithStock = fx.tier(f.event, 1000, 50);
+                disabledWithStock.setEnabled(false);
+                tiers.save(disabledWithStock);
+            }
+            case SALE_CLOSED -> {
+                f.event.setSaleClosesAt(clock.instant().minus(1, ChronoUnit.HOURS));
+                events.save(f.event);
+            }
+            case SALES_SUSPENDED -> jdbc.update("INSERT INTO moderation_holds (id, org_id, event_id, suspend_sales, "
+                    + "hold_payouts, ground, facts, placed_by, placed_at) VALUES (?, ?, ?, true, false, 'fraud', 'x', ?, now())",
+                    UUID.randomUUID(), f.event.getOrgId(), f.event.getId(), UUID.randomUUID());
+        }
+
+        mvc.perform(get("/api/v1/public/orders/" + f.order.getToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.referral.code").value(f.order.getReferralCode()))
+                .andExpect(jsonPath("$.referral.shareable").value(false));
     }
 
     @Test
@@ -212,6 +282,7 @@ class PublicOrderControllerTest {
         ev.setVenuePostalCode("10115");
         ev.setVenueCountry("DE");
         ev.setPosterUrl(POSTER_URL);
+        ev.setPublishedAt(clock.instant().minus(1, ChronoUnit.HOURS));
         ev = events.save(ev);
 
         Order order = fx.order(ev, buyer);

@@ -1035,6 +1035,9 @@ imin:
     org-slugs: ${IMIN_FOLLOW_ORG_SLUGS:}
     # EXACT origins (no wildcards) given CORS on the follow path only; no credentials.
     allowed-origins: ${IMIN_FOLLOW_ALLOWED_ORIGINS:https://imin.wtf}
+  referral:
+    # Crew-link perks. Off until the door scanner shows them; links, attribution and the leaderboard work either way.
+    perks-enabled: ${IMIN_REFERRAL_PERKS_ENABLED:false}
   moderation:
     # imin staff (users.id, comma-separated) who may place/lift moderation holds; blank = endpoints 404 for everyone.
     staff-user-ids: ${IMIN_MODERATION_STAFF_USER_IDS:}

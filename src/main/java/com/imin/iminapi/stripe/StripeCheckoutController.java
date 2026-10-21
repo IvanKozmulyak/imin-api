@@ -66,7 +66,7 @@ public class StripeCheckoutController {
         // untrusted buyer input — the record trims, caps to the column widths, and
         // normalizes blank to null, so a hostile or over-long param can't break the insert.
         CheckoutAttribution attribution = new CheckoutAttribution(
-                body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
+                body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId(), body.referralCode());
         // Consent evidence captured on the buy page (V97). Both optional: imin-public
         // has not shipped its half, and an absent field must mean "not recorded"
         // rather than "declined" — nothing here gates the purchase.
@@ -133,7 +133,10 @@ public class StripeCheckoutController {
                                    @Size(max = 500) String marketingOptInProofText,
                                    // Version id of that sentence (≤ 32). ConsentGate trusts a checkout
                                    // consent only when it is on logic-v1.yaml's organizer-named list.
-                                   @Size(max = 32) String marketingOptInTextVersion) {}
+                                   @Size(max = 32) String marketingOptInTextVersion,
+                                   // Optional crew-link code (?ref=) the buyer arrived with (V199). Never
+                                   // rejected: anything but 6-16 letters or digits is dropped to null.
+                                   String referralCode) {}
 
     /**
      * {@code url} is unchanged and still first — imin-public reads only that.
