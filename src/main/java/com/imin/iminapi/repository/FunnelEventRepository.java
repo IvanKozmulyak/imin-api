@@ -179,6 +179,14 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
             """)
     long countAttributedCheckoutSessions(@Param("campaign") String campaign);
 
+    /** Distinct visitors (anon ids) with any beacon of this event carrying this utm_campaign. */
+    @Query("""
+            select count(distinct fe.anonId) from FunnelEvent fe
+             where fe.eventId = :eventId
+               and fe.utmCampaign = :campaign
+            """)
+    long countDistinctAnonByEventAndCampaign(@Param("eventId") UUID eventId, @Param("campaign") String campaign);
+
     /**
      * Batched {@link #countAttributedCheckoutSessions} — ONE grouped query for many campaigns,
      * so the Marketing hub does not issue a funnel query per campaign on every page view

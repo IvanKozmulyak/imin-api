@@ -22,6 +22,13 @@ public class InMemoryMediaStorage implements MediaStorage {
     public void delete(String key) { blobs.remove(key); }
 
     @Override
+    public byte[] read(String key, long maxBytes) {
+        byte[] b = blobs.get(key);
+        if (b != null && b.length > maxBytes) throw new IllegalStateException("Object larger than " + maxBytes + " bytes");
+        return b;
+    }
+
+    @Override
     public String urlFor(String key) { return publicPrefix + key; }
 
     @Override

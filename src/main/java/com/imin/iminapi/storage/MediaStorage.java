@@ -21,5 +21,11 @@ public interface MediaStorage {
      */
     String keyFor(String url);
 
+    /**
+     * The bytes stored at {@code key}, or {@code null} when nothing is there. Throws
+     * {@link IllegalStateException} when the object is larger than {@code maxBytes}.
+     */
+    byte[] read(String key, long maxBytes);
+
     record Stored(String url, long sizeBytes, String contentType) {}
 }

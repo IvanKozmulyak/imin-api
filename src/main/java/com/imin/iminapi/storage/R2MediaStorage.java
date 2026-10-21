@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 @Component
@@ -38,6 +40,19 @@ public class R2MediaStorage implements MediaStorage {
     @Override
     public void delete(String key) {
         s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    }
+
+    @Override
+    public byte[] read(String key, long maxBytes) {
+        try (var in = s3.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build())) {
+            byte[] bytes = in.readNBytes((int) Math.min(Integer.MAX_VALUE - 8, maxBytes + 1));
+            if (bytes.length > maxBytes) throw new IllegalStateException("Object larger than " + maxBytes + " bytes");
+            return bytes;
+        } catch (NoSuchKeyException missing) {
+            return null;
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException("Failed to read " + key, e);
+        }
     }
 
     @Override

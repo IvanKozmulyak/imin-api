@@ -239,6 +239,11 @@ imin:
     # no operator having chosen that moment. Turning it on is a deliberate act.
     # This is the platform switch; each event's own switch and every send's outcome live in the DB.
     reminders-enabled: ${IMIN_REMINDERS_ENABLED:false}
+  story-kit:
+    # Kill switch for the Instagram kit: false answers GET available:false and POST 503.
+    enabled: ${IMIN_STORY_KIT_ENABLED:true}
+    # Largest poster the kit will read from storage (bytes); decoded size is capped separately.
+    max-poster-bytes: ${IMIN_STORY_KIT_MAX_POSTER_BYTES:20971520}
   team-alerts:
     # Comma-separated imin team inboxes told when a new organizer account becomes real; blank = no alert.
     # An entry that is not one address (no @, two @, spaces, ';') stops startup.
@@ -923,6 +928,18 @@ imin:
       # six-digit code that only allows five guesses before it is burnt.
       capacity: 30
       window-minutes: 15
+    story-kit:
+      # POST /events/{id}/story-kit renders five JPEGs and writes them to storage; per user id.
+      capacity: 10
+      window-minutes: 60
+    story-kit-caption:
+      # POST /events/{id}/story-kit/caption is one model call (not metered by the AI quota); per user id.
+      capacity: 20
+      window-minutes: 60
+    story-kit-download:
+      # GET /events/{id}/story-kit/assets/{key} and /zip read stored images; a phone fetches all of them per kit shown.
+      capacity: 120
+      window-minutes: 10
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a

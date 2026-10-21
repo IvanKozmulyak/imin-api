@@ -215,6 +215,26 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                               @Param("campaignKeys") Collection<String> campaignKeys);
 
     /**
+     * Revenue inputs for one event under one campaign tag: the same rows and filters as
+     * {@link #revenueRowsByUtmCampaignIn}, narrowed to the event. Fold with {@code NetOrderRevenue}.
+     */
+    @Query("""
+            select o.utmCampaign, o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST)
+              from Order o
+             where o.orgId = :orgId
+               and o.eventId = :eventId
+               and o.utmCampaign = :campaign
+               and o.testMode = false
+            """)
+    List<Object[]> revenueRowsByEventAndUtmCampaign(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
+                                                    @Param("campaign") String campaign);
+
+    /**
      * Per-order last-touch revenue inputs by channel (V62): one row
      * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor]} per
      * tagged LIVE-mode order of the org. Test-mode orders are out and LOST chargebacks come off (the

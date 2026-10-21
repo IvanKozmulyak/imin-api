@@ -151,6 +151,19 @@ public class RateLimitConfig {
     @Value("${imin.ratelimit.buyer-verify-email.window-minutes}")
     private int buyerVerifyEmailWindow;
 
+    @Value("${imin.ratelimit.story-kit.capacity}")
+    private int storyKitCapacity;
+    @Value("${imin.ratelimit.story-kit.window-minutes}")
+    private int storyKitWindow;
+    @Value("${imin.ratelimit.story-kit-caption.capacity}")
+    private int storyKitCaptionCapacity;
+    @Value("${imin.ratelimit.story-kit-caption.window-minutes}")
+    private int storyKitCaptionWindow;
+    @Value("${imin.ratelimit.story-kit-download.capacity}")
+    private int storyKitDownloadCapacity;
+    @Value("${imin.ratelimit.story-kit-download.window-minutes}")
+    private int storyKitDownloadWindow;
+
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
         return RedisClient.create(url);
@@ -346,6 +359,19 @@ public class RateLimitConfig {
         configs.put("buyer-verify-email", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerVerifyEmailCapacity,
                         Duration.ofMinutes(buyerVerifyEmailWindow)))
+                .build());
+
+        // Instagram kit renders (CPU + storage writes), keyed per user id.
+        configs.put("story-kit", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(storyKitCapacity, Duration.ofMinutes(storyKitWindow)))
+                .build());
+        // Kit caption model calls, keyed per user id; text calls are not metered by the AI quota.
+        configs.put("story-kit-caption", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(storyKitCaptionCapacity, Duration.ofMinutes(storyKitCaptionWindow)))
+                .build());
+        // Kit image and zip downloads (a phone fetches every image once per kit shown), keyed per user id.
+        configs.put("story-kit-download", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(storyKitDownloadCapacity, Duration.ofMinutes(storyKitDownloadWindow)))
                 .build());
 
         return (bucketName, key) -> {

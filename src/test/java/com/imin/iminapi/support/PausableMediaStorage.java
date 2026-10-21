@@ -20,6 +20,8 @@ public class PausableMediaStorage extends InMemoryMediaStorage {
 
     private Pause nextPut;
     private Pause nextDelete;
+    private int putsBeforeFailure = -1;
+    private boolean failDeletes;
     private final List<Pause> armed = new ArrayList<>();
     private final Set<Pause> cancelled = new HashSet<>();
 
@@ -39,10 +41,22 @@ public class PausableMediaStorage extends InMemoryMediaStorage {
         return nextDelete;
     }
 
+    /** Lets {@code n} more puts succeed, then makes every put throw until {@link #reset()}. */
+    public synchronized void failPutsAfter(int n) {
+        putsBeforeFailure = n;
+    }
+
+    /** Makes every delete throw until {@link #reset()}. */
+    public synchronized void failDeletes() {
+        failDeletes = true;
+    }
+
     /** Disarms both hooks and releases any call still held; a call released here is dropped, not run. */
     public synchronized void reset() {
         nextPut = null;
         nextDelete = null;
+        putsBeforeFailure = -1;
+        failDeletes = false;
         cancelled.addAll(armed);
         armed.forEach(p -> p.release().countDown());
         armed.clear();
@@ -50,6 +64,10 @@ public class PausableMediaStorage extends InMemoryMediaStorage {
 
     @Override
     public Stored put(String key, byte[] bytes, String contentType) {
+        synchronized (this) {
+            if (putsBeforeFailure == 0) throw new IllegalStateException("injected storage put failure");
+            if (putsBeforeFailure > 0) putsBeforeFailure--;
+        }
         Pause p = takePut();
         hold(p);
         synchronized (this) {
@@ -62,6 +80,9 @@ public class PausableMediaStorage extends InMemoryMediaStorage {
 
     @Override
     public void delete(String key) {
+        synchronized (this) {
+            if (failDeletes) throw new IllegalStateException("injected storage delete failure");
+        }
         Pause p = takeDelete();
         hold(p);
         synchronized (this) {

@@ -100,6 +100,34 @@ public class PosterImageStorage {
         }
     }
 
+    /** True for a URL this class's local-disk fallback produced ({@code <api base>/images/<uuid>.png}). */
+    public boolean isLocalImageUrl(String url) {
+        return localFileName(url) != null;
+    }
+
+    /** The bytes of a local-disk fallback image, or null when {@code url} is not one or the file is gone. */
+    public byte[] readLocal(String url, long maxBytes) {
+        String name = localFileName(url);
+        if (name == null) return null;
+        Path path = storageDir.resolve(name);
+        try {
+            if (!Files.isRegularFile(path)) return null;
+            if (Files.size(path) > maxBytes) throw new IllegalStateException("Image larger than " + maxBytes + " bytes");
+            return Files.readAllBytes(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to read " + path, e);
+        }
+    }
+
+    // Only <base>/images/<uuid>.png, so no path segment of a patched URL can reach another file.
+    private String localFileName(String url) {
+        if (url == null) return null;
+        String prefix = apiPublicBaseUrl + AI_POSTER_LOCAL_PATH;
+        if (!url.startsWith(prefix)) return null;
+        String name = url.substring(prefix.length());
+        return name.matches("[0-9a-fA-F-]{36}\\.png") ? name : null;
+    }
+
     /**
      * Stores an AI render with the machine-readable AI marker embedded (ADR-0005). A format the
      * marker cannot write into is transcoded to PNG first; an undecodable one is stored unmarked.
