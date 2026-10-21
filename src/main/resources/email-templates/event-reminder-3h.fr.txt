@@ -8,7 +8,7 @@ Prépare ton QR code avant d'arriver en tête de file.
 {{eventWhen}}
 {{eventWhere}}
 
-Ouvrir tes billets: {{orderUrl}}
+Ouvrir tes billets: {{orderUrl}}{{extras}}
 
 La page fonctionne hors ligne une fois chargée — ouvre-la avant de perdre le réseau sur place.
 

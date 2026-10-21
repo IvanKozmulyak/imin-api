@@ -212,7 +212,8 @@ public class Order {
     private String buyerLocale;
 
     /**
-     * Stamped when the T-24h reminder for this order has been SENT (V87).
+     * Stamped once the T-24h reminder for this order is settled, whatever the outcome (V87): sent or skipped;
+     * {@link #reminder24hOutcome} says which.
      *
      * <p>Delivery semantics: at-least-once, marked after the send — the same
      * trade {@link com.imin.iminapi.service.event.NotifyReleaseSender} makes,
@@ -221,12 +222,21 @@ public class Order {
      * would mean they silently never hear about a night they paid for. A
      * duplicate is an annoyance, a miss is a no-show.
      */
-    @Column(name = "reminder_24h_at")
+    // Only the stamp UPDATE writes the reminder columns, so a stale full-entity save cannot un-stamp one.
+    @Column(name = "reminder_24h_at", updatable = false)
     private Instant reminder24hAt;
 
+    /** What happened to the T-24h reminder: sent, opted_out, bounced, no_ticket or no_event (V197). */
+    @Column(name = "reminder_24h_outcome", length = 16, updatable = false)
+    private String reminder24hOutcome;
+
     /** The T-3h analogue of {@link #reminder24hAt}. Claimed independently. */
-    @Column(name = "reminder_3h_at")
+    @Column(name = "reminder_3h_at", updatable = false)
     private Instant reminder3hAt;
+
+    /** The T-3h analogue of {@link #reminder24hOutcome}. */
+    @Column(name = "reminder_3h_outcome", length = 16, updatable = false)
+    private String reminder3hOutcome;
 
     /**
      * The caller's {@code Idempotency-Key} on the free-checkout path (V94), or

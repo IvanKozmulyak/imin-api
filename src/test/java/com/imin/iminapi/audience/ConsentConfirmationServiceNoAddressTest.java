@@ -10,6 +10,7 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.ConsentConfirmationService;
+import com.imin.iminapi.audience.service.MarketingOptedOutCheck;
 import com.imin.iminapi.audience.service.ConsentConfirmationTokenSigner;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
@@ -69,7 +70,8 @@ class ConsentConfirmationServiceNoAddressTest {
         ConsentService consentService = mock(ConsentService.class);
 
         ConsentConfirmationService service = new ConsentConfirmationService(tokens, signer, memberships, consumers,
-                mock(ErasedAddressRepository.class), mock(MarketingOptOutRepository.class), suppressions, orgs,
+                suppressions, new MarketingOptedOutCheck(memberships, consumers, mock(ErasedAddressRepository.class),
+                        mock(MarketingOptOutRepository.class), suppressions), orgs,
                 consentService, new AudiencePlanAccess(new AudiencePlanProperties()),
                 mock(ApplicationEventPublisher.class), Clock.fixed(now, ZoneOffset.UTC));
 

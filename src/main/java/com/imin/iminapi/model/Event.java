@@ -192,6 +192,21 @@ public class Event {
     @Column(name = "survey_token", length = 32, updatable = false)
     private String surveyToken;
 
+    /** Door reminders go out for this event (V197). */
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "reminders_enabled", nullable = false, updatable = false)
+    private boolean remindersEnabled = true;
+
+    /** The day-before reminder carries the bring-a-friend block (V197). */
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "reminder_share_enabled", nullable = false, updatable = false)
+    private boolean reminderShareEnabled = true;
+
+    /** Organizer's plain-text door note for the reminders, at most 280 chars, no links (V197). */
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "reminder_door_note", length = 280, updatable = false)
+    private String reminderDoorNote;
+
     /** Optional finer genre inside {@code genre}, set by "Check a date" (V162). */
     @Column(name = "sub_genre", length = 64)
     private String subGenre;

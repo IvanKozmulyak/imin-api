@@ -6,6 +6,13 @@ import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
+import com.imin.iminapi.audience.model.ErasedAddress;
+import com.imin.iminapi.audience.model.MarketingOptOut;
+import com.imin.iminapi.audience.model.SuppressionEntry;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
+import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
+import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
@@ -14,18 +21,30 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
+import com.imin.iminapi.support.PgFaults;
 import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
+
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,9 +74,23 @@ class EventReminderSenderTest {
     @Autowired BuyerAccountEmailRepository accountEmails;
     @Autowired BuyerNotificationPreferenceRepository preferences;
     @Autowired RecordingEmailService mail;
+    @Autowired com.imin.iminapi.audience.service.SuppressionService suppression;
     @Autowired PropertyFlips flips;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
     @Autowired Clock clock;
+    @Autowired IminFixtures fx;
+    @Autowired AudienceOrderProjector projector;
+    @Autowired ErasedAddressRepository erased;
+    @Autowired MarketingOptOutRepository optOuts;
+    @Autowired SuppressionRepository suppressions;
+
+    private final List<String> platformErased = new java.util.ArrayList<>();
+
+    @AfterEach
+    void removePlatformWideErasures() {
+        platformErased.forEach(e -> jdbc.update("delete from erased_addresses where email_normalized = ?", e));
+    }
 
     /** 22 hours out — inside the T-24h band and nowhere near the T-3h one. */
     private Event tomorrow;
@@ -96,6 +129,8 @@ class EventReminderSenderTest {
 
         assertThat(sentTo(address)).hasSize(1);
         assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNotNull();
+        assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hOutcome()).isEqualTo("sent");
+        assertThat(mail.lastFromSentTo(address)).contains("via IMIN").contains(orgs.findById(tomorrow.getOrgId()).orElseThrow().displayName());
     }
 
     @Test
@@ -156,6 +191,7 @@ class EventReminderSenderTest {
         assertThat(sentTo(address)).isEmpty();
         // Still stamped: the sweep must not reconsider this order every tick.
         assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNotNull();
+        assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hOutcome()).isEqualTo("opted_out");
     }
 
     @Test
@@ -192,6 +228,7 @@ class EventReminderSenderTest {
 
         assertThat(sentTo(refunded)).isEmpty();
         assertThat(orders.findById(a.getId()).orElseThrow().getReminder24hAt()).isNotNull();
+        assertThat(orders.findById(a.getId()).orElseThrow().getReminder24hOutcome()).isEqualTo("no_ticket");
     }
 
     @Test
@@ -225,7 +262,7 @@ class EventReminderSenderTest {
 
         assertThat(textSentTo(address))
                 .as("two of the three tickets are dead — the door will honour one")
-                .contains("Your 1 ticket(s) are ready");
+                .contains("Your ticket is ready.");
     }
 
     @Test
@@ -267,6 +304,154 @@ class EventReminderSenderTest {
         assertThat(subjectSentTo(withOrderLocale)).contains("c'est demain");
         assertThat(subjectSentTo(viaAccount)).contains("вже завтра");
         assertThat(subjectSentTo(plain)).contains("is tomorrow");
+    }
+
+    @ParameterizedTest
+    @EnumSource(EventReminderSender.Window.class)
+    void anEventSwitchedOffSendsNothingAndStaysDueUntilSwitchedBackOn(EventReminderSender.Window window) {
+        boolean day = window == EventReminderSender.Window.T24H;
+        Event event = day ? tomorrow : soon;
+        String address = address("event-off");
+        Order order = orderOn(event, address, 1);
+        events.updateRemindersEnabled(event.getId(), false);
+
+        sender.sweepWindow(window);
+
+        assertThat(sentTo(address)).isEmpty();
+        assertThat(stampedAt(order, day))
+                .as("a switched-off event is not stamped, so switching back on still sends").isNull();
+
+        events.updateRemindersEnabled(event.getId(), true);
+        sender.sweepWindow(window);
+
+        assertThat(sentTo(address)).hasSize(1);
+    }
+
+    /** Switching the event off while a batch is mid-flight stops the rest of it, unstamped. */
+    @Test
+    void switchingAnEventOffMidSweepStopsTheRestOfTheBatch() throws Exception {
+        Order a = orderWith(address("mid-a"), 1);
+        Order b = orderWith(address("mid-b"), 1);
+        List<UUID> byDueOrder = jdbc.queryForList(
+                "select id from orders where id in (?, ?) order by id", UUID.class, a.getId(), b.getId());
+        Order first = byDueOrder.get(0).equals(a.getId()) ? a : b;
+        Order second = first == a ? b : a;
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "orders", "id", first.getId())) {
+            Future<?> sweep = pool.submit(() -> sender.sweepWindow(EventReminderSender.Window.T24H));
+            pause.awaitBlocked(Duration.ofSeconds(10));
+            events.updateRemindersEnabled(tomorrow.getId(), false);
+            pause.release();
+            sweep.get(10, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(sentTo(first.getEmail())).as("the order already in flight finishes").hasSize(1);
+        assertThat(sentTo(second.getEmail())).isEmpty();
+        assertThat(stampedAt(second, true)).as("left unstamped so switching back on still sends").isNull();
+    }
+
+    @Test
+    void aHardBouncedAddressIsNotMailedAndIsRecordedAsBounced() {
+        String address = address("bounced");
+        suppression.addDeliverability(address.toLowerCase(), "hard-bounce");
+        Order order = orderWith(address, 1);
+
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+
+        assertThat(sentTo(address)).isEmpty();
+        Order stamped = orders.findById(order.getId()).orElseThrow();
+        assertThat(stamped.getReminder24hAt()).isNotNull();
+        assertThat(stamped.getReminder24hOutcome()).isEqualTo("bounced");
+    }
+
+    /** How a buyer stands with the organizer when the day-before email goes out. */
+    enum Standing {
+        MEMBER_IN_GOOD_STANDING(true), GUEST_WITHOUT_MEMBERSHIP(true),
+        PERMANENT_OPT_OUT(false), UNSUBSCRIBED_MEMBER(false), MARKETING_SUPPRESSED_MEMBER(false),
+        ERASE_PENDING_MEMBER(false), ERASED_FOR_THIS_ORG(false), ERASED_PLATFORM_WIDE(false);
+
+        final boolean getsFriendBlock;
+
+        Standing(boolean getsFriendBlock) {
+            this.getsFriendBlock = getsFriendBlock;
+        }
+    }
+
+    /** The reminder itself is transactional and always goes; the friend block is promotional and honours every opt-out. */
+    @ParameterizedTest
+    @EnumSource(Standing.class)
+    void theFriendBlockReachesOnlyBuyersWhoHaveNotOptedOutOfTheOrganizer(Standing standing) {
+        fx.tier(tomorrow, 1500, 100);
+        String address = address("friend");
+        Order order = orderWith(address, 1);
+        UUID orgId = tomorrow.getOrgId();
+        String norm = order.getEmailNormalized();
+        if (standing != Standing.GUEST_WITHOUT_MEMBERSHIP && standing != Standing.PERMANENT_OPT_OUT
+                && standing != Standing.ERASED_FOR_THIS_ORG && standing != Standing.ERASED_PLATFORM_WIDE) {
+            projector.upsertMembership(orgId, norm, null);
+        }
+        switch (standing) {
+            case PERMANENT_OPT_OUT -> {
+                MarketingOptOut o = new MarketingOptOut();
+                o.setEmailNormalized(norm);
+                o.setOrgId(orgId);
+                o.setChannel("email");
+                o.setSource("unsubscribe_link");
+                optOuts.save(o);
+            }
+            case UNSUBSCRIBED_MEMBER ->
+                    jdbc.update("update memberships set consent_status = 'unsubscribed' where org_id = ?", orgId);
+            case MARKETING_SUPPRESSED_MEMBER -> {
+                SuppressionEntry sup = new SuppressionEntry();
+                sup.setScope(SuppressionEntry.SCOPE_MARKETING);
+                sup.setOrgId(orgId);
+                sup.setMembershipId(jdbc.queryForObject("select membership_id from memberships where org_id = ?",
+                        UUID.class, orgId));
+                sup.setReason("manual");
+                suppressions.save(sup);
+            }
+            case ERASE_PENDING_MEMBER ->
+                    jdbc.update("update memberships set status = 'erase_pending' where org_id = ?", orgId);
+            case ERASED_FOR_THIS_ORG -> erase(orgId, norm);
+            case ERASED_PLATFORM_WIDE -> {
+                erase(null, norm);
+                platformErased.add(norm);
+            }
+            default -> { }
+        }
+
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+
+        assertThat(sentTo(address)).as("the reminder itself is not marketing").hasSize(1);
+        assertThat(textSentTo(address).contains("Going with friends?")).isEqualTo(standing.getsFriendBlock);
+        assertThat(lastSentTo(address).html().contains("wa.me")).isEqualTo(standing.getsFriendBlock);
+    }
+
+    private void erase(UUID org, String email) {
+        ErasedAddress a = new ErasedAddress();
+        a.setOrgId(org);
+        a.setEmailNormalized(email);
+        erased.save(a);
+    }
+
+    /** A stale full-entity save of the order (the SMS box on the order page) must not un-stamp the reminder. */
+    @Test
+    void aFullOrderSaveDuringTheSweepDoesNotUnstampTheReminder() {
+        String address = address("stale-save");
+        Order order = orderWith(address, 1);
+        Order stale = orders.findById(order.getId()).orElseThrow();
+
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+        stale.setSmsMarketingOptIn(true);
+        orders.save(stale);
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+
+        assertThat(sentTo(address)).hasSize(1);
+        Order after = orders.findById(order.getId()).orElseThrow();
+        assertThat(after.getReminder24hAt()).isNotNull();
+        assertThat(after.getReminder24hOutcome()).isEqualTo("sent");
     }
 
     /**
@@ -314,6 +499,11 @@ class EventReminderSenderTest {
 
     private static String address(String tag) {
         return tag + "+" + UUID.randomUUID() + "@example.com";
+    }
+
+    private Instant stampedAt(Order order, boolean day) {
+        Order fresh = orders.findById(order.getId()).orElseThrow();
+        return day ? fresh.getReminder24hAt() : fresh.getReminder3hAt();
     }
 
     private Order orderWith(String buyerEmail, int ticketCount) {

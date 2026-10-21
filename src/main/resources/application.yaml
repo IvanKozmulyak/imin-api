@@ -237,6 +237,7 @@ imin:
     # DEFAULTS FALSE deliberately: the first sweep after a deploy would otherwise
     # mail every buyer holding a ticket for anything in the next 24 hours, with
     # no operator having chosen that moment. Turning it on is a deliberate act.
+    # This is the platform switch; each event's own switch and every send's outcome live in the DB.
     reminders-enabled: ${IMIN_REMINDERS_ENABLED:false}
   team-alerts:
     # Comma-separated imin team inboxes told when a new organizer account becomes real; blank = no alert.

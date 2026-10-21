@@ -86,4 +86,17 @@ public final class OrderFixtures {
         ticket.setState(state);
         return tickets.save(ticket);
     }
+
+    /** Stamps the day-before reminder with an outcome, as the sweep does. */
+    public static void stampDayBefore(OrderRepository orders, Order order, String outcome, Instant at) {
+        orders.stampReminder24h(order.getId(), at, outcome);
+    }
+
+    /** Sets the order's last-touch tags. */
+    public static Order tagged(OrderRepository orders, Order order, String source, String campaign) {
+        order.setUtmSource(source);
+        order.setUtmMedium("share");
+        order.setUtmCampaign(campaign);
+        return orders.save(order);
+    }
 }

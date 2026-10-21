@@ -50,6 +50,14 @@ public class RecordingEmailService implements EmailService {
     /** From header of the last email, or null when it used the configured identity. */
     public synchronized String lastFrom() { return froms.isEmpty() ? null : froms.get(froms.size() - 1); }
 
+    /** From header of the last email sent to {@code to}, or null when none went there or it used the configured identity. */
+    public synchronized String lastFromSentTo(String to) {
+        for (int i = sent.size() - 1; i >= 0; i--) {
+            if (to.equals(sent.get(i).to())) return froms.get(i);
+        }
+        return null;
+    }
+
     public synchronized List<SentEmail> sent() { return Collections.unmodifiableList(new ArrayList<>(sent)); }
     public synchronized SentEmail lastSent() { return sent.isEmpty() ? null : sent.get(sent.size() - 1); }
     public synchronized boolean sentInTransaction(int index) { return inTransaction.get(index); }

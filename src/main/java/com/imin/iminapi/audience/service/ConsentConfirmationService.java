@@ -2,13 +2,9 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.dto.ConsentConfirmationResponse;
 import com.imin.iminapi.audience.model.ConsentConfirmationToken;
-import com.imin.iminapi.audience.model.Consumer;
-import com.imin.iminapi.audience.model.MarketingOptOutId;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
-import com.imin.iminapi.audience.repository.ErasedAddressRepository;
-import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
@@ -41,9 +37,8 @@ public class ConsentConfirmationService {
     private final ConsentConfirmationTokenSigner signer;
     private final MembershipRepository memberships;
     private final ConsumerRepository consumers;
-    private final ErasedAddressRepository erased;
-    private final MarketingOptOutRepository optOuts;
     private final SuppressionRepository suppressions;
+    private final MarketingOptedOutCheck optedOutCheck;
     private final OrganizationRepository orgs;
     private final ConsentService consentService;
     private final AudiencePlanAccess access;
@@ -52,17 +47,16 @@ public class ConsentConfirmationService {
 
     public ConsentConfirmationService(ConsentConfirmationTokenRepository tokens, ConsentConfirmationTokenSigner signer,
                                       MembershipRepository memberships, ConsumerRepository consumers,
-                                      ErasedAddressRepository erased, MarketingOptOutRepository optOuts,
-                                      SuppressionRepository suppressions, OrganizationRepository orgs,
+                                      SuppressionRepository suppressions, MarketingOptedOutCheck optedOutCheck,
+                                      OrganizationRepository orgs,
                                       ConsentService consentService, AudiencePlanAccess access,
                                       ApplicationEventPublisher events, Clock clock) {
         this.tokens = tokens;
         this.signer = signer;
         this.memberships = memberships;
         this.consumers = consumers;
-        this.erased = erased;
-        this.optOuts = optOuts;
         this.suppressions = suppressions;
+        this.optedOutCheck = optedOutCheck;
         this.orgs = orgs;
         this.consentService = consentService;
         this.access = access;
@@ -163,12 +157,7 @@ public class ConsentConfirmationService {
     }
 
     private boolean optedOut(UUID orgId, Membership m) {
-        if (!"active".equals(m.getStatus()) || "unsubscribed".equals(m.getConsentStatus())) return true;
-        if (suppressions.findMarketingByOrgAndMembership(orgId, m.getMembershipId()).isPresent()) return true;
-        String email = consumers.findByConsumerId(m.getConsumerId()).map(Consumer::getNormalizedEmail).orElse(null);
-        if (email == null) return true;
-        return erased.existsForOrg(orgId, email) || erased.existsPlatformWide(email)
-                || optOuts.existsById(new MarketingOptOutId(email, orgId, "email"));
+        return optedOutCheck.isOptedOut(orgId, m);
     }
 
     private record Usable(ConsentConfirmationToken row, Membership membership, String organizerName) {}

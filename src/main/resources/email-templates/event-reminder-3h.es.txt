@@ -8,7 +8,7 @@ Ten tu QR listo antes de llegar al principio de la fila.
 {{eventWhen}}
 {{eventWhere}}
 
-Abrir tus entradas: {{orderUrl}}
+Abrir tus entradas: {{orderUrl}}{{extras}}
 
 La página funciona sin conexión una vez cargada — ábrela antes de quedarte sin señal en el local.
 

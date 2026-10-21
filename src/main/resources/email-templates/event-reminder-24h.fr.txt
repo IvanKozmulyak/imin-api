@@ -2,13 +2,13 @@ DEMAIN SOIR · imin
 
 {{eventName}}, c'est demain
 
-Tes {{ticketCount}} billet(s) sont prêts. Voici tout ce qu'il te faut à l'entrée.
+{{ticketsReady}}
 
 {{eventName}}
 {{eventWhen}}
 {{eventWhere}}
 
-Voir tes billets: {{orderUrl}}
+Voir tes billets: {{orderUrl}}{{extras}}
 
 Présente le QR code de cette commande — les captures d'écran fonctionnent, la page aussi. Pas besoin d'imprimer.
 

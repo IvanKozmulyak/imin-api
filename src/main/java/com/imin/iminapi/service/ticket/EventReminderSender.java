@@ -5,16 +5,17 @@ import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
-import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
-import com.imin.iminapi.email.EmailTemplateRenderer;
+import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketState;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
@@ -27,13 +28,7 @@ import org.springframework.stereotype.Component;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -55,6 +50,16 @@ import java.util.Optional;
  * paid. That is why a guest with no account still gets it, and why the
  * account-level {@code event_reminders} switch is a courtesy control rather than
  * a consent one.
+ *
+ * <p><b>Master switch and per-event switch.</b> {@code imin.email.reminders-enabled}
+ * ({@code IMIN_REMINDERS_ENABLED}) is the platform switch checked in {@link #sweep()}; each event
+ * also carries {@code reminders_enabled}, which the due queries honour. A switched-off event is
+ * never stamped, so switching it back on inside the band still sends.
+ *
+ * <p><b>Outcomes.</b> Every stamp records what became of the order: {@code sent},
+ * {@code opted_out} (buyer's account has reminders off), {@code bounced} (address is
+ * hard-bounce suppressed), {@code no_ticket} (every ticket refunded/revoked) or {@code no_event}.
+ * Only {@code sent} means an email went out. Mail goes From "&lt;Organizer&gt; via IMIN".
  */
 @Component
 public class EventReminderSender {
@@ -93,14 +98,22 @@ public class EventReminderSender {
      */
     private static final int MAX_PER_TICK = 200;
 
+    private static final String OUTCOME_SENT = "sent";
+    private static final String OUTCOME_OPTED_OUT = "opted_out";
+    private static final String OUTCOME_BOUNCED = "bounced";
+    private static final String OUTCOME_NO_TICKET = "no_ticket";
+    private static final String OUTCOME_NO_EVENT = "no_event";
+
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final EventRepository events;
     private final BuyerAccountEmailRepository accountEmails;
     private final BuyerAccountRepository accounts;
     private final BuyerNotificationPreferenceRepository preferences;
+    private final OrganizationRepository orgs;
+    private final SuppressionService suppression;
+    private final ReminderEmailComposer composer;
     private final EmailService email;
-    private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
     private final Clock clock;
 
@@ -110,8 +123,10 @@ public class EventReminderSender {
                                BuyerAccountEmailRepository accountEmails,
                                BuyerAccountRepository accounts,
                                BuyerNotificationPreferenceRepository preferences,
+                               OrganizationRepository orgs,
+                               SuppressionService suppression,
+                               ReminderEmailComposer composer,
                                EmailService email,
-                               EmailTemplateRenderer renderer,
                                EmailProperties emailProps,
                                Clock clock) {
         this.orders = orders;
@@ -120,20 +135,22 @@ public class EventReminderSender {
         this.accountEmails = accountEmails;
         this.accounts = accounts;
         this.preferences = preferences;
+        this.orgs = orgs;
+        this.suppression = suppression;
+        this.composer = composer;
         this.email = email;
-        this.renderer = renderer;
         this.emailProps = emailProps;
         this.clock = clock;
     }
 
     /** Which nudge is being swept. The two are claimed independently. */
-    enum Window {
+    public enum Window {
         T24H("24h", T24H_FROM, T24H_UNTIL),
         T3H("3h", T3H_FROM, T3H_UNTIL);
 
         final String label;
-        final Duration from;
-        final Duration until;
+        public final Duration from;
+        public final Duration until;
 
         Window(String label, Duration from, Duration until) {
             this.label = label;
@@ -187,22 +204,28 @@ public class EventReminderSender {
         if (!hasLiveTicket(orderTickets)) {
             // Nothing to turn up with. Stamp anyway so the sweep stops
             // reconsidering it every five minutes for the rest of the window.
-            stamp(order, window);
+            stamp(order, window, OUTCOME_NO_TICKET);
             return;
         }
         if (!wantsReminders(order)) {
-            stamp(order, window);
+            stamp(order, window, OUTCOME_OPTED_OUT);
             return;
         }
 
         Event event = events.findById(order.getEventId()).orElse(null);
         if (event == null) {
-            stamp(order, window);
+            stamp(order, window, OUTCOME_NO_EVENT);
+            return;
+        }
+        // Switched off after the batch was read: leave it unstamped so switching back on still sends.
+        if (!event.isRemindersEnabled()) return;
+        if (order.getEmailNormalized() != null && suppression.isDeliverabilityBlocked(order.getEmailNormalized())) {
+            stamp(order, window, OUTCOME_BOUNCED);
             return;
         }
 
         send(order, event, orderTickets, window);
-        stamp(order, window);
+        stamp(order, window, OUTCOME_SENT);
     }
 
     /**
@@ -250,35 +273,15 @@ public class EventReminderSender {
     private void send(Order order, Event event, List<Ticket> orderTickets, Window window) {
         String siteBase = trimTrailingSlash(emailProps.getBuyerSiteBaseUrl());
         String orderUrl = siteBase + "/order/" + order.getToken();
-
-        Map<String, String> values = new LinkedHashMap<>();
-        values.put("eventName", nullSafe(event.getName()));
-        values.put("eventWhen", formatWhen(event));
-        values.put("eventWhere", formatWhere(event));
-        values.put("ticketCount", String.valueOf(live(orderTickets).size()));
-        values.put("orderUrl", orderUrl);
-
         String locale = localeFor(order);
-        String template = window == Window.T24H ? "event-reminder-24h" : "event-reminder-3h";
-        EmailTemplateRenderer.Rendered rendered = renderer.render(template, locale, values);
+        Organization org = orgs.findById(event.getOrgId()).orElse(null);
 
-        email.send(order.getEmail(), subject(event, window, locale), rendered.html(), rendered.text());
-    }
+        boolean friend = composer.friendBlockEligible(event, window, order.getEmailNormalized());
+        ReminderEmailComposer.Composed mail = composer.compose(event, org, live(orderTickets), orderUrl,
+                window, locale, friend);
 
-    private static String subject(Event event, Window window, String locale) {
-        String name = nullSafe(event.getName());
-        if (window == Window.T24H) {
-            return EmailLocale.choose(locale,
-                    name + " is tomorrow",
-                    name + " es mañana",
-                    name + " c'est demain",
-                    name + " — вже завтра");
-        }
-        return EmailLocale.choose(locale,
-                "Doors soon — " + name,
-                "Las puertas abren pronto — " + name,
-                "Ouverture des portes bientôt — " + name,
-                "Скоро відкриття дверей — " + name);
+        email.sendFrom(emailProps.fromHeader(org == null ? null : org.displayName()),
+                order.getEmail(), mail.subject(), mail.html(), mail.text());
     }
 
     /**
@@ -307,55 +310,17 @@ public class EventReminderSender {
      * an {@code sms_marketing_opt_in} the buyer ticked on the order page while
      * the sweep was running.
      */
-    private void stamp(Order order, Window window) {
+    private void stamp(Order order, Window window, String outcome) {
         Instant now = clock.instant();
         if (window == Window.T24H) {
-            orders.stampReminder24h(order.getId(), now);
+            orders.stampReminder24h(order.getId(), now, outcome);
         } else {
-            orders.stampReminder3h(order.getId(), now);
+            orders.stampReminder3h(order.getId(), now, outcome);
         }
-    }
-
-    /**
-     * The door time in the event's own zone.
-     *
-     * <p>The zone falls back to UTC rather than throwing. {@code events.timezone}
-     * is NOT NULL DEFAULT 'UTC', but it is organizer-supplied text: a malformed
-     * value would throw out of {@code send()} before {@code stamp()}, leaving
-     * the marker null so the sweep retried that order every five minutes for
-     * the rest of the window and logged an error each time. A slightly wrong
-     * time is better than a reminder that never arrives.
-     */
-    private static String formatWhen(Event event) {
-        if (event.getStartsAt() == null) return "";
-        ZoneId zone = ZoneOffset.UTC;
-        if (event.getTimezone() != null) {
-            try {
-                zone = ZoneId.of(event.getTimezone());
-            } catch (RuntimeException e) {
-                log.warn("Event {} has an unusable timezone {} — formatting the reminder in UTC",
-                        event.getId(), event.getTimezone());
-            }
-        }
-        return DateTimeFormatter.ofPattern("EEE d MMM · HH:mm", Locale.ENGLISH)
-                .withZone(zone)
-                .format(event.getStartsAt());
-    }
-
-    private static String formatWhere(Event event) {
-        String venue = nullSafe(event.getVenueName());
-        String city = nullSafe(event.getVenueCity());
-        if (venue.isEmpty()) return city;
-        if (city.isEmpty()) return venue;
-        return venue + ", " + city;
     }
 
     private static String trimTrailingSlash(String url) {
         if (url == null || url.isBlank()) return "";
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
-    }
-
-    private static String nullSafe(String value) {
-        return value == null ? "" : value;
     }
 }

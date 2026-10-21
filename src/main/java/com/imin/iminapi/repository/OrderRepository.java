@@ -284,6 +284,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                and e.startsAt > :from
                and e.startsAt <= :until
                and e.deletedAt is null
+               and e.remindersEnabled = true
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
              order by e.startsAt asc, o.id asc
             """)
@@ -298,6 +299,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                and e.startsAt > :from
                and e.startsAt <= :until
                and e.deletedAt is null
+               and e.remindersEnabled = true
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
              order by e.startsAt asc, o.id asc
             """)
@@ -305,7 +307,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                   Pageable pageable);
 
     /**
-     * Stamps one reminder marker. A targeted two-column UPDATE, deliberately
+     * Stamps one reminder marker with what became of it. A targeted UPDATE, deliberately
      * not {@code save(entity)}.
      *
      * <p>The sweep is not transactional, so its {@code Order} objects are
@@ -318,14 +320,67 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      */
     @Transactional
     @Modifying
-    @Query("update Order o set o.reminder24hAt = :at where o.id = :id and o.reminder24hAt is null")
-    int stampReminder24h(@Param("id") UUID id, @Param("at") Instant at);
+    @Query("""
+            update Order o set o.reminder24hAt = :at, o.reminder24hOutcome = :outcome
+             where o.id = :id and o.reminder24hAt is null
+            """)
+    int stampReminder24h(@Param("id") UUID id, @Param("at") Instant at, @Param("outcome") String outcome);
 
     /** The T-3h analogue of {@link #stampReminder24h}. */
     @Transactional
     @Modifying
-    @Query("update Order o set o.reminder3hAt = :at where o.id = :id and o.reminder3hAt is null")
-    int stampReminder3h(@Param("id") UUID id, @Param("at") Instant at);
+    @Query("""
+            update Order o set o.reminder3hAt = :at, o.reminder3hOutcome = :outcome
+             where o.id = :id and o.reminder3hAt is null
+            """)
+    int stampReminder3h(@Param("id") UUID id, @Param("at") Instant at, @Param("outcome") String outcome);
+
+    /** Orders of the event with at least one ticket that is neither refunded nor revoked (the reminder's recipients). */
+    @Query("""
+            select count(o) from Order o
+             where o.eventId = :eventId
+               and exists (select 1 from com.imin.iminapi.model.Ticket t
+                            where t.orderId = o.id and t.state not in ('refunded', 'revoked'))
+            """)
+    long countOrdersWithLiveTicket(@Param("eventId") UUID eventId);
+
+    /** Rows of {@code [String outcome, Long orders, Instant firstAt]} for the T-24h reminder of one event. */
+    @Query("""
+            select o.reminder24hOutcome, count(o), min(o.reminder24hAt) from Order o
+             where o.eventId = :eventId and o.reminder24hOutcome is not null
+             group by o.reminder24hOutcome
+            """)
+    List<Object[]> reminderOutcomeCounts24h(@Param("eventId") UUID eventId);
+
+    /** The T-3h analogue of {@link #reminderOutcomeCounts24h}. */
+    @Query("""
+            select o.reminder3hOutcome, count(o), min(o.reminder3hAt) from Order o
+             where o.eventId = :eventId and o.reminder3hOutcome is not null
+             group by o.reminder3hOutcome
+            """)
+    List<Object[]> reminderOutcomeCounts3h(@Param("eventId") UUID eventId);
+
+    /**
+     * One event's tagged orders in the {@link #revenueRowsByUtmSource} shape
+     * {@code [String utmSource, Long totalMinor, Long succeededRefundMinor, Long lostDisputeMinor]}, for the exact
+     * source and campaign tags; the caller folds them with {@code NetOrderRevenue}.
+     */
+    @Query("""
+            select o.utmSource, o.totalMinor,
+                   (select coalesce(sum(r.amountMinor), 0) from com.imin.iminapi.refund.Refund r
+                     where r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+                   (select coalesce(sum(d.amountMinor), 0) from com.imin.iminapi.dispute.Dispute d
+                     where d.orderId = o.id and d.testMode = false
+                       and d.status = com.imin.iminapi.dispute.DisputeStatus.LOST)
+              from Order o
+             where o.eventId = :eventId
+               and o.utmSource = :source
+               and o.utmCampaign = :campaign
+               and o.testMode = false
+            """)
+    List<Object[]> revenueRowsByEventAndUtm(@Param("eventId") UUID eventId,
+                                            @Param("source") String source,
+                                            @Param("campaign") String campaign);
 
     // ── Buyer accounts: the cross-org order join (epic §2.3, §3.4) ──────────
     //

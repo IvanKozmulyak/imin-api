@@ -25,6 +25,15 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
             """)
     List<Object[]> countDistinctAnonByStage(@Param("eventId") UUID eventId);
 
+    /** Distinct visitors of one event carrying exactly these source and campaign tags. */
+    @Query("""
+            select count(distinct e.anonId) from FunnelEvent e
+             where e.eventId = :eventId and e.utmSource = :source and e.utmCampaign = :campaign
+            """)
+    long countDistinctAnonForEventAndUtm(@Param("eventId") UUID eventId,
+                                         @Param("source") String source,
+                                         @Param("campaign") String campaign);
+
     /**
      * Org-wide distinct-session counts per stage over a rolling window. Tuple
      * shape: {@code [String stage, Long distinctAnonCount]}. Generalizes

@@ -367,6 +367,26 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                         @Param("enabled") boolean enabled,
                         @Param("token") String token);
 
+    /**
+     * The reminder settings' only writers, one column each so a PUT writes just the fields it carries; they leave
+     * {@code updated_at} (the PATCH ETag) alone, as the door switch.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE Event e SET e.remindersEnabled = :enabled WHERE e.id = :id")
+    int updateRemindersEnabled(@Param("id") UUID id, @Param("enabled") boolean enabled);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE Event e SET e.reminderShareEnabled = :enabled WHERE e.id = :id")
+    int updateReminderShareEnabled(@Param("id") UUID id, @Param("enabled") boolean enabled);
+
+    /** Null clears the note. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE Event e SET e.reminderDoorNote = :doorNote WHERE e.id = :id")
+    int updateReminderDoorNote(@Param("id") UUID id, @Param("doorNote") String doorNote);
+
     /** Survey switch and token, the columns' only writer; leaves {@code updated_at} (the PATCH ETag) alone, as the door switch. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional

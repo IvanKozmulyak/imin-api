@@ -8,7 +8,7 @@ Have your QR ready before you get to the front of the queue.
 {{eventWhen}}
 {{eventWhere}}
 
-Open your tickets: {{orderUrl}}
+Open your tickets: {{orderUrl}}{{extras}}
 
 The page works offline once it has loaded — open it before you lose signal at the venue.
 
