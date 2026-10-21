@@ -14,6 +14,7 @@ import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.UtmLinkRewriter;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignEnded;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
 import com.imin.iminapi.marketing.service.MarketingGuardProperties;
 import com.imin.iminapi.marketing.template.BuiltinTemplates;
@@ -47,6 +48,8 @@ class EmailChannelSenderOrgLookupTest {
     private final CampaignEmailProvider provider = mock(CampaignEmailProvider.class);
     private final OrganizationRepository organizations = mock(OrganizationRepository.class);
     private final CampaignTemplateService templates = mock(CampaignTemplateService.class);
+    private final org.springframework.context.ApplicationEventPublisher events =
+            mock(org.springframework.context.ApplicationEventPublisher.class);
     private EmailChannelSender sender;
 
     @BeforeEach
@@ -59,7 +62,8 @@ class EmailChannelSenderOrgLookupTest {
                 organizations, mock(EventRepository.class), mock(MembershipRepository.class),
                 mock(ConsumerRepository.class), mock(SendGateService.class), new MarketingGuardProperties(),
                 mock(SendPathGuard.class), mock(AddressSourceLines.class),
-                new AudiencePlanAccess(new AudiencePlanProperties()));
+                new AudiencePlanAccess(new AudiencePlanProperties()),
+                events);
         // The per-batch status re-read finds the campaign still on its way out.
         when(campaigns.findStatusById(any())).thenReturn(Optional.of("sending"));
         when(organizations.findById(any())).thenThrow(new IllegalStateException("db hiccup"));
@@ -98,6 +102,7 @@ class EmailChannelSenderOrgLookupTest {
         verify(campaigns).markFailedIfActive(eq(c.getId()), eq("ORG_LEGAL_IDENTITY_MISSING"), any());
         assertThat(c.getStatus()).isEqualTo("failed");
         assertThat(c.getLastError()).isEqualTo("ORG_LEGAL_IDENTITY_MISSING");
+        verify(events).publishEvent(CampaignEnded.failed(c.getId(), c.getOrgId(), "legal_identity_missing"));
     }
 
     @SuppressWarnings("unchecked")
@@ -112,6 +117,7 @@ class EmailChannelSenderOrgLookupTest {
 
         verify(provider, never()).sendBatch(anyList());
         assertThat(c.getStatus()).isEqualTo("canceled");
+        verify(events, never()).publishEvent(any(Object.class));
     }
 
     @Test

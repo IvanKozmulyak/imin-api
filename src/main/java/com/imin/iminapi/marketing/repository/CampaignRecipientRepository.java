@@ -96,11 +96,25 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     long countByCampaignIdAndStatusIn(UUID campaignId, java.util.Collection<String> statuses);
 
-    long countByCampaignIdAndOpenedAtNotNull(UUID campaignId);
-
-    long countByCampaignIdAndClickedAtNotNull(UUID campaignId);
-
     long countByCampaignId(UUID campaignId);
+
+    /** The shared counting columns, so the chips, the stats and the list read one definition (see RecipientStatuses). */
+    String CHIP_COLUMNS = """
+            count(r),
+            coalesce(sum(case when r.openedAt is not null then 1L else 0L end), 0L),
+            coalesce(sum(case when r.clickedAt is not null then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'skipped' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'bounced' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'failed' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'complained' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'unsubscribed' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status = 'pending' then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status in """ + com.imin.iminapi.marketing.model.RecipientStatuses.LEFT_THE_QUEUE_SQL
+            + """
+             then 1L else 0L end), 0L),
+            coalesce(sum(case when r.status in """ + com.imin.iminapi.marketing.model.RecipientStatuses.REACHED_INBOX_SQL
+            + """
+             then 1L else 0L end), 0L))""";
 
     /**
      * Whole-log chip counts in ONE pass over the campaign's rows — conditional aggregation rather
@@ -116,20 +130,39 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * <p>{@code coalesce(..., 0L)} guards the empty-campaign case, where {@code sum()} is NULL and
      * would otherwise blow up unboxing into the record's primitive {@code long} fields.
      */
-    @Query("""
-            select new com.imin.iminapi.marketing.dto.RecipientCounts(
-                       count(r),
-                       coalesce(sum(case when r.openedAt is not null then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.clickedAt is not null then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.status = 'skipped' then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.status = 'bounced' then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.status = 'failed' then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.status = 'complained' then 1L else 0L end), 0L),
-                       coalesce(sum(case when r.status = 'unsubscribed' then 1L else 0L end), 0L))
-              from CampaignRecipient r
-             where r.campaignId = :campaignId
-            """)
+    @Query("select new com.imin.iminapi.marketing.dto.RecipientCounts(" + CHIP_COLUMNS
+            + " from CampaignRecipient r where r.campaignId = :campaignId")
     com.imin.iminapi.marketing.dto.RecipientCounts chipCounts(@Param("campaignId") UUID campaignId);
+
+    /**
+     * Rows of {@code [campaignId, sent, opened, clicked, failed, skipped, queued]} for those of {@code ids} that have
+     * recipient rows; one query per list page, over the same definitions as {@link #chipCounts} and the stats.
+     */
+    @Query("select r.campaignId,"
+            + " sum(case when r.status in " + com.imin.iminapi.marketing.model.RecipientStatuses.LEFT_THE_QUEUE_SQL
+            + " then 1L else 0L end),"
+            + " sum(case when r.openedAt is not null then 1L else 0L end),"
+            + " sum(case when r.clickedAt is not null then 1L else 0L end),"
+            + " sum(case when r.status = 'failed' then 1L else 0L end),"
+            + " sum(case when r.status = 'skipped' then 1L else 0L end),"
+            + " sum(case when r.status = 'pending' then 1L else 0L end)"
+            + " from CampaignRecipient r where r.campaignId in :ids group by r.campaignId")
+    List<Object[]> outcomeCountsByCampaign(@Param("ids") java.util.Collection<UUID> ids);
+
+    /** Rows of {@code [skipReason, count]} over the campaign's skipped rows, live; backs the exclusion audit. */
+    @Query("select r.skipReason, count(r) from CampaignRecipient r"
+            + " where r.campaignId = :campaignId and r.status = 'skipped' group by r.skipReason")
+    List<Object[]> skipReasonCounts(@Param("campaignId") UUID campaignId);
+
+    /**
+     * Emails of this org that left in the window, bounced and complained included: the campaign pages' Sent,
+     * windowed on the send instant ({@code sent_at}).
+     */
+    @Query("select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c"
+            + " where r.campaignId = c.id and c.orgId = :orgId"
+            + " and r.status in " + com.imin.iminapi.marketing.model.RecipientStatuses.LEFT_THE_QUEUE_SQL
+            + " and r.sentAt >= :since")
+    long countSentForOrgSince(@Param("orgId") UUID orgId, @Param("since") java.time.Instant since);
 
     /**
      * Bulk-delete every recipient row for a campaign. Called before the campaign row is
@@ -345,22 +378,6 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
             + " r.ticketClickedAt = GREATEST(COALESCE(r.ticketClickedAt, :at), :at)"
             + " WHERE r.id = :id" + NOT_OBJECTED)
     int markTicketClicked(@Param("id") UUID id, @Param("at") java.time.Instant at);
-
-    /**
-     * Rows of {@code [campaignId, sent, opened, clicked]} for those of {@code ids} that have recipient rows; one query
-     * per list page. {@code sent} counts rows in {@code leftTheQueue}; opened/clicked count stamped rows, as the stats do.
-     */
-    @Query("""
-            select r.campaignId,
-                   sum(case when r.status in :leftTheQueue then 1L else 0L end),
-                   sum(case when r.openedAt is not null then 1L else 0L end),
-                   sum(case when r.clickedAt is not null then 1L else 0L end)
-              from CampaignRecipient r
-             where r.campaignId in :ids
-             group by r.campaignId
-            """)
-    List<Object[]> engagementCountsByCampaign(@Param("ids") java.util.Collection<UUID> ids,
-                                              @Param("leftTheQueue") java.util.Collection<String> leftTheQueue);
 
     /**
      * Members who clicked the ticket link of this org's email campaigns about {@code eventId} at or after

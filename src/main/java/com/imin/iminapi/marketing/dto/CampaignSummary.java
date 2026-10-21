@@ -41,18 +41,36 @@ public record CampaignSummary(
         /** Rows with a recorded open, as {@code stats.opened}; estimates (image loading, image blocking). */
         Long openedCount,
         /** Rows with a recorded click, as {@code stats.clicked} (which says what older rows count). */
-        Long clickedCount
+        Long clickedCount,
+        /**
+         * Rows that never left, as {@code stats.failed}. This and the next two are null unless the email campaign has
+         * recipient rows; when they are set and {@code sentCount} is null, nothing left the queue yet.
+         */
+        Long failedCount,
+        /** Rows not mailed, as {@code stats.skipped}: live, mid-send diverts included. */
+        Long skippedCount,
+        /** Rows still waiting to be sent, as {@code stats.queued}. */
+        Long queuedCount
 ) {
     /** Projection for the list read path: revenue, the batch-resolved segment and event context, and the counts. */
     public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
                                        String eventName, String eventTimezone, String failureReason,
-                                       Long sentCount, Long openedCount, Long clickedCount) {
+                                       Counts counts) {
+        boolean anyLeft = counts != null && counts.sent() > 0;
         return new CampaignSummary(
                 c.getId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(),
                 c.getRecipientCount(), c.getExcludedCount(), c.getLastError(),
                 c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor,
                 segmentName, eventName, eventTimezone, failureReason,
-                sentCount, openedCount, clickedCount);
+                anyLeft ? counts.sent() : null,
+                anyLeft ? counts.opened() : null,
+                anyLeft ? counts.clicked() : null,
+                counts == null ? null : counts.failed(),
+                counts == null ? null : counts.skipped(),
+                counts == null ? null : counts.queued());
     }
+
+    /** The live row counts of one email campaign with recipient rows, from one pass. */
+    public record Counts(long sent, long opened, long clicked, long failed, long skipped, long queued) {}
 }

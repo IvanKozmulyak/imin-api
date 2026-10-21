@@ -11,11 +11,13 @@ import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignSendResponse;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
+import com.imin.iminapi.marketing.dto.RecipientCounts;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
+import com.imin.iminapi.marketing.model.RecipientStatuses;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.OrganizerIdentity;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -61,8 +63,9 @@ public class CampaignService {
     private static final int MAX_NAME = 120;
     /** Recipient statuses of a row that left the queue: what {@code stats.sent} and the cancel audit count. */
     private static final String CANCELED = "canceled";
-    private static final List<String> LEFT_THE_QUEUE = List.of(
-            "sent", "delivered", "opened", "clicked", "bounced", "complained", "unsubscribed");
+    /** A failed campaign can be retried while its attempts are below this (the SQL guard in retryIfFailed mirrors it). */
+    static final int MAX_ATTEMPTS = 3;
+    private static final List<String> LEFT_THE_QUEUE = RecipientStatuses.LEFT_THE_QUEUE;
 
     private final CampaignRepository campaigns;
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository;
@@ -186,39 +189,37 @@ public class CampaignService {
         // Segment names and linked events for the page in one query each, org-scoped like detail.
         var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
         var linkedEvents = activeEventsByIds(p.orgId(), idsOf(rows, Campaign::getEventId));
-        Map<UUID, EngagementCounts> engagement = emailEngagementCounts(rows);
+        Map<UUID, CampaignSummary.Counts> counts = outcomeCounts(rows);
         return rows.stream()
                 .map(c -> {
                     Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
-                    EngagementCounts counts = engagement.get(c.getId());
                     return CampaignSummary.from(c,
                             sent.test(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
                             c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
                             e == null ? null : e.getName(),
                             e == null ? null : e.getTimezone(),
                             CampaignFailureReason.of(c.getLastError()),
-                            counts == null ? null : counts.sent(),
-                            counts == null ? null : counts.opened(),
-                            counts == null ? null : counts.clicked());
+                            counts.get(c.getId()));
                 })
                 .toList();
     }
 
-    private record EngagementCounts(long sent, long opened, long clicked) {}
-
-    /** Counts per email campaign of the page with at least one row that left the queue; one query per page. */
-    private Map<UUID, EngagementCounts> emailEngagementCounts(List<Campaign> rows) {
+    /**
+     * Live row counts per email campaign of the page with recipient rows, on the definitions the campaign page uses;
+     * one query per page.
+     */
+    private Map<UUID, CampaignSummary.Counts> outcomeCounts(List<Campaign> rows) {
         List<UUID> emailIds = rows.stream().filter(c -> "email".equals(c.getChannel())).map(Campaign::getId).toList();
         if (emailIds.isEmpty()) return Map.of();
-        Map<UUID, EngagementCounts> out = new java.util.HashMap<>();
-        for (Object[] r : campaignRecipientRepository.engagementCountsByCampaign(emailIds, LEFT_THE_QUEUE)) {
-            long sentRows = ((Number) r[1]).longValue();
-            if (sentRows > 0) {
-                out.put((UUID) r[0], new EngagementCounts(sentRows, ((Number) r[2]).longValue(),
-                        ((Number) r[3]).longValue()));
-            }
+        Map<UUID, CampaignSummary.Counts> out = new java.util.HashMap<>();
+        for (Object[] r : campaignRecipientRepository.outcomeCountsByCampaign(emailIds)) {
+            out.put((UUID) r[0], new CampaignSummary.Counts(n(r[1]), n(r[2]), n(r[3]), n(r[4]), n(r[5]), n(r[6])));
         }
         return out;
+    }
+
+    private static long n(Object o) {
+        return ((Number) o).longValue();
     }
 
     private static Set<UUID> idsOf(List<Campaign> rows, Function<Campaign, UUID> id) {
@@ -794,7 +795,7 @@ public class CampaignService {
     @Transactional
     public Campaign retry(AuthPrincipal principal, UUID campaignId) {
         Campaign c = require(principal.orgId(), campaignId);
-        if (!"failed".equals(c.getStatus()) || c.getAttempts() >= 3) {
+        if (!"failed".equals(c.getStatus()) || c.getAttempts() >= MAX_ATTEMPTS) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not retryable");
         }
@@ -852,31 +853,43 @@ public class CampaignService {
                         .filter(sg -> p.orgId().equals(sg.getOrgId()))
                         .map(com.imin.iminapi.marketing.model.MomentumSuggestion::getTriggerType)
                         .orElse(null);
-        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(p.orgId(), id), segmentName,
+        RecipientCounts counts = campaignRecipientRepository.chipCounts(id);
+        // Live from the rows (mid-send diverts included), not the snapshot frozen at materialization.
+        Map<String, Long> skipReasons = counts.total() == 0 ? null : skipReasonCounts(id);
+        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, statsOf(p.orgId(), id, counts), segmentName,
                 event == null ? null : event.getTimezone(), triggerType,
                 CampaignFailureReason.of(c.getLastError()), event == null ? null : event.getName(),
-                attributedRevenue(p.orgId(), c));
+                attributedRevenue(p.orgId(), c), skipReasons);
     }
 
     /**
-     * Aggregate send/engagement counts for one of the org's campaigns (spec §3). {@code sent} is every row that
-     * left the queue; {@code opened}/{@code clicked} count rows the webhook stamped (unsubscribe-link clicks and
-     * objected members are not; rows stamped before 21 October 2026 may include both); {@code attributedPurchases} counts
+     * Aggregate send/engagement counts for one of the org's campaigns (spec §3), from one pass over its rows.
+     * {@code sent} is every row that left the queue; {@code delivered} was accepted by the recipient's mail provider, later unsubscribes and
+     * complaints included; {@code skipped}/{@code failed}/{@code queued} are live row counts;
+     * {@code opened}/{@code clicked} count rows the webhook stamped (unsubscribe-link clicks and objected members are
+     * not; rows stamped before 21 October 2026 may include both); {@code attributedPurchases} counts
      * checkout-start sessions with the campaign's tag, {@code attributedOrders} the live orders behind revMinor.
      */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID orgId, UUID campaignId) {
-        long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId, LEFT_THE_QUEUE);
-        long delivered = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "delivered");
-        long opened = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
-        long clicked = campaignRecipientRepository.countByCampaignIdAndClickedAtNotNull(campaignId);
-        long bounced = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "bounced");
-        long unsubscribed = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "unsubscribed");
-        long complained = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "complained");
+        return statsOf(orgId, campaignId, campaignRecipientRepository.chipCounts(campaignId));
+    }
+
+    private com.imin.iminapi.marketing.dto.CampaignStatsDto statsOf(UUID orgId, UUID campaignId, RecipientCounts c) {
         long attributed = attribution.attributedPurchaseCount(campaignId);
         long attributedOrders = attribution.attributedOrderCount(orgId, campaignId);
         return new com.imin.iminapi.marketing.dto.CampaignStatsDto(
-                sent, delivered, opened, clicked, bounced, unsubscribed, complained, attributed, attributedOrders);
+                c.sent(), c.delivered(), c.opened(), c.clicked(), c.bounced(), c.unsubscribed(), c.complained(),
+                attributed, attributedOrders, c.queued(), c.failed(), c.skipped());
+    }
+
+    private Map<String, Long> skipReasonCounts(UUID campaignId) {
+        Map<String, Long> out = new LinkedHashMap<>();
+        for (Object[] row : campaignRecipientRepository.skipReasonCounts(campaignId)) {
+            // A skipped row always carries a reason; the key guards a null from an older writer.
+            out.merge(row[0] == null ? "unknown" : (String) row[0], ((Number) row[1]).longValue(), Long::sum);
+        }
+        return out;
     }
 
     // ---- helpers ----

@@ -40,7 +40,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -56,7 +58,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @IminIntegrationTest
 class MarketingChannelsControllerTest {
 
+    private static final String WEBHOOK_SECRET_B64 = "c3VwZXJzZWNyZXRrZXkw"; // base64("supersecretkey0")
+
     @Autowired MockMvc mvc;
+    @Autowired com.imin.iminapi.marketing.send.CampaignDispatcher dispatcher;
+    @Autowired com.imin.iminapi.marketing.service.CampaignService campaignService;
+    @Autowired com.imin.iminapi.marketing.webhook.ResendWebhookProperties webhookProps;
+    @Autowired com.imin.iminapi.marketing.email.CampaignEmailProvider provider;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired ConsumerRepository consumers;
@@ -105,6 +113,9 @@ class MarketingChannelsControllerTest {
         newRecipient(cA.getId(), "delivered", daysAgo(10));
         newRecipient(cA.getId(), "delivered", daysAgo(40));
         newRecipient(cA.getId(), "pending", hoursAgo(1));
+        // A bounced and a complained email left too: they count as sent, not toward the 24h cap.
+        newRecipient(cA.getId(), "bounced", daysAgo(5));
+        newRecipient(cA.getId(), "complained", daysAgo(3));
 
         // 4 delivered + 1 complaint → org-wide complaint rate 0.25.
         for (int i = 0; i < 4; i++) providerEvent(cA.getId(), ProviderEvent.TYPE_DELIVERED);
@@ -156,8 +167,8 @@ class MarketingChannelsControllerTest {
                 // 3 sends inside 24h ('sent','delivered','clicked'); the 10d/40d rows and the
                 // pending row are excluded, and org B's 2 sends must not leak in.
                 .andExpect(jsonPath("$.email.guardrails.sentLast24h").value(3))
-                // 4 within 30d (the three above + the 10d row); the 40d row excluded.
-                .andExpect(jsonPath("$.email.sentLast30d").value(4))
+                // 6 within 30d (the three above, the 10d row, the bounced and the complained one); the 40d row is out.
+                .andExpect(jsonPath("$.email.sentLast30d").value(6))
                 // 1 complaint ÷ 4 delivered = 0.25 — org B's 1/1 must not leak in.
                 .andExpect(jsonPath("$.email.guardrails.complaintCount").value(1))
                 .andExpect(jsonPath("$.email.guardrails.deliveredCount").value(4))
@@ -263,6 +274,63 @@ class MarketingChannelsControllerTest {
                 .andExpect(jsonPath("$.sms.optedInPhones").value(1));
     }
 
+    /**
+     * A real dispatcher send to two people, then a Resend complaint on one: Channels still counts both emails,
+     * the same two the campaign page shows as Sent.
+     */
+    @Test
+    void sentLast30dCountsAComplainedEmailLikeTheCampaignPage() throws Exception {
+        flips.set(webhookProps, "secret", "whsec_" + WEBHOOK_SECRET_B64);
+        Organization o = orgs.findById(orgA).orElseThrow();
+        o.setTimezone(java.time.ZoneOffset.ofHours(12 - Instant.now().atZone(java.time.ZoneOffset.UTC).getHour()).getId());
+        orgs.save(o);
+        when(provider.sendBatch(org.mockito.ArgumentMatchers.anyList())).thenAnswer(inv ->
+                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        Campaign c = newCampaign(orgA);
+        c.setStatus("scheduled");
+        c.setScheduledAt(Instant.now().minusSeconds(60));
+        c.setSubject("S");
+        c.setBodyMd("B");
+        campaigns.save(c);
+        for (int i = 0; i < 2; i++) {
+            CampaignRecipient r = new CampaignRecipient();
+            r.setId(UUID.randomUUID());
+            r.setCampaignId(c.getId());
+            r.setEmail(fx.email("real"));
+            r.setStatus("pending");
+            recipients.save(r);
+        }
+
+        dispatcher.runOnce();
+
+        List<CampaignRecipient> sent = recipients.findByCampaignIdAndStatus(c.getId(), "sent");
+        assertThat(sent).hasSize(2);
+        CampaignRecipient complained = sent.get(0);
+        String body = "{\"type\":\"email.complained\",\"data\":{\"email_id\":\""
+                + complained.getProviderMessageId() + "\",\"to\":[\"" + complained.getEmail() + "\"]}}";
+        String id = "svix_" + UUID.randomUUID();
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        mvc.perform(post("/api/v1/public/webhooks/resend")
+                        .header("svix-id", id).header("svix-timestamp", ts)
+                        .header("svix-signature", sign(id, ts, body))
+                        .contentType("application/json").content(body))
+                .andExpect(status().isOk());
+
+        assertThat(recipients.findById(complained.getId()).orElseThrow().getStatus()).isEqualTo("complained");
+        assertThat(campaignService.stats(orgA, c.getId()).sent()).isEqualTo(2);
+        // The seeded 6 plus this campaign's 2; the complained one is still counted.
+        mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email.sentLast30d").value(8));
+    }
+
+    private static String sign(String id, String ts, String body) throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(java.util.Base64.getDecoder().decode(WEBHOOK_SECRET_B64), "HmacSHA256"));
+        return "v1," + java.util.Base64.getEncoder().encodeToString(
+                mac.doFinal((id + "." + ts + "." + body).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
     @Test
     void requiresAuth() throws Exception {
         mvc.perform(get("/api/v1/marketing/channels")).andExpect(status().isUnauthorized());
@@ -306,6 +374,7 @@ class MarketingChannelsControllerTest {
         r.setEmail(fx.email("rcpt"));
         r.setStatus(status);
         r.setLastEventAt(lastEventAt);
+        if (!"pending".equals(status)) r.setSentAt(lastEventAt);
         recipients.save(r);
     }
 

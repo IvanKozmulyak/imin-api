@@ -104,7 +104,8 @@ public class MarketingChannelsService {
         // ---- guardrails: the rolling-24h count the dispatcher itself compares to the cap ----
         long sentLast24h = recipients.countRecentSendsForOrg(
                 orgId, now.minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS));
-        long sentLast30d = recipients.countRecentSendsForOrg(
+        // The campaign pages' Sent (bounced and complained included), windowed on the send instant.
+        long sentLast30d = recipients.countSentForOrgSince(
                 orgId, now.minus(SENT_WINDOW_DAYS, ChronoUnit.DAYS));
 
         // ---- complaint rate: org-wide aggregate. The breaker trips PER CAMPAIGN, so this is

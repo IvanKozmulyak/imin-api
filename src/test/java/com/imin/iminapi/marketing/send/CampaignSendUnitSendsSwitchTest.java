@@ -5,6 +5,7 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignEnded;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -32,6 +33,7 @@ class CampaignSendUnitSendsSwitchTest {
     private final RecipientMaterializer materializer = mock(RecipientMaterializer.class);
     private final EmailChannelSender sender = mock(EmailChannelSender.class);
     private final AudiencePlanProperties props = new AudiencePlanProperties();
+    private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
     private final CampaignSendUnit unit;
 
     CampaignSendUnitSendsSwitchTest() {
@@ -40,7 +42,7 @@ class CampaignSendUnitSendsSwitchTest {
         // The row is still 'sending' when the drive finishes.
         when(campaigns.markSentIfSending(any(), any())).thenReturn(1);
         unit = new CampaignSendUnit(campaigns, recipients, materializer, sender,
-                mock(ApplicationEventPublisher.class), tm, new AudiencePlanAccess(props), Clock.systemUTC());
+                events, tm, new AudiencePlanAccess(props), Clock.systemUTC());
     }
 
     private static Campaign campaign(String origin) {
@@ -100,5 +102,21 @@ class CampaignSendUnitSendsSwitchTest {
 
         verify(sender, times(2)).sendNextBatch(c);
         assertThat(c.getStatus()).isEqualTo("sent");
+        verify(events).publishEvent(CampaignEnded.sent(c.getId(), c.getOrgId()));
+    }
+
+    @Test
+    void canceledBeforeTheSentFlip_publishesNothingAndStaysUnsent() {
+        Campaign c = campaign("manual");
+        when(sender.sendNextBatch(c)).thenReturn(false);
+        when(recipients.countRetryablePending(any(), anyShort())).thenReturn(0L);
+        when(recipients.countByCampaignIdAndStatusIn(any(), any())).thenReturn(1L);
+        when(campaigns.markSentIfSending(any(), any())).thenReturn(0);
+
+        unit.processOne(c);
+
+        verify(events, never()).publishEvent(any(Object.class));
+        assertThat(c.getStatus()).isEqualTo("sending");
+        assertThat(c.getSentAt()).isNull();
     }
 }

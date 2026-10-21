@@ -42,9 +42,14 @@ public class AudiencePlanAccess {
         return Boolean.TRUE.equals(props.getSendsEnabled());
     }
 
+    /** False only for an audience-plan campaign while its sends switch is off. */
+    public boolean sendsAllowed(String campaignOrigin) {
+        return sendsEnabled() || !CAMPAIGN_ORIGIN.equals(campaignOrigin);
+    }
+
     /** Refuses to schedule or send an audience-plan campaign while its sends switch is off. */
     public void requireSendsAllowed(String campaignOrigin) {
-        if (!sendsEnabled() && CAMPAIGN_ORIGIN.equals(campaignOrigin)) {
+        if (!sendsAllowed(campaignOrigin)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.AUDIENCE_SENDS_DISABLED,
                     "Sending audience plan campaigns is not enabled yet");
         }

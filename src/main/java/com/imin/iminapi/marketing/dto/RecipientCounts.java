@@ -16,6 +16,9 @@ package com.imin.iminapi.marketing.dto;
  * ({@code bounced} + {@code failed} + {@code complained}, say) rather than being invented
  * here — summing server-side aggregates is still honest, and the API does not guess at the
  * design's definition.
+ *
+ * <p>{@code queued}, {@code sent} and {@code delivered} come from the same pass and the same definitions as the
+ * campaign stats and list counts (see {@code RecipientStatuses}), so every screen shows one number.
  */
 public record RecipientCounts(
         long total,
@@ -25,5 +28,8 @@ public record RecipientCounts(
         long bounced,
         long failed,
         long complained,
-        long unsubscribed
+        long unsubscribed,
+        long queued,
+        long sent,
+        long delivered
 ) {}

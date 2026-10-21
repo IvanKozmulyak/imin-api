@@ -3,8 +3,10 @@ package com.imin.iminapi.marketing.send;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
+import com.imin.iminapi.marketing.model.RecipientStatuses;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignEnded;
 import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +19,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.List;
 
 /**
  * Per-campaign send unit (spec §2.5). A dedicated bean so its transaction boundaries
@@ -42,9 +43,6 @@ public class CampaignSendUnit {
 
     /** Attempt budget per recipient row — mirrors claimPendingBatch's `attempt_count < 3`. */
     static final short MAX_RECIPIENT_ATTEMPTS = 3;
-    /** Every status a row can hold once its email actually left. */
-    private static final List<String> LEFT_THE_BUILDING = List.of(
-            "sent", "delivered", "opened", "clicked", "bounced", "complained", "unsubscribed");
 
     private final CampaignRepository campaigns;
     private final CampaignRecipientRepository recipients;
@@ -136,7 +134,7 @@ public class CampaignSendUnit {
             log.info("[send-unit] campaign {} paused with {} recipients still queued", c.getId(), queued);
             return;
         }
-        long left = recipients.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_BUILDING);
+        long left = recipients.countByCampaignIdAndStatusIn(c.getId(), RecipientStatuses.LEFT_THE_QUEUE);
         long dead = recipients.countByCampaignIdAndStatus(c.getId(), "failed");
         if (left == 0 && dead > 0) {
             newTx.executeWithoutResult(st -> markFailed(c, CampaignFailureReason.NOTHING_SENT));
@@ -155,6 +153,7 @@ public class CampaignSendUnit {
         if (c.getEventId() != null) {
             eventPublisher.publishEvent(new PredictorMarketingEvents.CampaignSent(c.getEventId()));
         }
+        eventPublisher.publishEvent(CampaignEnded.sent(c.getId(), c.getOrgId()));
     }
 
     @Transactional
@@ -168,5 +167,6 @@ public class CampaignSendUnit {
         c.setStatus("failed");
         log.error("[send-unit] campaign {} failed (attempt {}): {}", c.getId(),
                 campaigns.findAttemptsById(c.getId()).orElse(null), error);
+        eventPublisher.publishEvent(CampaignEnded.failed(c.getId(), c.getOrgId(), CampaignFailureReason.of(lastError)));
     }
 }

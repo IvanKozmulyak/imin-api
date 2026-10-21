@@ -55,6 +55,10 @@ public class CampaignRecipient {
     @Column(name = "ticket_clicked_at", updatable = false)
     private Instant ticketClickedAt;
 
+    /** When the email left for the provider (V194); null for rows that never sent, approximate for older rows. */
+    @Column(name = "sent_at")
+    private Instant sentAt;
+
     @Column(name = "delivered_at")
     private Instant deliveredAt;
 

@@ -52,10 +52,13 @@ public record CampaignDetailDto(
         /** Name of the linked active event of this org; null without one. */
         String eventName,
         /** Attributed revenue in minor units, as {@link CampaignDto#revMinor}: null until the campaign has sent. */
-        Long revMinor
+        Long revMinor,
+        /** Live skip-reason counts over the campaign's skipped rows, mid-send diverts included; null when it has no rows. */
+        java.util.Map<String, Long> skipReasons
 ) {
     public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
-                                         String triggerType, String failureReason, String eventName, Long revMinor) {
+                                         String triggerType, String failureReason, String eventName, Long revMinor,
+                                         java.util.Map<String, Long> skipReasons) {
         return new CampaignDetailDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
@@ -63,6 +66,6 @@ public record CampaignDetailDto(
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
                 c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType,
-                c.getAttempts(), failureReason, eventName, revMinor);
+                c.getAttempts(), failureReason, eventName, revMinor, skipReasons);
     }
 }

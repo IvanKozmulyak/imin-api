@@ -42,9 +42,9 @@ import java.time.Instant;
  *       {@code List-Unsubscribe} + {@code List-Unsubscribe-Post: List-Unsubscribe=One-Click}
  *       (RFC 8058) pointing at the owned {@code /api/v1/public/unsubscribe/{token}} endpoint.
  *       There is no code path that sends a campaign email without them.</li>
- *   <li>{@code sentLast30d} — org-scoped count of recipient rows that actually reached
- *       {@code sent|delivered|opened|clicked} in the last 30 days, via the same
- *       {@code CampaignRecipientRepository#countRecentSendsForOrg} query the daily cap uses.</li>
+ *   <li>{@code sentLast30d} — org-scoped count of recipient rows whose email left in the last 30 days
+ *       (windowed on {@code sent_at}), bounced and complained included: the campaign pages' Sent, via
+ *       {@code CampaignRecipientRepository#countSentForOrgSince}. {@code sentLast24h} stays the enforced cap count.</li>
  * </ul>
  *
  * <h2>Quiet hours ({@link QuietHoursWindow})</h2>

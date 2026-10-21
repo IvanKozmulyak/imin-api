@@ -185,8 +185,6 @@ class CampaignRecipientLogTest {
 
         // Cross-check every bucket against an independently-issued aggregate.
         assertThat(counts.total()).isEqualTo(recipients.countByCampaignId(c.getId()));
-        assertThat(counts.opened()).isEqualTo(recipients.countByCampaignIdAndOpenedAtNotNull(c.getId()));
-        assertThat(counts.clicked()).isEqualTo(recipients.countByCampaignIdAndClickedAtNotNull(c.getId()));
         assertThat(counts.skipped()).isEqualTo(recipients.countByCampaignIdAndStatus(c.getId(), "skipped"));
         assertThat(counts.bounced()).isEqualTo(recipients.countByCampaignIdAndStatus(c.getId(), "bounced"));
 

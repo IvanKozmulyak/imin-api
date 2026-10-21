@@ -17,16 +17,19 @@ import java.util.UUID;
  * <p>{@code status} is the lifecycle only (pending|sent|delivered|bounced|failed|complained|
  * unsubscribed|skipped). {@code openedAt}/{@code clickedAt} are always null: the log shows no
  * per-person opens or clicks (only campaign totals do); the fields stay for contract stability.
+ *
+ * <p>{@code errorCode} says why a bounced or failed row (or an untrackable sent row) ended there:
+ * hard_bounce|soft_bounce|provider_rejected|send_failed|no_provider_id; null otherwise.
  */
 public record RecipientDto(UUID id, UUID membershipId, String email, String name, String status,
                            String skipReason, String providerMessageId,
                            Instant openedAt, Instant clickedAt, Instant deliveredAt,
-                           Instant lastEventAt) {
+                           Instant lastEventAt, String errorCode) {
 
     /** @param name resolved membership display name, or {@code null} when unavailable. */
     public static RecipientDto from(CampaignRecipient r, String name) {
         return new RecipientDto(r.getId(), r.getMembershipId(), r.getEmail(), name, r.getStatus(),
                 r.getSkipReason(), r.getProviderMessageId(), null, null,
-                r.getDeliveredAt(), r.getLastEventAt());
+                r.getDeliveredAt(), r.getLastEventAt(), r.getErrorCode());
     }
 }

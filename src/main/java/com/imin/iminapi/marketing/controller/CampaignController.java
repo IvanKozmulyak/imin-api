@@ -182,7 +182,9 @@ public class CampaignController {
      *
      * <p>Response is {@code items}/{@code page}/{@code size} (original shape) plus additive
      * {@code total} (real aggregate over the active filter) and {@code counts} (real aggregates
-     * over the whole log, for the filter chips).
+     * over the whole log, for the filter chips; {@code queued}/{@code sent}/{@code delivered} use the campaign
+     * stats' definitions). Each item carries {@code errorCode} (hard_bounce|soft_bounce|provider_rejected|send_failed|
+     * no_provider_id|null). The dashboard pages at 100 rows.
      *
      * @param status     lifecycle filter; comma-separated for multi-status chips, e.g.
      *                   {@code bounced,failed,complained}. A single value behaves as before.

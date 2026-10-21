@@ -3,7 +3,9 @@ package com.imin.iminapi.marketing.send;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.service.CampaignEnded;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.MergeTags;
 import com.imin.iminapi.marketing.render.OrganizerIdentity;
@@ -30,6 +32,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -77,6 +80,7 @@ public class EmailChannelSender {
     private final SendPathGuard sendPathGuard;
     private final AddressSourceLines addressSources;
     private final AudiencePlanAccess audiencePlanAccess;
+    private final ApplicationEventPublisher eventPublisher;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
@@ -86,7 +90,8 @@ public class EmailChannelSender {
                               MembershipRepository memberships, ConsumerRepository consumers,
                               SendGateService sendGate, MarketingGuardProperties guardProps,
                               SendPathGuard sendPathGuard, AddressSourceLines addressSources,
-                              AudiencePlanAccess audiencePlanAccess) {
+                              AudiencePlanAccess audiencePlanAccess,
+                              ApplicationEventPublisher eventPublisher) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -103,6 +108,7 @@ public class EmailChannelSender {
         this.sendPathGuard = sendPathGuard;
         this.addressSources = addressSources;
         this.audiencePlanAccess = audiencePlanAccess;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -221,7 +227,9 @@ public class EmailChannelSender {
                 r.setProviderMessageId(i < ids.size() ? ids.get(i) : null);
                 if (i >= ids.size()) r.setErrorCode("no_provider_id");
                 r.setAttemptCount((short) (r.getAttemptCount() + 1));
-                r.setLastEventAt(Instant.now());
+                Instant leftAt = Instant.now();
+                r.setSentAt(leftAt);
+                r.setLastEventAt(leftAt);
                 recipients.save(r);
             }
         } catch (com.imin.iminapi.marketing.email.CampaignEmailProvider.TerminalBatchFailure ex) {
@@ -388,6 +396,8 @@ public class EmailChannelSender {
         c.setStatus("failed");
         c.setLastError(error);
         log.warn("[email-sender] campaign {} failed: org {} has no legal name and contact", c.getId(), c.getOrgId());
+        eventPublisher.publishEvent(CampaignEnded.failed(c.getId(), c.getOrgId(),
+                CampaignFailureReason.LEGAL_IDENTITY_MISSING));
     }
 
     /**
