@@ -133,7 +133,7 @@ class ResendWebhookProjectorTest {
 
     @Test
     void aPermanentBounceSuppressesDeliverabilityByNormalizedEmail() {
-        Fixture f = seed(fx.email("Bounce").replace("@example.test", "@Example.test"));
+        Fixture f = seed(fx.email("Bounce").replace("@fixtures.imin.wtf", "@Fixtures.imin.wtf"));
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             f.email(), "email.bounced", "Permanent", Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())

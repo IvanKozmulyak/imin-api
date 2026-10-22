@@ -196,8 +196,8 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     /**
      * Everything that makes a campaign of the {@code campaigns} table sendable, timing aside: email, the audience-plan
      * sends switch ({@code :audiencePlanSendsEnabled}), the legal identity ({@code :legalIdentityAllCampaigns}), an
-     * unpaused org and no active moderation hold on the org or the campaign's event. Shared by {@link #claimDue} and
-     * the moderation lift notice so the two can never disagree on what will send.
+     * unpaused org and no active moderation hold on the org or the campaign's event. Shared by {@link #claimDue}, the
+     * per-batch {@link #isSendableNow} and the moderation lift notice so they can never disagree on what will send.
      */
     String SENDABLE = """
           channel = 'email'
@@ -213,6 +213,15 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                           WHERE h.org_id = campaigns.org_id AND h.lifted_at IS NULL
                             AND (h.event_id IS NULL OR h.event_id = campaigns.event_id))
         """;
+
+    /**
+     * {@link #SENDABLE} for one campaign, re-read before every batch: a breaker pause or a moderation hold placed
+     * while a drive runs stops it before its next batch rather than at the end of the run budget.
+     */
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM campaigns WHERE id = :id AND " + SENDABLE + ")", nativeQuery = true)
+    boolean isSendableNow(@Param("id") UUID id,
+                          @Param("audiencePlanSendsEnabled") boolean audiencePlanSendsEnabled,
+                          @Param("legalIdentityAllCampaigns") boolean legalIdentityAllCampaigns);
 
     /** Waiting to send whatever the time: the statuses {@link #claimDue} picks up once due. A failed one waits for a Retry. */
     String WAITING = " (status = 'scheduled' OR status = 'sending') ";

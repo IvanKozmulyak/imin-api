@@ -57,18 +57,32 @@ class EmailChannelSenderOrgLookupTest {
         MarketingEmailProperties props = new MarketingEmailProperties();
         props.setFromAddress("contact@imin.support");
         props.setFromName("Alex");
-        sender = new EmailChannelSender(recipients, campaigns, new CampaignEmailRenderer(new UtmLinkRewriter()),
-                provider, new UnsubscribeTokenService("", "unit-test-secret-at-least-32-bytes"), props, templates,
-                organizations, mock(EventRepository.class), mock(MembershipRepository.class),
+        sender = new EmailChannelSender(recipients, campaigns,
+                new com.imin.iminapi.marketing.render.CampaignEmailAssembler(
+                        new CampaignEmailRenderer(new UtmLinkRewriter()), templates, mock(EventRepository.class), props),
+                provider, new UnsubscribeTokenService("", "unit-test-secret-at-least-32-bytes"), props,
+                organizations, mock(MembershipRepository.class),
                 mock(ConsumerRepository.class), mock(SendGateService.class), new MarketingGuardProperties(),
                 mock(SendPathGuard.class), mock(AddressSourceLines.class),
                 new AudiencePlanAccess(new AudiencePlanProperties()),
-                events);
+                events, transactionManager());
         // The per-batch status re-read finds the campaign still on its way out.
         when(campaigns.findStatusById(any())).thenReturn(Optional.of("sending"));
         when(organizations.findById(any())).thenThrow(new IllegalStateException("db hiccup"));
         when(templates.resolve(any(), any())).thenReturn(BuiltinTemplates.all().get(0));
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
+        // Nothing holds the campaign, and the claim stamps its batch key on every claimed row.
+        when(campaigns.isSendableNow(any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(true);
+        when(recipients.stampSendKey(any(), any(), any()))
+                .thenAnswer(inv -> ((java.util.Collection<?>) inv.getArgument(0)).size());
+    }
+
+    private static org.springframework.transaction.PlatformTransactionManager transactionManager() {
+        org.springframework.transaction.PlatformTransactionManager tm =
+                mock(org.springframework.transaction.PlatformTransactionManager.class);
+        when(tm.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
+        return tm;
     }
 
     private Campaign campaignWithPendingRow(String origin) {
@@ -86,6 +100,8 @@ class EmailChannelSenderOrgLookupTest {
         r.setEmail("fan@example.test");
         r.setStatus("pending");
         when(recipients.claimPendingBatch(eq(c.getId()), anyInt(), any(Instant.class))).thenReturn(List.of(r));
+        when(recipients.lockKeyedGroup(eq(c.getId()), any())).thenReturn(List.of(r));
+        when(recipients.countPendingByKey(eq(c.getId()), any())).thenReturn(1L);
         return c;
     }
 
@@ -96,7 +112,7 @@ class EmailChannelSenderOrgLookupTest {
 
         assertThat(sender.sendNextBatch(c)).isFalse();
 
-        verify(provider, never()).sendBatch(anyList());
+        verify(provider, never()).sendBatch(any(), anyList());
         verify(recipients, never()).save(any());
         // The conditional UPDATE increments attempts in SQL; the drive's copy carries the outcome.
         verify(campaigns).markFailedIfActive(eq(c.getId()), eq("ORG_LEGAL_IDENTITY_MISSING"), any());
@@ -115,7 +131,7 @@ class EmailChannelSenderOrgLookupTest {
 
         assertThat(sender.sendNextBatch(c)).isFalse();
 
-        verify(provider, never()).sendBatch(anyList());
+        verify(provider, never()).sendBatch(any(), anyList());
         assertThat(c.getStatus()).isEqualTo("canceled");
         verify(events, never()).publishEvent(any(Object.class));
     }
@@ -127,7 +143,7 @@ class EmailChannelSenderOrgLookupTest {
         sender.sendNextBatch(c);
 
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> batch = ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(batch.capture());
+        verify(provider).sendBatch(any(), batch.capture());
         assertThat(batch.getValue()).singleElement()
                 .satisfies(e -> assertThat(e.from()).isEqualTo("Alex <contact@imin.support>"));
     }

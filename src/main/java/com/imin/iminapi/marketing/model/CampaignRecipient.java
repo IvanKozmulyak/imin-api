@@ -18,6 +18,14 @@ public class CampaignRecipient {
 
     /** skip_reason of a row the campaign was canceled before it could send. */
     public static final String SKIP_CAMPAIGN_CANCELED = "campaign_canceled";
+    /** skip_reason of an address that cannot be mailed (malformed or a reserved test domain); set by the send gate. */
+    public static final String SKIP_INVALID_ADDRESS = "invalid_address";
+    /** skip_reason of a row whose batch outcome stayed unknown past the provider's 24 h replay window; never re-sent. */
+    public static final String SKIP_DELIVERY_UNCONFIRMED = "delivery_unconfirmed";
+    /** error_code of a failed row the provider refused on its own while the rest of its batch went out. */
+    public static final String ERROR_PROVIDER_REJECTED = "provider_rejected";
+    /** error_code of a sent row without a provider message id. */
+    public static final String ERROR_NO_PROVIDER_ID = "no_provider_id";
 
     @Id
     private UUID id;
@@ -78,4 +86,16 @@ public class CampaignRecipient {
 
     @Column(name = "error_code")
     private String errorCode;
+
+    /**
+     * Idempotency-Key of the batch this pending row is in (V202), committed before the provider call so a replay after
+     * a timeout or restart carries the same key; cleared once the outcome is known. Only the sender's targeted
+     * UPDATEs write it, so a whole-row save cannot revert it.
+     */
+    @Column(name = "send_key", updatable = false, insertable = false)
+    private String sendKey;
+
+    /** When {@link #sendKey} was stamped; a key older than the provider's replay window is expired. */
+    @Column(name = "send_key_at", updatable = false, insertable = false)
+    private Instant sendKeyAt;
 }

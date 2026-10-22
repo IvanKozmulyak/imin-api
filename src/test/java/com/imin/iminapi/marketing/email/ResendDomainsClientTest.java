@@ -1,7 +1,6 @@
 package com.imin.iminapi.marketing.email;
 
 import com.imin.iminapi.marketing.email.ResendDomainsClient.DnsRecordRow;
-import com.resend.Resend;
 import com.resend.core.exception.ResendException;
 import org.junit.jupiter.api.Test;
 
@@ -10,7 +9,6 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /**
  * Unit coverage for {@link ResendDomainsClient}. The Resend HTTP round-trip is the overridable
@@ -42,7 +40,7 @@ class ResendDomainsClientTest {
     }
 
     private static ResendDomainsClient client(String from, RowsSupplier supplier) {
-        return new ResendDomainsClient(mock(Resend.class), props(from)) {
+        return new ResendDomainsClient(props(from), new com.imin.iminapi.email.EmailProperties()) {
             @Override
             protected List<DnsRecordRow> fetchRecordsForDomain(String domain) throws Exception {
                 return supplier.get(domain);

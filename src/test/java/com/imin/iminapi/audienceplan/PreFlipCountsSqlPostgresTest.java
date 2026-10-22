@@ -81,7 +81,7 @@ class PreFlipCountsSqlPostgresTest {
 
     private Membership member(UUID orgId, String consentStatus) {
         Consumer cn = new Consumer();
-        cn.setNormalizedEmail("pf-" + UUID.randomUUID() + "@example.com");
+        cn.setNormalizedEmail("pf-" + UUID.randomUUID() + "@fixtures.imin.wtf");
         cn = consumers.save(cn);
         Membership m = new Membership();
         m.setOrgId(orgId);

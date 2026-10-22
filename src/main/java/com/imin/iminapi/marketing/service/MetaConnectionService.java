@@ -12,9 +12,14 @@ import com.imin.iminapi.marketing.repository.MetaCapiEventRepository;
 import com.imin.iminapi.marketing.repository.MetaPixelConnectionRepository;
 import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.repository.FunnelEventRepository;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.security.RoleGuard;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -39,19 +44,22 @@ public class MetaConnectionService {
     private final MetaGraphClient graph;
     private final FunnelEventRepository funnel;
     private final OrderRepository orders;
+    private final AuditLogger audit;
 
     public MetaConnectionService(MetaPixelConnectionRepository connections,
                                  MetaCapiEventRepository capiEvents,
                                  CapiTokenCipher cipher,
                                  MetaGraphClient graph,
                                  FunnelEventRepository funnel,
-                                 OrderRepository orders) {
+                                 OrderRepository orders,
+                                 AuditLogger audit) {
         this.connections = connections;
         this.capiEvents = capiEvents;
         this.cipher = cipher;
         this.graph = graph;
         this.funnel = funnel;
         this.orders = orders;
+        this.audit = audit;
     }
 
     @Transactional(readOnly = true)
@@ -62,7 +70,10 @@ public class MetaConnectionService {
     }
 
     @Transactional
-    public MetaConnectionDto upsert(UUID orgId, UUID createdBy, PutMetaConnectionRequest req) {
+    public MetaConnectionDto upsert(AuthPrincipal p, PutMetaConnectionRequest req) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "connect a Meta pixel");
+        UUID orgId = p.orgId();
+        UUID createdBy = p.userId();
         MetaPixelConnection c = connections.findByOrgIdAndEventIdIsNull(orgId)
                 .orElseGet(() -> {
                     MetaPixelConnection fresh = new MetaPixelConnection();
@@ -84,18 +95,27 @@ public class MetaConnectionService {
         }
         c.setUpdatedAt(Instant.now());
         connections.save(c);
+        // The pixel id only: the CAPI token is a secret and never enters the audit trail.
+        audit.record(p, AuditActions.META_PIXEL_CONNECTED, "meta_pixel", c.getId(),
+                "Meta pixel connected: " + c.getPixelId());
         return MetaConnectionDto.from(c);
     }
 
     @Transactional
-    public void delete(UUID orgId) {
-        connections.findByOrgIdAndEventIdIsNull(orgId).ifPresent(connections::delete);
+    public void delete(AuthPrincipal p) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "disconnect the Meta pixel");
+        connections.findByOrgIdAndEventIdIsNull(p.orgId()).ifPresent(c -> {
+            connections.delete(c);
+            audit.record(p, AuditActions.META_PIXEL_DISCONNECTED, "meta_pixel", c.getId(),
+                    "Meta pixel disconnected: " + c.getPixelId());
+        });
     }
 
     /** Fires a test event with the stored test_event_code, relaying Meta's ack. */
     @Transactional(readOnly = true)
-    public MetaTestEventResult test(UUID orgId) {
-        MetaPixelConnection c = connections.findByOrgIdAndEventIdIsNull(orgId)
+    public MetaTestEventResult test(AuthPrincipal p) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "send a Meta test event");
+        MetaPixelConnection c = connections.findByOrgIdAndEventIdIsNull(p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Meta connection"));
         String token = cipher.decrypt(c.getCapiAccessTokenEnc());
         Map<String, Object> event = Map.of(

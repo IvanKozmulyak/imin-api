@@ -87,6 +87,21 @@ final class CampaignOutcomeText {
                     "Le segment d'audience n'existe plus.",
                     "Сегмент аудиторії більше не існує.");
         }
+        if (CampaignFailureReason.PROVIDER_REJECTED.equals(code)) {
+            // The cause is on IMIN's side; Retry works only once IMIN has fixed it, so nothing promises it does now.
+            if (!retryable) {
+                return EmailLocale.choose(locale,
+                        "IMIN's email service refused the send. Write to support@imin.wtf. " + CANT_RETRY_EN,
+                        "El servicio de email de IMIN rechazó el envío. Escribe a support@imin.wtf. " + CANT_RETRY_ES,
+                        "Le service d'e-mail d'IMIN a refusé l'envoi. Écrivez à support@imin.wtf. " + CANT_RETRY_FR,
+                        "Поштовий сервіс IMIN відхилив надсилання. Напишіть на support@imin.wtf. " + CANT_RETRY_UK);
+            }
+            return EmailLocale.choose(locale,
+                    "IMIN's email service refused the send. Write to support@imin.wtf; you can retry once it's fixed.",
+                    "El servicio de email de IMIN rechazó el envío. Escribe a support@imin.wtf; podrás reintentarlo cuando esté resuelto.",
+                    "Le service d'e-mail d'IMIN a refusé l'envoi. Écrivez à support@imin.wtf\u00a0; vous pourrez relancer une fois le problème réglé.",
+                    "Поштовий сервіс IMIN відхилив надсилання. Напишіть на support@imin.wtf; повторити можна буде, коли це виправлять.");
+        }
         if (CampaignFailureReason.NOTHING_SENT.equals(code)) {
             return EmailLocale.choose(locale,
                     "No email could be sent.",

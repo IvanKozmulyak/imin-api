@@ -153,13 +153,21 @@ public class Organization {
     private Boolean stripeLivemode;
 
     /**
-     * Org-level marketing send pause (V57, spec §7 complaint-rate circuit breaker).
-     * Set by {@code ComplaintRateBreaker} when a campaign's complaint rate crosses
-     * the ~0.1% threshold above the minimum-volume floor. While non-null the
-     * dispatcher refuses to send any of the org's campaigns. NULL = not paused.
+     * Org-level marketing send pause (V57, spec §7 complaint-rate circuit breaker). Set by {@code ComplaintRateBreaker}
+     * with {@link #marketingPausedReason}; cleared only by IMIN staff through
+     * {@code POST /api/v1/internal/marketing/orgs/{orgId}/resume}. While non-null no campaign of the org starts a batch.
+     * NULL = not paused. Written only by targeted UPDATEs, so a whole-org save can never lift or restore a pause.
      */
-    @Column(name = "marketing_paused_at")
+    @Column(name = "marketing_paused_at", updatable = false)
     private java.time.Instant marketingPausedAt;
+
+    /** Why sending is paused: {@code complaint_rate} | {@code bounce_rate} (V202); null when not paused. */
+    @Column(name = "marketing_paused_reason", length = 32, updatable = false)
+    private String marketingPausedReason;
+
+    /** When staff last resumed sending (V202): the breaker counts only events after it. */
+    @Column(name = "marketing_resumed_at", updatable = false)
+    private java.time.Instant marketingResumedAt;
 
     /**
      * Anti-abuse escape hatch (V64): when true every user in the org bypasses the

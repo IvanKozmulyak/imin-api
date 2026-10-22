@@ -38,6 +38,7 @@ public class CampaignController {
     /** Upper bound on any page this controller serves. */
     static final int MAX_PAGE_SIZE = 200;
 
+    /** One page of the org's campaigns; {@code sendHold} says why a scheduled or sending one starts no batch now. */
     @GetMapping
     public List<CampaignSummary> list(
             @AuthenticationPrincipal AuthPrincipal principal,
@@ -76,6 +77,7 @@ public class CampaignController {
         return ResponseEntity.status(HttpStatus.CREATED).body(service.create(principal, req));
     }
 
+    /** Detail with stats; {@code sendHold} is org_paused | moderation_hold | null, as on the list. */
     @GetMapping("/{id}")
     public com.imin.iminapi.marketing.dto.CampaignDetailDto get(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
@@ -173,7 +175,8 @@ public class CampaignController {
     /**
      * Retry a failed campaign (spec §2.4). Distinct from {@code /send} (which is the
      * draft→scheduled path) — this re-queues a {@code failed} campaign while attempts &lt; 3.
-     * Returns 202 Accepted (the dispatcher claims it), matching {@code /send} semantics.
+     * Returns 202 Accepted (the dispatcher claims it), matching {@code /send} semantics; 403 FORBIDDEN for a MEMBER,
+     * because it mails every requeued recipient.
      */
     @PostMapping("/{id}/retry")
     public ResponseEntity<Void> retry(

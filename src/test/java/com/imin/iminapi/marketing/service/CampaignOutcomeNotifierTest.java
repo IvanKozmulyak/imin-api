@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -61,8 +62,8 @@ class CampaignOutcomeNotifierTest {
 
     @BeforeEach
     void providerAccepts() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
     }
 
     @AfterEach
@@ -90,8 +91,10 @@ class CampaignOutcomeNotifierTest {
             }
             case "nothing_sent" -> {
                 pendingRows(c, 2);
-                when(provider.sendBatch(anyList())).thenThrow(
-                        new CampaignEmailProvider.TerminalBatchFailure("Sender not verified", 422, null));
+                // The provider refuses every address on its own, so nothing leaves.
+                when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> new CampaignEmailProvider.BatchResult(
+                        List.of(), java.util.stream.IntStream.range(0, ((List<?>) inv.getArgument(1)).size()).boxed()
+                                .collect(java.util.stream.Collectors.toMap(i -> i, i -> "Invalid `to` field"))));
                 dispatcher.runOnce();
             }
             default -> {

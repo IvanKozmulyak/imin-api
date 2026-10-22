@@ -1,11 +1,16 @@
 package com.imin.iminapi.marketing.email;
 
+import com.imin.iminapi.audience.service.MailboxSyntax;
+import com.imin.iminapi.email.EmailProperties;
+import com.imin.iminapi.model.Organization;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.time.Duration;
+
 /**
- * Separate sending identity for bulk marketing email (spec §3). Bulk sends go
- * from a marketing subdomain (e.g. news.imin.wtf) with its own SPF/DKIM so they
- * never touch the transactional (auth-email) reputation carried by imin.email.*.
+ * Sending identity for bulk marketing email (spec §3). The From address, the Resend key and the Reply-To fallback are
+ * configured, not assumed: a marketing subdomain with its own SPF/DKIM and key exists only once
+ * IMIN_MARKETING_FROM_ADDRESS and IMIN_MARKETING_RESEND_API_KEY name it; blank keeps the transactional key.
  */
 @ConfigurationProperties(prefix = "imin.marketing")
 public class MarketingEmailProperties {
@@ -28,6 +33,15 @@ public class MarketingEmailProperties {
      */
     private String apiPublicBaseUrl = "https://api.imin.wtf";
 
+    /** Resend key for campaign batches (IMIN_MARKETING_RESEND_API_KEY); blank falls back to imin.email.api-key. */
+    private String resendApiKey = "";
+
+    /** Reply-To when the organizer's legal contact is not one mailable address (IMIN_MARKETING_REPLY_TO); blank = none. */
+    private String replyTo = "";
+
+    /** Wait between two batches of one drive, under Resend's per-team request rate; zero sends back to back. */
+    private Duration batchPause = Duration.ZERO;
+
     public String getFromAddress() { return fromAddress; }
     public void setFromAddress(String fromAddress) { this.fromAddress = fromAddress; }
     public String getFromName() { return fromName; }
@@ -36,6 +50,31 @@ public class MarketingEmailProperties {
     public void setBuyerSiteBaseUrl(String v) { this.buyerSiteBaseUrl = v; }
     public String getApiPublicBaseUrl() { return apiPublicBaseUrl; }
     public void setApiPublicBaseUrl(String v) { this.apiPublicBaseUrl = v; }
+    public String getResendApiKey() { return resendApiKey; }
+    public void setResendApiKey(String v) { this.resendApiKey = v; }
+    public String getReplyTo() { return replyTo; }
+    public void setReplyTo(String v) { this.replyTo = v; }
+    public Duration getBatchPause() { return batchPause; }
+    public void setBatchPause(Duration v) { this.batchPause = v; }
+
+    /** The key campaign batches authenticate with: the marketing key when set, else the transactional one. */
+    public String resendApiKey(EmailProperties email) {
+        if (resendApiKey != null && !resendApiKey.isBlank()) return resendApiKey.trim();
+        String fallback = email == null ? null : email.getApiKey();
+        return fallback == null ? "" : fallback.trim();
+    }
+
+    /**
+     * Where fan replies go: the organizer's legal contact when it is one mailable address (it is already printed in
+     * every footer), else the configured IMIN inbox, else null (no Reply-To header).
+     */
+    public String replyTo(Organization org) {
+        // Stripped at the ends only: a newline inside (a header injection attempt) still fails the syntax check.
+        String legal = org == null || org.getLegalContact() == null ? "" : org.getLegalContact().strip();
+        if (MailboxSyntax.isDeliverable(legal)) return legal;
+        String fallback = replyTo == null ? "" : replyTo.strip();
+        return MailboxSyntax.isDeliverable(fallback) ? fallback : null;
+    }
 
     /**
      * The API unsubscribe URL, used for the {@code List-Unsubscribe} header: {@code POST} is RFC 8058

@@ -3,10 +3,13 @@ package com.imin.iminapi.marketing.webhook;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
+import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.checkoutreminder.service.CheckoutReminderDeliveryProjector;
+import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -28,11 +31,15 @@ import java.util.UUID;
  * bytes exactly match what was signed (same reason as StripeWebhookController).
  *
  * <p>Response contract: 200 on an accepted OR duplicate event (Resend must not
- * keep retrying a valid delivery), 401 on signature failure (never silently
- * accept a forgery), 200 (no-op) when the message id can't be resolved to a
- * recipient (out-of-band or already-purged row — nothing to project). A message id
- * with no campaign recipient may be a checkout reminder's, projected by
- * {@link CheckoutReminderDeliveryProjector}.
+ * keep retrying a valid delivery), 401 on signature failure against both configured
+ * secrets (never silently accept a forgery), 503 without claiming the event when it is
+ * tagged with a campaign whose recipient row for that address is still queued and the
+ * event is under {@code recipient-grace} old (its batch has not committed yet; Svix
+ * retries), and 200 when the message id can't be resolved to a recipient. A tagged
+ * event whose id resolves no row is matched by campaign and address among the rows
+ * that left. A message id with no campaign recipient may be a checkout reminder's,
+ * projected by {@link CheckoutReminderDeliveryProjector}; anything else unmatched
+ * (transactional mail) only puts a Permanent bounce on the deliverability list.
  *
  * <p>Opens and clicks are projected onto the recipient row like every other type, but claimed by svix id
  * alone (no message, campaign or recipient id), so {@code provider_events} keeps no per-person event log.
@@ -50,19 +57,22 @@ public class ResendWebhookController {
     private final ResendWebhookProjector projector;
     private final CampaignRecipientRepository recipientRepo;
     private final CheckoutReminderDeliveryProjector reminderProjector;
+    private final CampaignRepository campaignRepo;
 
     public ResendWebhookController(SvixSignatureVerifier verifier,
                                    ResendWebhookProperties props,
                                    ProviderEventDedupService dedup,
                                    ResendWebhookProjector projector,
                                    CampaignRecipientRepository recipientRepo,
-                                   CheckoutReminderDeliveryProjector reminderProjector) {
+                                   CheckoutReminderDeliveryProjector reminderProjector,
+                                   CampaignRepository campaignRepo) {
         this.verifier = verifier;
         this.props = props;
         this.dedup = dedup;
         this.projector = projector;
         this.recipientRepo = recipientRepo;
         this.reminderProjector = reminderProjector;
+        this.campaignRepo = campaignRepo;
     }
 
     @PostMapping("/resend")
@@ -74,7 +84,10 @@ public class ResendWebhookController {
         String svixSig = h.getFirst("svix-signature");
         String body = entity.getBody() == null ? "" : entity.getBody();
 
-        if (!verifier.verify(props.getSecret(), svixId, svixTs, body, svixSig, props.getToleranceSeconds())) {
+        // Two Resend teams (transactional and marketing) may post here, each signing with its own secret.
+        if (!verifier.verify(props.getSecret(), svixId, svixTs, body, svixSig, props.getToleranceSeconds())
+                && !verifier.verify(props.getMarketingSecret(), svixId, svixTs, body, svixSig,
+                        props.getToleranceSeconds())) {
             log.warn("[resend-webhook] signature verification failed svixId={}", svixId);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
@@ -85,6 +98,8 @@ public class ResendWebhookController {
         String bounceType;
         String clickLink;
         Instant occurredAt;
+        Instant createdAt;
+        UUID campaignTag;
         try {
             JsonNode root = MAPPER.readTree(body);
             type = text(root, "type");
@@ -99,7 +114,9 @@ public class ResendWebhookController {
             // on the platform, for ever.
             bounceType = text(data.path("bounce"), "type");
             clickLink = text(data.path("click"), "link");
-            occurredAt = parseInstant(text(root, "created_at"));
+            createdAt = parseInstantOrNull(text(root, "created_at"));
+            occurredAt = createdAt == null ? Instant.now() : createdAt;
+            campaignTag = campaignTag(data.path("tags"));
         } catch (Exception e) {
             log.warn("[resend-webhook] unparseable body — acking to stop retries: {}", e.getMessage());
             return ResponseEntity.ok().build(); // malformed but signed — don't loop Resend
@@ -107,8 +124,25 @@ public class ResendWebhookController {
 
         CampaignRecipient r = messageId == null ? null
                 : recipientRepo.findByProviderMessageId(messageId).orElse(null);
+        if (r == null && campaignTag != null && email != null && !email.isBlank()) {
+            String address = EmailNormalizer.normalize(email);
+            r = recipientRepo.findLeftByCampaignIdAndEmail(campaignTag, address).orElse(null);
+            if (r != null && messageId != null) {
+                // A row sent without an id (or before its outcome committed) is found again by campaign and address.
+                recipientRepo.attachProviderMessageIdIfNull(r.getId(), messageId);
+            } else if (r == null && recipientRepo.existsPendingByCampaignIdAndEmail(campaignTag, address)
+                    && withinGrace(createdAt)) {
+                // Its batch has not committed yet: unclaimed, so Svix's retry projects it once the row is recorded.
+                log.info("[resend-webhook] {} for campaign {} arrived before its batch committed — 503, retried",
+                        type, campaignTag);
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+            }
+        }
+        // An event no row claims is still filed under its tagged campaign, when that campaign exists, so the breaker counts it.
+        UUID taggedCampaign = r != null || campaignTag == null ? null
+                : campaignRepo.findById(campaignTag).map(com.imin.iminapi.marketing.model.Campaign::getId).orElse(null);
         UUID recipientId = r == null ? null : r.getId();
-        UUID campaignId = r == null ? null : r.getCampaignId();
+        UUID campaignId = r == null ? taggedCampaign : r.getCampaignId();
         UUID membershipId = r == null ? null : r.getMembershipId();
 
         // Idempotent claim keyed on the svix message id (the provider_event_id).
@@ -129,9 +163,36 @@ public class ResendWebhookController {
         } else if (reminder != null) {
             reminderProjector.project(reminder, email, type, bounceType, occurredAt);
         } else {
-            log.info("[resend-webhook] no recipient for messageId={} type={} — logged only", messageId, type);
+            log.info("[resend-webhook] no recipient for messageId={} type={}", messageId, type);
+            if (taggedCampaign != null && ProviderEvent.TYPE_COMPLAINED.equals(type)) {
+                projector.projectTaggedComplaint(taggedCampaign, email, occurredAt);
+            }
+            projector.projectUnmatched(type, email, bounceType);
         }
         return ResponseEntity.ok().build();
+    }
+
+    private boolean withinGrace(Instant createdAt) {
+        // A missing created_at counts as outside the grace: never hold an event back on a guess.
+        return createdAt != null && createdAt.isAfter(Instant.now().minus(props.getRecipientGrace()));
+    }
+
+    /** {@code data.tags.imin_campaign}: Resend sends tags as an object map; a name/value array is read too. */
+    private static UUID campaignTag(JsonNode tags) {
+        String value = null;
+        if (tags.isObject()) {
+            value = text(tags, CampaignEmailProvider.CAMPAIGN_TAG);
+        } else if (tags.isArray()) {
+            for (JsonNode t : tags) {
+                if (CampaignEmailProvider.CAMPAIGN_TAG.equals(text(t, "name"))) value = text(t, "value");
+            }
+        }
+        if (value == null) return null;
+        try {
+            return UUID.fromString(value.strip());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private static String text(JsonNode node, String field) {
@@ -139,9 +200,9 @@ public class ResendWebhookController {
         return v.isMissingNode() || v.isNull() ? null : v.asText();
     }
 
-    private static Instant parseInstant(String iso) {
-        if (iso == null) return Instant.now();
+    private static Instant parseInstantOrNull(String iso) {
+        if (iso == null) return null;
         try { return Instant.parse(iso); }
-        catch (DateTimeParseException e) { return Instant.now(); }
+        catch (DateTimeParseException e) { return null; }
     }
 }

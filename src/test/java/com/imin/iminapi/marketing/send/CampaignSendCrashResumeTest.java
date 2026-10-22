@@ -26,6 +26,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -99,13 +100,13 @@ class CampaignSendCrashResumeTest {
 
         AtomicInteger calls = new AtomicInteger();
         List<String> addressed = Collections.synchronizedList(new ArrayList<>());
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             boolean ours = batch.stream().anyMatch(e -> e.to().startsWith(tag));
             // Our second batch = the pod dies after batch 1's emails have irreversibly left.
             if (ours && calls.incrementAndGet() == 2) throw new RuntimeException("pod restart mid-send");
             batch.forEach(e -> addressed.add(e.to()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         dispatcher.runOnce();

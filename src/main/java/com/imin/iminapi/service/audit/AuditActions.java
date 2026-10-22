@@ -83,6 +83,16 @@ public final class AuditActions {
      * the trail rather than be one.
      */
     public static final String CAMPAIGN_RECIPIENTS_VIEWED = "CAMPAIGN_RECIPIENTS_VIEWED";
+    /** A failed campaign was scheduled again with its failed rows requeued; ADMIN or OWNER only. */
+    public static final String CAMPAIGN_RETRIED = "CAMPAIGN_RETRIED";
+    /** The complaint/bounce breaker paused the org's marketing sending; recorded under a system principal of the org. */
+    public static final String MARKETING_SENDING_PAUSED = "MARKETING_SENDING_PAUSED";
+    /** IMIN staff lifted that pause; the actor is the staff user, the summary carries the lifted reason and the note. */
+    public static final String MARKETING_SENDING_RESUMED = "MARKETING_SENDING_RESUMED";
+    /** The org's Meta pixel was connected or its settings replaced (pixel id only, never the CAPI token). */
+    public static final String META_PIXEL_CONNECTED = "META_PIXEL_CONNECTED";
+    /** The org's Meta pixel connection was removed. */
+    public static final String META_PIXEL_DISCONNECTED = "META_PIXEL_DISCONNECTED";
 
     // ---- Crew links (V199) ----
     public static final String REFERRAL_PERK_SAVED = "REFERRAL_PERK_SAVED";

@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.model.RecipientStatuses;
@@ -54,12 +55,14 @@ public class CampaignSendUnit {
     private final TransactionTemplate newTx;
     /** Reads the run deadline only. */
     private final Clock clock;
+    /** Read per pause, so the pacing follows imin.marketing.batch-pause. */
+    private final MarketingEmailProperties emailProps;
 
     public CampaignSendUnit(CampaignRepository campaigns, CampaignRecipientRepository recipients,
                             RecipientMaterializer materializer,
                             EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
                             PlatformTransactionManager txManager, AudiencePlanAccess audiencePlanAccess,
-                            Clock clock) {
+                            Clock clock, MarketingEmailProperties emailProps) {
         this.campaigns = campaigns;
         this.recipients = recipients;
         this.materializer = materializer;
@@ -67,6 +70,7 @@ public class CampaignSendUnit {
         this.eventPublisher = eventPublisher;
         this.audiencePlanAccess = audiencePlanAccess;
         this.clock = clock;
+        this.emailProps = emailProps;
         this.newTx = new TransactionTemplate(txManager);
         this.newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -99,6 +103,7 @@ public class CampaignSendUnit {
                 log.info("[send-unit] campaign {} paused: dispatcher run budget spent", c.getId());
                 return;
             }
+            pauseBetweenBatches();
         }
         // The sender failed it mid-drive (legal identity removed) or found it stopped (canceled); finish() must not overwrite that.
         if (!"sending".equals(c.getStatus())) return;
@@ -108,6 +113,17 @@ public class CampaignSendUnit {
             return;
         }
         finish(c);
+    }
+
+    /** Resend allows 10 requests a second per team across every key; the pause keeps one drive well under it. */
+    private void pauseBetweenBatches() {
+        java.time.Duration pause = emailProps.getBatchPause();
+        if (pause == null || pause.isZero() || pause.isNegative()) return;
+        try {
+            Thread.sleep(pause.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** Re-read per batch so switching audience-plan sends off stops a drive already in progress. */

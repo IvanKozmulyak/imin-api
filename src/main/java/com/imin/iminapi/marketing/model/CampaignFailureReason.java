@@ -16,6 +16,8 @@ public final class CampaignFailureReason {
     public static final String SEGMENT_MISSING = "segment_missing";
     /** No row left the queue and at least one failed. Stored and wire code. */
     public static final String NOTHING_SENT = "nothing_sent";
+    /** The email provider refused the whole request (key, sending domain or payload); nothing in that batch left. */
+    public static final String PROVIDER_REJECTED = "provider_rejected";
     /** Any other failure of the drive. Stored and wire code. */
     public static final String SEND_FAILED = "send_failed";
 
@@ -40,6 +42,7 @@ public final class CampaignFailureReason {
         if (STORED_LEGAL_IDENTITY_MISSING.equals(stored)) return LEGAL_IDENTITY_MISSING;
         if (SEGMENT_MISSING.equals(stored) || LEGACY_SEGMENT_NOT_FOUND.equals(stored)) return SEGMENT_MISSING;
         if (NOTHING_SENT.equals(stored) || LEGACY_NOTHING_SENT.equals(stored)) return NOTHING_SENT;
+        if (PROVIDER_REJECTED.equals(stored)) return PROVIDER_REJECTED;
         return SEND_FAILED;
     }
 }

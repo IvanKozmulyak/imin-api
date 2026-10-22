@@ -182,10 +182,12 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * <p>{@code next_attempt_at} (V117) is the per-row backoff: a row whose last attempt
      * failed is not claimable again until its delay elapses, so a provider outage no longer
      * means the identical batch is re-POSTed within milliseconds. NULL = claimable now.
+     * A row with a send key belongs to a batch whose outcome is pending; only its own key may send it.
      */
     @Query(value = """
         SELECT * FROM campaign_recipients
         WHERE campaign_id = :campaignId AND status = 'pending' AND attempt_count < 3
+          AND send_key IS NULL
           AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
         ORDER BY id
         LIMIT :limit
@@ -194,6 +196,100 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     List<CampaignRecipient> claimPendingBatch(@Param("campaignId") UUID campaignId,
                                               @Param("limit") int limit,
                                               @Param("now") java.time.Instant now);
+
+    // ---- keyed batches (V202): the Idempotency-Key is committed on the rows before the provider call ----
+
+    /**
+     * The key of the oldest batch of this campaign still pending under a key, inside the attempt budget, past its
+     * backoff and stamped at or after {@code expiryAfter}; empty when there is none. A batch another drive is
+     * delivering holds its rows locked, so SKIP LOCKED passes it over and this drive claims fresh rows instead.
+     */
+    @Query(value = """
+        SELECT send_key FROM campaign_recipients
+        WHERE campaign_id = :campaignId AND status = 'pending' AND send_key IS NOT NULL
+          AND attempt_count < 3 AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
+          AND send_key_at >= :expiryAfter
+        ORDER BY send_key_at, send_key
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<String> findOldestKeyedGroup(@Param("campaignId") UUID campaignId, @Param("now") java.time.Instant now,
+                                      @Param("expiryAfter") java.time.Instant expiryAfter);
+
+    /** The pending rows of one keyed batch that no other transaction holds, locked until commit. */
+    @Query(value = """
+        SELECT * FROM campaign_recipients
+        WHERE campaign_id = :campaignId AND send_key = :sendKey AND status = 'pending'
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    List<CampaignRecipient> lockKeyedGroup(@Param("campaignId") UUID campaignId, @Param("sendKey") String sendKey);
+
+    /** Every pending row of one keyed batch, locked or not. */
+    @Query(value = "SELECT COUNT(*) FROM campaign_recipients WHERE campaign_id = :campaignId AND send_key = :sendKey"
+            + " AND status = 'pending'", nativeQuery = true)
+    long countPendingByKey(@Param("campaignId") UUID campaignId, @Param("sendKey") String sendKey);
+
+    /** Stamps the batch key on these still-pending, unkeyed rows; returns rows stamped. */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients SET send_key = :sendKey, send_key_at = :at"
+            + " WHERE id IN :ids AND status = 'pending' AND send_key IS NULL", nativeQuery = true)
+    int stampSendKey(@Param("ids") java.util.Collection<UUID> ids, @Param("sendKey") String sendKey,
+                     @Param("at") java.time.Instant at);
+
+    /** Drops the batch key once the outcome of these rows is known. */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients SET send_key = NULL, send_key_at = NULL WHERE id IN :ids",
+            nativeQuery = true)
+    int clearSendKey(@Param("ids") java.util.Collection<UUID> ids);
+
+    /**
+     * Rows still pending under a key stamped before {@code before}: the provider no longer replays that key, so a
+     * resend could mail them twice. They become skipped/{@code delivery_unconfirmed} and are never sent again.
+     */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients SET status = 'skipped', skip_reason = '"
+            + CampaignRecipient.SKIP_DELIVERY_UNCONFIRMED + "', send_key = NULL, send_key_at = NULL,"
+            + " next_attempt_at = NULL, last_event_at = :now"
+            + " WHERE campaign_id = :campaignId AND status = 'pending' AND send_key IS NOT NULL"
+            + " AND send_key_at < :before", nativeQuery = true)
+    int expireUnknownKeys(@Param("campaignId") UUID campaignId, @Param("before") java.time.Instant before,
+                          @Param("now") java.time.Instant now);
+
+    /** The row of this campaign for this address that left the queue, for an event Resend sent without a known id. */
+    @Query(value = "SELECT * FROM campaign_recipients WHERE campaign_id = :campaignId AND lower(email) = :email"
+            + " AND status IN " + RecipientStatuses.LEFT_THE_QUEUE_SQL
+            + " ORDER BY sent_at DESC NULLS LAST, id LIMIT 1", nativeQuery = true)
+    java.util.Optional<CampaignRecipient> findLeftByCampaignIdAndEmail(@Param("campaignId") UUID campaignId,
+                                                                       @Param("email") String email);
+
+    /** Whether this campaign still has this address queued. */
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM campaign_recipients WHERE campaign_id = :campaignId"
+            + " AND lower(email) = :email AND status = 'pending')", nativeQuery = true)
+    boolean existsPendingByCampaignIdAndEmail(@Param("campaignId") UUID campaignId, @Param("email") String email);
+
+    /** Fills the provider message id of a row sent without one; never overwrites an id. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaign_recipients SET provider_message_id = :messageId"
+            + " WHERE id = :id AND provider_message_id IS NULL", nativeQuery = true)
+    int attachProviderMessageIdIfNull(@Param("id") UUID id, @Param("messageId") String messageId);
+
+    /**
+     * Distinct rows of the org's campaigns recorded as hard-bounced whose bounce event arrived at or after
+     * {@code since}; the numerator of the breaker's bounce rate.
+     */
+    @Query(value = """
+        SELECT COUNT(DISTINCT r.id) FROM campaign_recipients r
+          JOIN provider_events pe ON pe.recipient_id = r.id
+          JOIN campaigns c ON c.id = r.campaign_id
+        WHERE c.org_id = :orgId AND r.error_code = 'hard_bounce'
+          AND pe.type = 'email.bounced' AND pe.created_at >= :since
+        """, nativeQuery = true)
+    long countHardBouncesForOrgSince(@Param("orgId") UUID orgId, @Param("since") java.time.Instant since);
 
     /** Rows of {@code [membershipId, count]}: sends to these members by this org's campaigns since {@code since}. */
     @Query("""

@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -54,13 +55,14 @@ class EmailChannelSenderBackoffTest {
     @AfterEach
     void deleteOwnCampaigns() {
         CampaignRows.delete(jdbc, orgIds);
+        com.imin.iminapi.support.OrgRows.delete(jdbc, orgIds);
     }
 
     /** The provider batches that carried this test's addresses. */
     @SuppressWarnings("unchecked")
     private List<List<CampaignEmailProvider.OutgoingEmail>> ownBatches() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream()
                 .filter(b -> b.stream().anyMatch(e -> ownAddresses.contains(e.to()))).toList();
     }
@@ -68,7 +70,8 @@ class EmailChannelSenderBackoffTest {
     private Campaign campaignWithPending(int n) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
-        c.setOrgId(UUID.randomUUID());
+        // A real org: the per-batch send gate reads its pause.
+        c.setOrgId(fx.org().getId());
         orgIds.add(c.getOrgId());
         c.setChannel("email");
         c.setName("Backoff blast");
@@ -94,45 +97,26 @@ class EmailChannelSenderBackoffTest {
     @Test
     void aFailedBatchIsNotRePostedImmediately() {
         Campaign c = campaignWithPending(2);
-        when(provider.sendBatch(anyList())).thenThrow(new ApiException(
+        when(provider.sendBatch(any(), anyList())).thenThrow(new ApiException(
                 HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, "down"));
 
         boolean more = sender.sendNextBatch(c);
         assertThat(more).isFalse();   // the drive stops instead of spinning on a dead provider
 
-        // The rows are still queued, but not claimable until their backoff elapses.
-        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "pending"))
+        // The rows are still queued, but not claimable until their backoff elapses, and keep the batch key the
+        // request carried, so the replay after the backoff is the same request.
+        List<CampaignRecipient> queued = recipients.findByCampaignIdAndStatus(c.getId(), "pending");
+        assertThat(queued)
                 .hasSize(2)
                 .allSatisfy(r -> {
                     assertThat(r.getAttemptCount()).isEqualTo((short) 1);
                     assertThat(r.getNextAttemptAt()).isAfter(Instant.now());
+                    assertThat(r.getSendKey()).startsWith("campaign:" + c.getId() + ":");
                 });
+        assertThat(queued).extracting(CampaignRecipient::getSendKey).containsOnly(queued.get(0).getSendKey());
 
         sender.sendNextBatch(c);
         assertThat(ownBatches()).hasSize(1);
-    }
-
-    /**
-     * mkt-edge-4 (P1): a 4xx from Resend fails identically on every retry, so backing the rows
-     * off three times only delays the truth and keeps the campaign 'sending'. Mark them failed
-     * with the reason on the row — /retry (which requeues 'failed') is the recovery path.
-     */
-    @Test
-    void aTerminalProviderRejectionFailsTheRowsInsteadOfBackingThemOff() {
-        Campaign c = campaignWithPending(2);
-        when(provider.sendBatch(anyList())).thenThrow(
-                new CampaignEmailProvider.TerminalBatchFailure("Invalid `to` field", 422, null));
-
-        boolean more = sender.sendNextBatch(c);
-        assertThat(more).isFalse();
-
-        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "pending")).isEmpty();
-        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "failed"))
-                .hasSize(2)
-                .allSatisfy(r -> {
-                    assertThat(r.getErrorCode()).isEqualTo("provider_rejected");
-                    assertThat(r.getAttemptCount()).isEqualTo((short) 1);
-                });
     }
 
     /**
@@ -153,7 +137,7 @@ class EmailChannelSenderBackoffTest {
         orphan.setStatus("pending");
         recipients.save(orphan);
 
-        when(provider.sendBatch(anyList())).thenReturn(java.util.List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(java.util.List.of("id-a")));
         sender.sendNextBatch(c);
 
         assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "skipped"))

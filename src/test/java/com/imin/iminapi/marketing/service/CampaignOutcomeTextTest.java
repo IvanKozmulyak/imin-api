@@ -75,4 +75,19 @@ class CampaignOutcomeTextTest {
         assertThat(CampaignOutcomeText.of("en", CampaignEnded.SENT, null, "Spring", sent, notSent, 5, true).body())
                 .doesNotContain("Nobody");
     }
+
+    /** A refused send is fixed by IMIN, so the notice sends the organizer to support and claims no working retry. */
+    @ParameterizedTest(name = "{0} retryable={1}")
+    @CsvSource(delimiter = '|', value = {
+            "en|true|IMIN's email service refused the send. Write to support@imin.wtf; you can retry once it's fixed.",
+            "en|false|IMIN's email service refused the send. Write to support@imin.wtf. It can't be retried — duplicate it to try again.",
+            "es|true|El servicio de email de IMIN rechazó el envío. Escribe a support@imin.wtf; podrás reintentarlo cuando esté resuelto.",
+            "fr|true|Le service d'e-mail d'IMIN a refusé l'envoi. Écrivez à support@imin.wtf\u00a0; vous pourrez relancer une fois le problème réglé.",
+            "uk|false|Поштовий сервіс IMIN відхилив надсилання. Напишіть на support@imin.wtf. Повторити не можна — дублюйте кампанію, щоб спробувати знову.",
+    })
+    void aRefusedSendSendsTheOrganizerToSupport(String locale, boolean retryable, String expected) {
+        String body = CampaignOutcomeText.of(locale, CampaignEnded.FAILED, "provider_rejected", "Spring", 0, 250, 0, retryable).body();
+        assertThat(body).startsWith(expected.replace("\\u00a0", "\u00a0"));
+        assertThat(body).doesNotContain("You can retry it");
+    }
 }

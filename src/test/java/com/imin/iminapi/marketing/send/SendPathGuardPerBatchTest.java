@@ -39,6 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -70,8 +71,8 @@ class SendPathGuardPerBatchTest {
 
     @BeforeEach
     void stubProvider() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
     }
 
     /** The campaigns are left 'sending', which the global claim would reclaim once stale. */
@@ -81,7 +82,7 @@ class SendPathGuardPerBatchTest {
     }
 
     private UUID newOrgId() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         orgIds.add(orgId);
         return orgId;
     }
@@ -171,7 +172,7 @@ class SendPathGuardPerBatchTest {
     @SuppressWarnings("unchecked")
     private List<String> sentTo() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream().flatMap(List::stream)
                 .map(CampaignEmailProvider.OutgoingEmail::to).filter(ownAddresses::contains).toList();
     }
@@ -237,6 +238,8 @@ class SendPathGuardPerBatchTest {
 
     @Test
     void planCampaignMemberWithoutProvenConsentIsSkippedAtSendTime() {
+        // A plan campaign sends only while the platform switch is on; the per-batch gate reads it too.
+        flips.set(props, "sendsEnabled", true);
         UUID orgId = orgWithLegalIdentity();
         Campaign c = campaign(orgId, null, "audience_plan");
         // SendGate admits this member; ConsentGate does not (no consent record proves the basis).

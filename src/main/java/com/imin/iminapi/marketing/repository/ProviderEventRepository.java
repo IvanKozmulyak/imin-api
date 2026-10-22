@@ -15,4 +15,10 @@ public interface ProviderEventRepository extends Repository<ProviderEvent, UUID>
 
     @Query("select count(pe) from ProviderEvent pe where pe.campaignId = :campaignId and pe.type = :type")
     long countByCampaignIdAndType(@Param("campaignId") UUID campaignId, @Param("type") String type);
+
+    /** The campaign's events of one type received at or after {@code since}: the breaker's per-campaign window. */
+    @Query("select count(pe) from ProviderEvent pe where pe.campaignId = :campaignId and pe.type = :type"
+            + " and pe.createdAt >= :since")
+    long countByCampaignIdAndTypeSince(@Param("campaignId") UUID campaignId, @Param("type") String type,
+                                       @Param("since") java.time.Instant since);
 }

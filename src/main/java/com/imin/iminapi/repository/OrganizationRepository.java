@@ -68,6 +68,20 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
     @Query("update Organization o set o.stripePayoutScheduleManual = true where o.id = :id")
     void markPayoutScheduleManual(@Param("id") UUID id);
 
+    /** Pauses the org's marketing sending with a reason unless it is already paused; 1 when this call paused it. */
+    @Modifying(flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE organizations SET marketing_paused_at = :at, marketing_paused_reason = :reason "
+            + "WHERE id = :id AND marketing_paused_at IS NULL", nativeQuery = true)
+    int pauseMarketingIfNotPaused(@Param("id") UUID id, @Param("reason") String reason, @Param("at") Instant at);
+
+    /** Lifts a pause and stores the resume baseline; 0 when the org is not paused. */
+    @Modifying(flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE organizations SET marketing_paused_at = NULL, marketing_paused_reason = NULL, "
+            + "marketing_resumed_at = :at WHERE id = :id AND marketing_paused_at IS NOT NULL", nativeQuery = true)
+    int resumeMarketing(@Param("id") UUID id, @Param("at") Instant at);
+
     /**
      * Row lock on a single org, used to serialize one-time lazy work for that org (e.g.
      * seeding its prebuilt segments) so two concurrent requests can't both run it. Native

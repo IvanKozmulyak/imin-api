@@ -34,7 +34,7 @@ public record CampaignSummary(
         String eventName,
         /** IANA zone of that same event, for showing its send times; null without one. */
         String eventTimezone,
-        /** Why the last send failed: legal_identity_missing|segment_missing|nothing_sent|send_failed; null when none is stored. */
+        /** Why the last send failed: legal_identity_missing|segment_missing|nothing_sent|provider_rejected|send_failed; null when none is stored. */
         String failureReason,
         /** Rows that left the queue, as {@code stats.sent}; the three counts are null unless email and a row left. */
         Long sentCount,
@@ -50,12 +50,14 @@ public record CampaignSummary(
         /** Rows not mailed, as {@code stats.skipped}: live, mid-send diverts included. */
         Long skippedCount,
         /** Rows still waiting to be sent, as {@code stats.queued}. */
-        Long queuedCount
+        Long queuedCount,
+        /** As {@code CampaignDetailDto.sendHold}: org_paused | moderation_hold | null. */
+        String sendHold
 ) {
     /** Projection for the list read path: revenue, the batch-resolved segment and event context, and the counts. */
     public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
                                        String eventName, String eventTimezone, String failureReason,
-                                       Counts counts) {
+                                       Counts counts, String sendHold) {
         boolean anyLeft = counts != null && counts.sent() > 0;
         return new CampaignSummary(
                 c.getId(), c.getChannel(), c.getName(), c.getStatus(),
@@ -68,7 +70,8 @@ public record CampaignSummary(
                 anyLeft ? counts.clicked() : null,
                 counts == null ? null : counts.failed(),
                 counts == null ? null : counts.skipped(),
-                counts == null ? null : counts.queued());
+                counts == null ? null : counts.queued(),
+                sendHold);
     }
 
     /** The live row counts of one email campaign with recipient rows, from one pass. */

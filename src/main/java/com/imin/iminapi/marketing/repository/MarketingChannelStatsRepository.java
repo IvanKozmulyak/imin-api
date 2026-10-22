@@ -34,4 +34,15 @@ public interface MarketingChannelStatsRepository extends Repository<ProviderEven
                and pe.type = :type
             """)
     long countByOrgIdAndType(@Param("orgId") UUID orgId, @Param("type") String type);
+
+    /** The org's events of one type received at or after {@code since}: the breaker's org window and the Channels card. */
+    @Query("""
+            select count(pe) from ProviderEvent pe, com.imin.iminapi.marketing.model.Campaign c
+             where pe.campaignId = c.id
+               and c.orgId = :orgId
+               and pe.type = :type
+               and pe.createdAt >= :since
+            """)
+    long countByOrgIdAndTypeSince(@Param("orgId") UUID orgId, @Param("type") String type,
+                                  @Param("since") java.time.Instant since);
 }

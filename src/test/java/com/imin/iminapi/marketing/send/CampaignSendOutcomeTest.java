@@ -26,8 +26,8 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 /**
@@ -131,35 +131,95 @@ class CampaignSendOutcomeTest {
                 .allSatisfy(r -> assertThat(r.getAttemptCount()).isEqualTo((short) 0));
     }
 
-    /**
-     * July prod incident: the provider rejected every row, the periodic ticks re-claimed the failed
-     * campaign until its attempts hit 3, and the organizer's Retry (after fixing the sender) was refused.
-     */
-    @Test
-    void aRetryAfterRepeatedDispatcherPassesResendsTheRejectedRows() {
-        Campaign c = dueCampaignWithExhaustedRecipients(2);
-        recipients.findByCampaignIdAndStatus(c.getId(), "pending").forEach(r -> {
-            r.setAttemptCount((short) 0);
+    /** A due campaign of {@code n} pending rows at attempt 0, addressed under {@code tag}. */
+    private Campaign dueCampaign(int n, String tag) {
+        Campaign c = dueCampaignWithExhaustedRecipients(0);
+        c.setScheduledAt(Instant.now().minus(3650, ChronoUnit.DAYS));
+        campaigns.save(c);
+        for (int i = 0; i < n; i++) {
+            CampaignRecipient r = new CampaignRecipient();
+            r.setId(UUID.randomUUID());
+            r.setCampaignId(c.getId());
+            r.setEmail(tag + "-" + i + "-" + fx.email("fan"));
+            r.setStatus("pending");
             recipients.save(r);
+        }
+        return c;
+    }
+
+    private static boolean ours(List<CampaignEmailProvider.OutgoingEmail> batch, String tag) {
+        return batch.stream().anyMatch(e -> e.to().startsWith(tag + "-"));
+    }
+
+    private static CampaignEmailProvider.BatchResult idsFor(List<CampaignEmailProvider.OutgoingEmail> batch) {
+        return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> msgId(e.to())).toList());
+    }
+
+    /** The July prod incident: Resend refused one address and the whole batch, and the campaign, failed. */
+    @Test
+    void oneRejectedAddressDoesNotFailTheOtherNinetyNine() {
+        String tag = "permissive-" + UUID.randomUUID();
+        Campaign c = dueCampaign(100, tag);
+        java.util.concurrent.atomic.AtomicReference<String> refused = new java.util.concurrent.atomic.AtomicReference<>();
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
+            if (!ours(batch, tag)) return idsFor(batch);
+            refused.set(batch.get(3).to());
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < batch.size(); i++) ids.add(i == 3 ? null : msgId(batch.get(i).to()));
+            return new CampaignEmailProvider.BatchResult(ids, java.util.Map.of(3, "Invalid `to` field."));
         });
-        when(provider.sendBatch(anyList())).thenThrow(
-                new CampaignEmailProvider.TerminalBatchFailure("Sender not verified", 422, null));
 
         dispatcher.runOnce();
-        dispatcher.runOnce();
+
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "failed")).singleElement().satisfies(r -> {
+            assertThat(r.getEmail()).isEqualTo(refused.get());
+            assertThat(r.getErrorCode()).isEqualTo("provider_rejected");
+        });
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "sent")).hasSize(99)
+                .allSatisfy(r -> assertThat(r.getProviderMessageId()).isEqualTo(msgId(r.getEmail())));
+        assertThat(campaigns.findStatusById(c.getId())).contains("sent");
+    }
+
+    /** A refused key or unverified domain fails the campaign after one call, and Retry sends everyone once fixed. */
+    @Test
+    void aRefusedKeyFailsTheCampaignAtOnceAndRetryContinuesIt() {
+        String tag = "refused-" + UUID.randomUUID();
+        Campaign c = dueCampaign(250, tag);
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicBoolean fixed = new java.util.concurrent.atomic.AtomicBoolean();
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
+            if (!ours(batch, tag)) return idsFor(batch);
+            calls.incrementAndGet();
+            if (!fixed.get()) throw new CampaignEmailProvider.CampaignRejected("domain not verified", 403);
+            return idsFor(batch);
+        });
+
         dispatcher.runOnce();
 
-        assertThat(campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow().getStatus()).isEqualTo("failed");
-        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "failed")).isEqualTo(2L);
+        Campaign failed = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow();
+        assertThat(failed.getStatus()).isEqualTo("failed");
+        assertThat(com.imin.iminapi.marketing.model.CampaignFailureReason.of(failed.getLastError()))
+                .isEqualTo("provider_rejected");
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "pending")).hasSize(250).allSatisfy(r -> {
+            assertThat(r.getAttemptCount()).isZero();
+            assertThat(r.getSendKey()).isNull();
+        });
 
-        // The organizer fixes the sender: the provider now accepts.
-        doAnswer(inv -> ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList())
-                .when(provider).sendBatch(anyList());
-        AuthPrincipal principal = fx.principal(fx.owner(orgs.findById(c.getOrgId()).orElseThrow()));
-        campaignService.retry(principal, c.getId());
+        fixed.set(true);
+        AuthPrincipal admin = new AuthPrincipal(fx.owner(orgs.findById(c.getOrgId()).orElseThrow()).getId(),
+                c.getOrgId(), com.imin.iminapi.model.UserRole.ADMIN, UUID.randomUUID());
+        campaignService.retry(admin, c.getId());
         dispatcher.runOnce();
 
-        assertThat(campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElseThrow().getStatus()).isEqualTo("sent");
-        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(2L);
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(250L);
+        assertThat(campaigns.findStatusById(c.getId())).contains("sent");
+    }
+
+    /** A provider id derived from the address (the column holds 64 characters), so a shifted id shows. */
+    private static String msgId(String to) {
+        return "msg-" + UUID.nameUUIDFromBytes(to.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }

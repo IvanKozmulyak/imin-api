@@ -94,6 +94,7 @@ public class CampaignService {
     private final Clock clock;
     private final QuietHours quietHours;
     private final com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
+    private final com.imin.iminapi.repository.ModerationHoldRepository moderationHolds;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -115,8 +116,10 @@ public class CampaignService {
                            com.imin.iminapi.repository.AuditLogRepository auditLogs,
                            com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions,
                            Clock clock, QuietHours quietHours,
-                           com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens) {
+                           com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens,
+                           com.imin.iminapi.repository.ModerationHoldRepository moderationHolds) {
         this.clock = clock;
+        this.moderationHolds = moderationHolds;
         this.quietHours = quietHours;
         this.unsubscribeTokens = unsubscribeTokens;
         this.auditLogs = auditLogs;
@@ -193,6 +196,7 @@ public class CampaignService {
         var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
         var linkedEvents = activeEventsByIds(p.orgId(), idsOf(rows, Campaign::getEventId));
         Map<UUID, CampaignSummary.Counts> counts = outcomeCounts(rows);
+        SendHolds holds = rows.stream().anyMatch(CampaignService::waitingToSend) ? sendHolds(p.orgId()) : SendHolds.NONE;
         return rows.stream()
                 .map(c -> {
                     Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
@@ -202,9 +206,43 @@ public class CampaignService {
                             e == null ? null : e.getName(),
                             e == null ? null : e.getTimezone(),
                             CampaignFailureReason.of(c.getLastError()),
-                            counts.get(c.getId()));
+                            counts.get(c.getId()),
+                            holds.of(c));
                 })
                 .toList();
+    }
+
+    /** sendHold values: the org's marketing sending is paused, or a moderation hold covers the org or the event. */
+    static final String HOLD_ORG_PAUSED = "org_paused";
+    static final String HOLD_MODERATION = "moderation_hold";
+
+    private static boolean waitingToSend(Campaign c) {
+        return "scheduled".equals(c.getStatus()) || "sending".equals(c.getStatus());
+    }
+
+    /** The org's pause and its active holds, read once per request, judged per campaign by {@link #of}. */
+    private record SendHolds(boolean orgPaused, boolean orgWideHold, Set<UUID> heldEventIds) {
+        static final SendHolds NONE = new SendHolds(false, false, Set.of());
+
+        /** Same rule as the claim's SENDABLE predicate; only for a campaign still waiting to send. */
+        String of(Campaign c) {
+            if (!waitingToSend(c)) return null;
+            if (orgPaused) return HOLD_ORG_PAUSED;
+            if (orgWideHold || (c.getEventId() != null && heldEventIds.contains(c.getEventId()))) return HOLD_MODERATION;
+            return null;
+        }
+    }
+
+    private SendHolds sendHolds(UUID orgId) {
+        Organization org = organizations.findById(orgId).orElse(null);
+        boolean paused = org != null && org.getMarketingPausedAt() != null;
+        boolean orgWide = false;
+        Set<UUID> events = new java.util.HashSet<>();
+        for (com.imin.iminapi.model.ModerationHold h : moderationHolds.findActiveByOrgId(orgId)) {
+            if (h.getEventId() == null) orgWide = true;
+            else events.add(h.getEventId());
+        }
+        return new SendHolds(paused, orgWide, events);
     }
 
     /**
@@ -388,7 +426,8 @@ public class CampaignService {
                 new PreviewAudienceResponse.Excluded(base.noBasis(), base.unsubscribed(),
                         base.marketingSuppressed(), base.deliverabilitySuppressed(), base.noPhone(), base.noEmail(),
                         count(skipped, SendPathGuard.EXPERIMENT_HOLDOUT), count(skipped, SendPathGuard.EVENT_CAP),
-                        count(skipped, SendPathGuard.MONTHLY_CAP), count(skipped, SendPathGuard.CONSENT_GATE)));
+                        count(skipped, SendPathGuard.MONTHLY_CAP), count(skipped, SendPathGuard.CONSENT_GATE),
+                        base.invalidAddress()));
     }
 
     private static int count(Map<UUID, String> skipped, String reason) {
@@ -468,10 +507,15 @@ public class CampaignService {
         CampaignEmailAssembler.Context ctx = assembler.contextFor(c, org);
         CampaignEmailAssembler.Email rendered = assembler.render(ctx, c.getSubject(), c.getPreheader(), c.getBodyMd(),
                 null, emailProps.unsubscribePageUrl(testToken), null);
-        // Same provider, From and headers as the real batch send, so the test shows what fans will get.
-        provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
+        // Same provider, From, Reply-To and headers as the real batch send, so the test shows what fans will get.
+        // No key and no campaign tag: a test is never replayed, and its events are not campaign stats.
+        CampaignEmailProvider.BatchResult result = provider.sendBatch(null, List.of(new CampaignEmailProvider.OutgoingEmail(
                 ctx.fromHeader(), to,
-                "[TEST] " + rendered.subject(), rendered.html(), rendered.text(), unsubUrl, c.aiDisclosure())));
+                "[TEST] " + rendered.subject(), rendered.html(), rendered.text(), unsubUrl, c.aiDisclosure(),
+                emailProps.replyTo(org), null)));
+        if (result != null && result.rejected(0)) {
+            throw new CampaignEmailProvider.CampaignRejected("Email service rejected the test email", 422);
+        }
         audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
                 "Test email sent to organizer");
     }
@@ -815,10 +859,14 @@ public class CampaignService {
     /**
      * Guarded retry of a {@code failed} campaign (spec §2.4), the only way out of {@code failed} since the dispatcher
      * never claims one: back to {@code scheduled} at now while attempts &lt; 3, else (or any other status) 409 INVALID_STATE.
+     * ADMIN or OWNER only (403 for a MEMBER), like send. Rows still queued under a batch key are replayed with that key.
      */
     @Transactional
     public Campaign retry(AuthPrincipal principal, UUID campaignId) {
         Campaign c = require(principal.orgId(), campaignId);
+        // Retry mails every requeued recipient, so it needs the role Send needs; after the 404, before any state change.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "retry a campaign");
         if (!"failed".equals(c.getStatus()) || c.getAttempts() >= MAX_ATTEMPTS) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not retryable");
@@ -835,7 +883,7 @@ public class CampaignService {
         // this the retry re-claimed a campaign with nothing left to send and failed again.
         // Rows that already left (sent/delivered/…) are untouched, so nobody is re-emailed.
         campaignRecipientRepository.requeueFailed(campaignId);
-        audit.record(principal, "CAMPAIGN_RETRIED", "campaign", c.getId(), "Campaign retry queued");
+        audit.record(principal, AuditActions.CAMPAIGN_RETRIED, "campaign", c.getId(), "Campaign retry queued");
         return require(principal.orgId(), campaignId);
     }
 
@@ -880,10 +928,11 @@ public class CampaignService {
         RecipientCounts counts = campaignRecipientRepository.chipCounts(id);
         // Live from the rows (mid-send diverts included), not the snapshot frozen at materialization.
         Map<String, Long> skipReasons = counts.total() == 0 ? null : skipReasonCounts(id);
+        String sendHold = waitingToSend(c) ? sendHolds(p.orgId()).of(c) : null;
         return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, statsOf(p.orgId(), id, counts), segmentName,
                 event == null ? null : event.getTimezone(), triggerType,
                 CampaignFailureReason.of(c.getLastError()), event == null ? null : event.getName(),
-                attributedRevenue(p.orgId(), c), skipReasons);
+                attributedRevenue(p.orgId(), c), skipReasons, sendHold);
     }
 
     /**

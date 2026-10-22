@@ -165,7 +165,7 @@ class SendGateChunksTest {
         return jdbc.queryForList("""
                 WITH c AS (
                   INSERT INTO consumers (consumer_id, normalized_email)
-                  SELECT gen_random_uuid(), ? || gen_random_uuid() || '@test.invalid' FROM generate_series(1, ?)
+                  SELECT gen_random_uuid(), ? || gen_random_uuid() || '@fixtures.imin.wtf' FROM generate_series(1, ?)
                   RETURNING consumer_id)
                 INSERT INTO memberships (membership_id, org_id, consumer_id, consent_status, consent_basis)
                 SELECT gen_random_uuid(), ?, consumer_id, 'subscribed', 'explicit' FROM c

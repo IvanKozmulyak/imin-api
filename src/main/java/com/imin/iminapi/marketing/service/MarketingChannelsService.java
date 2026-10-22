@@ -48,7 +48,7 @@ import java.util.UUID;
  *       {@code sms.sendingEnabled=false} and {@code sendWindow.enforced=false} so it can never be
  *       mistaken for a live guardrail — there is no SMS dispatcher.</li>
  * </ul>
- * Fields that still can't be sourced truthfully (any reputation score, bounce rate, SMS
+ * Fields that still can't be sourced truthfully (any reputation score, SMS
  * encoding) remain ABSENT — see {@link MarketingChannelsDto} for the full rationale.
  */
 @Service
@@ -108,11 +108,14 @@ public class MarketingChannelsService {
         long sentLast30d = recipients.countSentForOrgSince(
                 orgId, now.minus(SENT_WINDOW_DAYS, ChronoUnit.DAYS));
 
-        // ---- complaint rate: org-wide aggregate. The breaker trips PER CAMPAIGN, so this is
-        // a health view, not the exact quantity thresholded (documented on the DTO). ----
-        long delivered = providerStats.countByOrgIdAndType(orgId, ProviderEvent.TYPE_DELIVERED);
-        long complaints = providerStats.countByOrgIdAndType(orgId, ProviderEvent.TYPE_COMPLAINED);
+        // ---- complaint and bounce rates over the breaker's own org window (documented on the DTO) ----
+        Instant windowStart = ComplaintRateBreaker.orgWindowStart(now, org.getMarketingResumedAt());
+        long delivered = providerStats.countByOrgIdAndTypeSince(orgId, ProviderEvent.TYPE_DELIVERED, windowStart);
+        long complaints = providerStats.countByOrgIdAndTypeSince(orgId, ProviderEvent.TYPE_COMPLAINED, windowStart);
+        long bounced = providerStats.countByOrgIdAndTypeSince(orgId, ProviderEvent.TYPE_BOUNCED, windowStart);
+        long hardBounces = recipients.countHardBouncesForOrgSince(orgId, windowStart);
         double complaintRate = delivered == 0 ? 0.0 : (double) complaints / delivered;
+        double bounceRate = delivered + bounced == 0 ? 0.0 : (double) hardBounces / (delivered + bounced);
 
         Instant pausedAt = org.getMarketingPausedAt();
 
@@ -126,7 +129,12 @@ public class MarketingChannelsService {
                 ComplaintRateBreaker.THRESHOLD,
                 ComplaintRateBreaker.MIN_VOLUME,
                 pausedAt != null,
-                pausedAt);
+                pausedAt,
+                pausedAt == null ? null : org.getMarketingPausedReason(),
+                bounceRate,
+                hardBounces,
+                ComplaintRateBreaker.BOUNCE_THRESHOLD,
+                ComplaintRateBreaker.ORG_WINDOW_DAYS);
 
         // ---- quiet hours: constants + live evaluation from the enforcing component ----
         MarketingChannelsDto.QuietHoursWindow window = new MarketingChannelsDto.QuietHoursWindow(
@@ -151,7 +159,8 @@ public class MarketingChannelsService {
                 true,   // RFC 8058 headers are attached to every campaign email, unconditionally
                 window,
                 guardrails,
-                sentLast30d);
+                sentLast30d,
+                emailProps.replyTo(org));
 
         // ---- SMS: opt-ins are real; sending is not built (no provider, dispatcher is email-only).
         //      The remaining fields are INTENDED first-release policy from MarketingSmsProperties,

@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
@@ -60,7 +62,9 @@ class ResendWebhookControllerTest {
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
     @Autowired MarketingEmailProperties marketingProps;
+    @Autowired SuppressionRepository suppressions;
 
+    private static final String MARKETING_SECRET_B64 = "bWFya2V0aW5nc2VjcmV0MQ=="; // base64("marketingsecret1")
     private final List<UUID> orgIds = new ArrayList<>();
 
     @BeforeEach
@@ -106,7 +110,19 @@ class ResendWebhookControllerTest {
     }
 
     private String sign(String id, String ts, String body) throws Exception {
-        byte[] key = Base64.getDecoder().decode(SECRET_B64);
+        return sign(SECRET_B64, id, ts, body);
+    }
+
+    private MockHttpServletRequestBuilder signedWith(String secretB64, String svixId, String body) throws Exception {
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        return post("/api/v1/public/webhooks/resend")
+                .header("svix-id", svixId).header("svix-timestamp", ts)
+                .header("svix-signature", sign(secretB64, svixId, ts, body))
+                .contentType("application/json").content(body);
+    }
+
+    private String sign(String secretB64, String id, String ts, String body) throws Exception {
+        byte[] key = Base64.getDecoder().decode(secretB64);
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(key, "HmacSHA256"));
         return "v1," + Base64.getEncoder().encodeToString(
@@ -310,5 +326,165 @@ class ResendWebhookControllerTest {
         assertThat(row.get("campaign_id")).as("campaign_id").isNull();
         assertThat(row.get("recipient_id")).as("recipient_id").isNull();
         assertThat(row.get("provider_message_id")).as("provider_message_id").isNull();
+    }
+
+    private record Queued(UUID orgId, UUID campaignId, UUID membershipId, CampaignRecipient row, String email) {}
+
+    /** A real org's sending campaign with one member's row in {@code status}, sent without a provider id. */
+    private Queued queued(String status) {
+        UUID orgId = fx.org().getId();
+        orgIds.add(orgId);
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("tagged");
+        c.setStatus("sending");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaignRepo.save(c);
+        String email = fx.email("tagged");
+        Consumer cn = new Consumer();
+        cn.setNormalizedEmail(email);
+        cn = consumerRepo.save(cn);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(cn.getConsumerId());
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
+        m = membershipRepo.save(m);
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(m.getMembershipId());
+        r.setEmail(email);
+        r.setStatus(status);
+        if (!"pending".equals(status)) r.setErrorCode("no_provider_id");
+        return new Queued(orgId, c.getId(), m.getMembershipId(), recipientRepo.save(r), email);
+    }
+
+    private static String taggedBody(String type, String messageId, String email, UUID campaignId, Instant createdAt) {
+        return "{\"type\":\"" + type + "\",\"created_at\":\"" + createdAt + "\",\"data\":{\"email_id\":\""
+                + messageId + "\",\"to\":[\"" + email + "\"],\"tags\":{\"imin_campaign\":\"" + campaignId + "\"}}}";
+    }
+
+    private int claimed(String svixId) {
+        return jdbc.queryForObject("select count(*) from provider_events where provider_event_id = ?", Integer.class, svixId);
+    }
+
+    @Test
+    void anEarlyEventForATaggedCampaignIsRetriedThenProjected() throws Exception {
+        Queued q = queued("pending");
+        String messageId = "msg_" + UUID.randomUUID();
+        String svixId = "svix_" + UUID.randomUUID();
+        String body = taggedBody("email.complained", messageId, q.email(), q.campaignId(), Instant.now());
+
+        mvc.perform(signed(svixId, body)).andExpect(status().isServiceUnavailable());
+        assertThat(claimed(svixId)).isZero();
+        assertThat(reload(q.row()).getStatus()).isEqualTo("pending");
+
+        // The batch commits: the row is recorded sent with the id Resend returned.
+        jdbc.update("update campaign_recipients set status = 'sent', provider_message_id = ?, error_code = null"
+                + " where id = ?", messageId, q.row().getId());
+        mvc.perform(signed(svixId, body)).andExpect(status().isOk());
+
+        assertThat(reload(q.row()).getStatus()).isEqualTo("complained");
+        assertThat(suppressions.findMarketingSuppressedMembershipIds(q.orgId(), List.of(q.membershipId())))
+                .containsExactly(q.membershipId());
+        assertThat(claimed(svixId)).isEqualTo(1);
+    }
+
+    @Test
+    void aLateEventFindsItsRowByCampaignAndAddress() throws Exception {
+        Queued q = queued("sent");
+        String messageId = "msg_" + UUID.randomUUID();
+        String svixId = "svix_" + UUID.randomUUID();
+        Instant twoHoursAgo = Instant.now().minus(2, ChronoUnit.HOURS).truncatedTo(ChronoUnit.SECONDS);
+
+        mvc.perform(signed(svixId, taggedBody("email.delivered", messageId, q.email().toUpperCase(Locale.ROOT),
+                q.campaignId(), twoHoursAgo))).andExpect(status().isOk());
+
+        CampaignRecipient after = reload(q.row());
+        assertThat(after.getStatus()).isEqualTo("delivered");
+        assertThat(after.getDeliveredAt()).isEqualTo(twoHoursAgo);
+        assertThat(after.getProviderMessageId()).isEqualTo(messageId);
+        assertThat(jdbc.queryForObject("select recipient_id from provider_events where provider_event_id = ?",
+                UUID.class, svixId)).isEqualTo(q.row().getId());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"untaggedPermanentBounce", "untaggedTransientBounce", "signedWithTheMarketingSecret",
+            "signedWithNeither"})
+    void unmatchedBouncesAndBothSecrets(String scenario) throws Exception {
+        flips.set(webhookProps, "marketingSecret", "whsec_" + MARKETING_SECRET_B64);
+        String email = fx.email("ticket-buyer");
+        String bounceType = "untaggedTransientBounce".equals(scenario) ? "Transient" : "Permanent";
+        String body = "{\"type\":\"email.bounced\",\"created_at\":\"" + Instant.now() + "\",\"data\":{"
+                + "\"email_id\":\"msg_" + UUID.randomUUID() + "\",\"to\":[\"" + email + "\"],"
+                + "\"bounce\":{\"type\":\"" + bounceType + "\"}}}";
+        String svixId = "svix_" + UUID.randomUUID();
+
+        var result = switch (scenario) {
+            case "signedWithTheMarketingSecret" -> mvc.perform(signedWith(MARKETING_SECRET_B64, svixId, body));
+            case "signedWithNeither" -> mvc.perform(signedWith("bmVpdGhlcnNlY3JldDAw", svixId, body));
+            default -> mvc.perform(signed(svixId, body));
+        };
+
+        if ("signedWithNeither".equals(scenario)) {
+            result.andExpect(status().isUnauthorized());
+            assertThat(claimed(svixId)).isZero();
+            assertThat(suppressions.findDeliverabilityEmailsIn(List.of(email))).isEmpty();
+        } else if ("untaggedTransientBounce".equals(scenario)) {
+            result.andExpect(status().isOk());
+            assertThat(suppressions.findDeliverabilityEmailsIn(List.of(email))).isEmpty();
+        } else {
+            result.andExpect(status().isOk());
+            assertThat(suppressions.findDeliverabilityEmailsIn(List.of(email))).containsExactly(email);
+        }
+    }
+
+    /** A complaint about a tagged email whose row is gone still protects the person and counts for the org's breaker. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"memberInsideTheGrace", "noMemberAfterTheGrace"})
+    void aTaggedComplaintWithNoRowSuppressesByAddress(String scenario) throws Exception {
+        UUID orgId = fx.org().getId();
+        orgIds.add(orgId);
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("purged rows");
+        c.setStatus("sent");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaignRepo.save(c);
+        String email = fx.email("complainer");
+        UUID membershipId = null;
+        if ("memberInsideTheGrace".equals(scenario)) {
+            Consumer cn = new Consumer();
+            cn.setNormalizedEmail(email);
+            cn = consumerRepo.save(cn);
+            Membership m = new Membership();
+            m.setOrgId(orgId);
+            m.setConsumerId(cn.getConsumerId());
+            m.setConsentStatus("subscribed");
+            m.setConsentBasis("explicit");
+            membershipId = membershipRepo.save(m).getMembershipId();
+        }
+        Instant createdAt = "memberInsideTheGrace".equals(scenario) ? Instant.now() : Instant.now().minus(2, ChronoUnit.HOURS);
+        String svixId = "svix_" + UUID.randomUUID();
+
+        mvc.perform(signed(svixId, taggedBody("email.complained", "msg_" + UUID.randomUUID(), email, c.getId(), createdAt)))
+                .andExpect(status().isOk());
+
+        if (membershipId != null) {
+            assertThat(suppressions.findMarketingSuppressedMembershipIds(orgId, List.of(membershipId))).containsExactly(membershipId);
+        } else {
+            assertThat(jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ? and org_id = ?",
+                    Integer.class, email, orgId)).isEqualTo(1);
+        }
+        // Filed under the campaign, so the breaker's per-campaign and org counts include it.
+        assertThat(jdbc.queryForObject("select campaign_id from provider_events where provider_event_id = ?",
+                UUID.class, svixId)).isEqualTo(c.getId());
     }
 }

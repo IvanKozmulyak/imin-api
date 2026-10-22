@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -102,8 +103,8 @@ class CampaignDailyCapDuringDrainTest {
         for (int i = 0; i < 150; i++) {   // cap is 100: batch 1 fills it, batch 2 must not run
             recipient(c, "pending", null);
         }
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
 
         dispatcher.runOnce();
 

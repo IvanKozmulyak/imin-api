@@ -251,7 +251,7 @@ class CheckoutReminderControllerTest {
     private long testsSentTo(String to) {
         return mockingDetails(provider).getInvocations().stream()
                 .filter(i -> i.getMethod().getName().equals("sendBatch"))
-                .flatMap(i -> ((List<?>) i.getArgument(0)).stream())
+                .flatMap(i -> ((List<?>) i.getArgument(1)).stream())
                 .map(o -> (CampaignEmailProvider.OutgoingEmail) o)
                 .filter(o -> to.equals(o.to()))
                 .count();

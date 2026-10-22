@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -135,7 +136,7 @@ class CampaignRenderPreviewTest {
     @SuppressWarnings("unchecked")
     private CampaignEmailProvider.OutgoingEmail sentTo(String email) {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         List<CampaignEmailProvider.OutgoingEmail> mine = captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> email.equals(e.to())).toList();
         assertThat(mine).hasSize(1);
@@ -157,7 +158,7 @@ class CampaignRenderPreviewTest {
                 + "Le line-up est sur [notre page](https://app.imin.wtf/lineup) et {{eventUrl}}.\n\n{{tickets_button}}";
         Campaign c = campaign("sending", "poster", event.getId(), "Derniers billets, {{firstName}}", body);
         String fan = pendingMember(c, "Ivan Petrenko");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         RenderPreviewResponse preview = service.renderPreview(fx.principal(owner), c.getId(), null);
         sender.sendNextBatch(c);

@@ -262,4 +262,23 @@ class PublicUnsubscribeControllerTest {
         assertThat(recipients.findById(f.recipientId()).orElseThrow().getStatus()).isEqualTo("complained");
         assertThat(membership(f).getConsentStatus()).isEqualTo("unsubscribed");
     }
+
+    /** After a big send one mail provider IP fires one-click for many fans; only a forged or replayed link is refused. */
+    @Test
+    void aValidOneClickIsNeverLimitedPerIp() throws Exception {
+        limiter.limit("unsubscribe", 0);
+        limiter.limit("unsubscribe-token", 10);
+        Fixture f = seed("delivered");
+        String token = token(f, "email");
+
+        mvc.perform(post("/api/v1/public/unsubscribe/{token}", token)).andExpect(status().isOk());
+        assertThat(membership(f).getConsentStatus()).isEqualTo("unsubscribed");
+
+        mvc.perform(post("/api/v1/public/unsubscribe/{token}", "forged.token")).andExpect(status().isTooManyRequests());
+
+        for (int replay = 2; replay <= 10; replay++) {
+            mvc.perform(post("/api/v1/public/unsubscribe/{token}", token)).andExpect(status().isOk());
+        }
+        mvc.perform(post("/api/v1/public/unsubscribe/{token}", token)).andExpect(status().isTooManyRequests());
+    }
 }

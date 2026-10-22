@@ -249,10 +249,20 @@ imin:
     # An entry that is not one address (no @, two @, spaces, ';') stops startup.
     emails: ${IMIN_TEAM_ALERT_EMAILS:}
   marketing:
-    # Bulk-email sending identity — a marketing subdomain (e.g. news.imin.wtf)
-    # with its OWN SPF/DKIM so bulk sends never touch the transactional auth-email
-    # reputation. In prod set IMIN_MARKETING_FROM_ADDRESS to a verified Resend sender.
+    # Bulk-email sending identity. The marketing subdomain (e.g. news.imin.wtf, own SPF/DKIM)
+    # and its Resend key are configured here, not assumed: with both blank, campaigns go
+    # out from contact@imin.support on the transactional key (RESEND_API_KEY). Switch only
+    # while no campaign is 'sending' — Idempotency-Keys live per Resend team.
     from-address: ${IMIN_MARKETING_FROM_ADDRESS:contact@imin.support}
+    # Resend key for campaign batches (a sending key restricted to the marketing domain,
+    # ideally on its own Resend team). Blank = imin.email.api-key.
+    resend-api-key: ${IMIN_MARKETING_RESEND_API_KEY:}
+    # Reply-To when an organizer's legal contact is not one email address (a postal
+    # address). Blank = no Reply-To on those campaigns; set a monitored IMIN inbox.
+    reply-to: ${IMIN_MARKETING_REPLY_TO:}
+    # Pause between two batches of one drive. Resend rate-limits 10 requests/s per team
+    # across every key, so a drive must leave room for ticket emails on a shared team.
+    batch-pause: ${IMIN_MARKETING_BATCH_PAUSE:500ms}
     # Shown only when no organizer name is known; campaigns go out as "<org> via IMIN".
     from-name: ${IMIN_MARKETING_FROM_NAME:IMIN}
     # Longest wait for one marketing-copy model answer (compose, subject, template, Momentum); one 5xx retry.
@@ -282,8 +292,14 @@ imin:
       # inbound POST /api/v1/public/webhooks/resend delivery events. Blank => every
       # webhook fails signature verification (delivery projection is dark).
       secret: ${RESEND_WEBHOOK_SECRET:}
+      # The marketing Resend team's endpoint secret, when marketing runs on its own team;
+      # a body signed with either secret is accepted. Blank = only the first one.
+      marketing-secret: ${RESEND_MARKETING_WEBHOOK_SECRET:}
       # Clock-skew tolerance on the svix-timestamp header (Standard-Webhooks default 300s).
       tolerance-seconds: 300
+      # A tagged campaign event whose recipient row is still queued is answered 503
+      # (Svix retries) while the event is younger than this; after it, it is acked.
+      recipient-grace: ${IMIN_RESEND_WEBHOOK_RECIPIENT_GRACE:30m}
     guard:
       # Max marketing sends per org per rolling 24h — the dispatcher stops
       # dispatching a batch once the org's rolling-24h count hits this cap.
@@ -863,12 +879,17 @@ imin:
       capacity: 10
       window-minutes: 15
     unsubscribe:
-      # GET and POST /api/v1/public/unsubscribe/**, keyed per client IP.
-      # Deliberately loose. An opt-out is the one request that must never be
-      # hard to complete, and a mail client may fire RFC 8058 one-click for
-      # several messages at once; what this bounds is somebody probing the HMAC
-      # by grinding tokens, which is cheap for us to serve and useless to them.
+      # Keyed per client IP. Consumed on every notify-me unsubscribe, and by the
+      # marketing POST /api/v1/public/unsubscribe/{token} only when the token fails
+      # verification: what this bounds is somebody probing the HMAC by grinding
+      # tokens. A verified token never touches it, so a mail provider's IP firing
+      # RFC 8058 one-click for many fans after a big send cannot be refused.
       capacity: 60
+      window-minutes: 5
+    unsubscribe-token:
+      # Verified marketing one-click POSTs, keyed per token (a SHA-256 prefix), so
+      # only replaying one link many times is refused.
+      capacity: 10
       window-minutes: 5
     ai-content:
       # POST /api/v1/events/ai-content, keyed per client IP. Unauthenticated

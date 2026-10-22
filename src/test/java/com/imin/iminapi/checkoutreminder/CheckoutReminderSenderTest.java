@@ -108,7 +108,8 @@ class CheckoutReminderSenderTest {
         night = rows.night(org, NOW.plus(Duration.ofDays(3)));
         tier = rows.tier(night, 1600, 50);
         email = rows.email("sender");
-        when(provider.sendBatch(any())).thenAnswer(inv -> List.of("msg_" + UUID.randomUUID()));
+        when(provider.sendBatch(any(), any())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(List.of("msg_" + UUID.randomUUID())));
     }
 
     @AfterEach
@@ -153,7 +154,7 @@ class CheckoutReminderSenderTest {
                     rows.member(org, email, "subscribed").getMembershipId());
             // Set on the row below: a version taken off the allowlist after the tick was kept.
             case "CONSENT_VERSION_RETIRED" -> { }
-            case "PAUSED" -> saveOrg(o -> o.setMarketingPausedAt(NOW.minus(Duration.ofHours(2))));
+            case "PAUSED" -> orgs.pauseMarketingIfNotPaused(org.id(), "complaint_rate", NOW.minus(Duration.ofHours(2)));
             case "DISABLED" -> settings.disable(org.id(), NOW);
             case "LEGAL_IDENTITY_MISSING" -> saveOrg(o -> o.setLegalName(" "));
             default -> throw new IllegalArgumentException(variant);
@@ -243,18 +244,18 @@ class CheckoutReminderSenderTest {
                     Timestamp.from(NOW.minus(Duration.ofMinutes(11))), id);
             case "connectionRefused" -> failSend(io(new ConnectException("Failed to connect to api.resend.com/443")));
             case "unknownHost" -> failSend(io(new UnknownHostException("api.resend.com")));
-            case "rateLimited" -> failSend(new RuntimeException("Failed to send batch emails: 429 {\"name\":\"rate_limit_exceeded\"}"));
+            case "rateLimited" -> failSend(status(429));
             case "lastFailureThatNeverReachedResend" -> {
                 jdbc.update("UPDATE checkout_reminders SET attempts = 2 WHERE id = ?", id);
                 failSend(io(new ConnectException("Connection refused")));
             }
             // Resend may have accepted the batch before the answer was lost.
             case "readTimeout" -> failSend(io(new SocketTimeoutException("timeout")));
-            case "serverError" -> failSend(new RuntimeException("Failed to send batch emails: 500 {}"));
-            case "unrecognisedFailure" -> when(provider.sendBatch(any())).thenThrow(
+            case "serverError" -> failSend(status(500));
+            case "unrecognisedFailure" -> when(provider.sendBatch(any(), any())).thenThrow(
                     new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, "down"));
-            case "providerRejects" -> when(provider.sendBatch(any())).thenThrow(
-                    new CampaignEmailProvider.TerminalBatchFailure("rejected", 422, null));
+            case "providerRejects" -> when(provider.sendBatch(any(), any())).thenThrow(
+                    new CampaignEmailProvider.CampaignRejected("rejected", 422));
             default -> throw new IllegalArgumentException(variant);
         }
 
@@ -358,15 +359,20 @@ class CheckoutReminderSenderTest {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    /** The provider call fails the way CampaignEmailProvider reports it: a 503 wrapping resend-java's exception. */
-    private void failSend(RuntimeException resendFailure) {
-        when(provider.sendBatch(any())).thenThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                ErrorCode.UPSTREAM_UNAVAILABLE, "Email service unavailable", resendFailure));
+    /** The provider call fails the way CampaignEmailProvider reports it. */
+    private void failSend(RuntimeException providerFailure) {
+        when(provider.sendBatch(any(), any())).thenThrow(providerFailure);
     }
 
-    /** resend-java wraps every IOException in a bare RuntimeException. */
+    /** A transport failure: RestClient wraps the IOException, the provider wraps that as retryable. */
     private static RuntimeException io(java.io.IOException e) {
-        return new RuntimeException(e);
+        return new CampaignEmailProvider.RetryableBatchFailure("Email service unavailable", 0, true, null,
+                new org.springframework.web.client.ResourceAccessException("I/O error", e));
+    }
+
+    /** Resend answered with this status and asked to come back. */
+    private static RuntimeException status(int status) {
+        return new CampaignEmailProvider.RetryableBatchFailure("Email service unavailable", status, false, null, null);
     }
 
     private void tick() {
@@ -378,7 +384,7 @@ class CheckoutReminderSenderTest {
     private long attemptsTo(String to) {
         return mockingDetails(provider).getInvocations().stream()
                 .filter(i -> i.getMethod().getName().equals("sendBatch"))
-                .flatMap(i -> ((List<?>) i.getArgument(0)).stream())
+                .flatMap(i -> ((List<?>) i.getArgument(1)).stream())
                 .map(o -> (CampaignEmailProvider.OutgoingEmail) o)
                 .filter(o -> to.equals(o.to()))
                 .count();
@@ -388,7 +394,7 @@ class CheckoutReminderSenderTest {
     private List<CampaignEmailProvider.OutgoingEmail> sentTo(String to) {
         if (attemptsTo(to) == 0) return List.of();
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(1)).sendBatch(captor.capture());
+        verify(provider, atLeast(1)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream().flatMap(List::stream).filter(o -> to.equals(o.to())).toList();
     }
 

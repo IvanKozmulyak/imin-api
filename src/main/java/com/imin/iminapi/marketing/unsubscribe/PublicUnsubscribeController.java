@@ -40,7 +40,9 @@ import java.util.UUID;
  *
  * <ul>
  *   <li><b>POST</b> mutates: RFC 8058 one-click, and what the buyer-site page submits.
- *       Test-email tokens answer 200 and write nothing.</li>
+ *       Test-email tokens answer 200 and write nothing. A token that fails verification costs the per-IP
+ *       {@code unsubscribe} bucket and answers 404; a verified one only its own {@code unsubscribe-token} bucket
+ *       (10 per 5 min), so a mail provider's shared IP is never refused.</li>
  *   <li><b>GET /{token}/details</b> reads state for the buyer-site page; it writes nothing.</li>
  *   <li><b>GET /{token}</b> redirects (303) to the buyer-site page and touches nothing: a footer link
  *       is fetched by mail-client proxies and URL scanners, so a safe method must stay safe.</li>
@@ -89,20 +91,26 @@ public class PublicUnsubscribeController {
     @PostMapping("/{token}")
     @ResponseBody
     public String oneClick(@PathVariable String token, HttpServletRequest http) {
-        // Per client IP. Generous: a mail client may fire one-click for several
-        // messages at once, and an opt-out is the one request we must never make
-        // hard to complete. It bounds signature-probing, not real recipients.
-        rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
         // A test email's link, signed or the legacy literal, unsubscribes nobody.
-        if (LEGACY_TEST_TOKEN.equals(token) || tokens.verifyTest(token).isPresent()) return "test";
-        Optional<UUID> reminderId = tokens.verifyReminder(token);
+        boolean test = LEGACY_TEST_TOKEN.equals(token) || tokens.verifyTest(token).isPresent();
+        Optional<UUID> reminderId = test ? Optional.empty() : tokens.verifyReminder(token);
+        Optional<UnsubscribeTokenService.Claims> verified = test || reminderId.isPresent()
+                ? Optional.empty() : tokens.verify(token);
+        if (!test && reminderId.isEmpty() && verified.isEmpty()) {
+            // Only a link that fails verification costs the per-IP budget: it bounds signature probing.
+            rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
+            throw ApiException.notFound("Unsubscribe link");
+        }
+        // A verified link is never limited per IP: one mail provider IP fires RFC 8058 one-click for many fans after
+        // a big send. Only replaying the same link many times is refused.
+        rateLimiter.consume("unsubscribe-token", "token:" + tokenKey(token));
+        if (test) return "test";
         if (reminderId.isPresent()) {
             // Sticky opt-out from this organizer, plus the membership's unsubscribe when there is one.
             checkoutReminders.unsubscribe(reminderId.get());
             return "unsubscribed";
         }
-        UnsubscribeTokenService.Claims claims = tokens.verify(token)
-                .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
+        UnsubscribeTokenService.Claims claims = verified.get();
         // The recipient acted on this sender themselves — their mail client's
         // unsubscribe control (RFC 8058) or the confirm button below. As explicit
         // a decision about one sender as exists, so it is sticky (§6.3).
@@ -110,6 +118,17 @@ public class PublicUnsubscribeController {
                 "one_click", claims.channel(), ConsentOrigin.DATA_SUBJECT, null);
         projectOntoCampaignRow(claims);
         return "unsubscribed";
+    }
+
+    /** A SHA-256 prefix of the token: the bucket key, so the token itself never reaches the rate-limit store. */
+    private static String tokenKey(String token) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest, 0, 16);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**

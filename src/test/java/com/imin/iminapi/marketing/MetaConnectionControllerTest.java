@@ -10,12 +10,17 @@ import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.FunnelEventRepository;
+import com.imin.iminapi.marketing.graph.MetaGraphClient;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.AuditRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -32,7 +37,11 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -46,6 +55,8 @@ class MetaConnectionControllerTest {
     @Autowired FunnelEventRepository funnel;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
+    @Autowired AuditRows audit;
+    @Autowired MetaGraphClient graph;
     final ObjectMapper json = new ObjectMapper();
 
     private final List<UUID> outboxOrgIds = new ArrayList<>();
@@ -161,5 +172,44 @@ class MetaConnectionControllerTest {
         mvc.perform(get("/api/v1/marketing/meta/funnel").with(authentication(auth)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.stages[0].iminCount").value(1));
+    }
+
+    private UsernamePasswordAuthenticationToken as(UserRole role) {
+        AuthPrincipal p = new AuthPrincipal(owner.getId(), org.getId(), role, UUID.randomUUID());
+        return new UsernamePasswordAuthenticationToken(p, null, List.of(new SimpleGrantedAuthority("ROLE_" + role.name())));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"memberPut", "memberDelete", "memberTest", "adminPut"})
+    void pixelChangesNeedAnAdminAndAreAudited(String call) throws Exception {
+        mvc.perform(put("/api/v1/marketing/meta/connection").with(authentication(auth)).contentType("application/json")
+                .content(json.writeValueAsString(Map.of("pixelId", "111", "capiAccessToken", "EAAG-first-secret"))))
+                .andExpect(status().isOk());
+        String replace = json.writeValueAsString(Map.of("pixelId", "222", "capiAccessToken", "EAAG-second-secret"));
+
+        switch (call) {
+            case "memberPut" -> mvc.perform(put("/api/v1/marketing/meta/connection").with(authentication(as(UserRole.MEMBER)))
+                    .contentType("application/json").content(replace)).andExpect(status().isForbidden());
+            case "memberDelete" -> mvc.perform(delete("/api/v1/marketing/meta/connection")
+                    .with(authentication(as(UserRole.MEMBER)))).andExpect(status().isForbidden());
+            case "memberTest" -> mvc.perform(post("/api/v1/marketing/meta/connection/test")
+                    .with(authentication(as(UserRole.MEMBER)))).andExpect(status().isForbidden());
+            default -> mvc.perform(put("/api/v1/marketing/meta/connection").with(authentication(as(UserRole.ADMIN)))
+                    .contentType("application/json").content(replace)).andExpect(status().isOk());
+        }
+
+        var connection = connRepo.findByOrgIdAndEventIdIsNull(org.getId());
+        var connectedRows = audit.forOrg(org.getId()).stream()
+                .filter(r -> "META_PIXEL_CONNECTED".equals(r.getAction())).toList();
+        if ("adminPut".equals(call)) {
+            assertThat(connection).hasValueSatisfying(c -> assertThat(c.getPixelId()).isEqualTo("222"));
+            assertThat(connectedRows).hasSize(2).anySatisfy(r -> assertThat(r.getSummary()).contains("222"));
+            assertThat(connectedRows).allSatisfy(r -> assertThat(r.getSummary()).doesNotContain("EAAG"));
+        } else {
+            assertThat(connection).hasValueSatisfying(c -> assertThat(c.getPixelId()).isEqualTo("111"));
+            assertThat(connectedRows).hasSize(1);
+            assertThat(audit.forOrg(org.getId())).noneMatch(r -> "META_PIXEL_DISCONNECTED".equals(r.getAction()));
+            verify(graph, never()).sendEvents(any(), any(), any(), any());
+        }
     }
 }

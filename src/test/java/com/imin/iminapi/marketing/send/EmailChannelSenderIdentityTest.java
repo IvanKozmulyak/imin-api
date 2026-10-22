@@ -16,6 +16,8 @@ import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -28,6 +30,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -109,7 +112,7 @@ class EmailChannelSenderIdentityTest {
     @SuppressWarnings("unchecked")
     private List<CampaignEmailProvider.OutgoingEmail> ownEmails() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> ownAddresses.contains(e.to())).toList();
     }
@@ -123,7 +126,7 @@ class EmailChannelSenderIdentityTest {
     @Test
     void manualCampaign_isFromBrandViaImin_withTheLegalFooter() {
         Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "manual");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -136,7 +139,7 @@ class EmailChannelSenderIdentityTest {
     @Test
     void orgWithoutBrand_isFromOrgNameViaImin() {
         Campaign c = campaignWithPending(org(null, null, null), "manual");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -146,7 +149,7 @@ class EmailChannelSenderIdentityTest {
     @Test
     void manualCampaign_withoutLegalIdentity_stillSends() {
         Campaign c = campaignWithPending(org(null, null, null), "manual");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -191,8 +194,9 @@ class EmailChannelSenderIdentityTest {
 
     @Test
     void audiencePlanCampaign_withLegalIdentity_sends() {
+        flips.set(planProps, "sendsEnabled", true);
         Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "audience_plan");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -211,10 +215,28 @@ class EmailChannelSenderIdentityTest {
     void allCampaignsFlag_momentumCampaignWithLegalIdentity_sends() {
         flips.set(planProps, "legalIdentityAllCampaigns", true);
         Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "momentum");
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
         assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(1L);
+    }
+
+    /** Fan replies reach the organizer's legal contact when it is one mailable address, else IMIN's inbox, else none. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "emailLegalContact|legal@club-night.fr|replies@imin.wtf|legal@club-night.fr",
+            "postalWithFallback|12 rue Oberkampf, 75011 Paris|replies@imin.wtf|replies@imin.wtf",
+            "postalWithoutFallback|12 rue Oberkampf, 75011 Paris|''|''",
+            "headerInjection|legal@club-night.fr\\nBcc: x@evil.fr|replies@imin.wtf|replies@imin.wtf"
+    })
+    void replyToFollowsTheLegalContact(String label, String legalContact, String fallback, String expected) {
+        flips.set(marketingProps, "replyTo", fallback);
+        Campaign c = campaignWithPending(org("Night", "Night SAS", legalContact.replace("\\n", "\n")), "manual");
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
+
+        sender.sendNextBatch(c);
+
+        assertThat(sentEmail().replyTo()).isEqualTo(expected.isEmpty() ? null : expected);
     }
 }

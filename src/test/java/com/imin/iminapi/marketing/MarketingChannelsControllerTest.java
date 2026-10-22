@@ -218,9 +218,7 @@ class MarketingChannelsControllerTest {
     @Test
     void pausedOrgReportsPaused() throws Exception {
         Instant pausedAt = Instant.now().minusSeconds(120);
-        Organization o = orgs.findById(orgA).orElseThrow();
-        o.setMarketingPausedAt(pausedAt);
-        orgs.save(o);
+        orgs.pauseMarketingIfNotPaused(orgA, "complaint_rate", pausedAt);
 
         mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
                 .andExpect(status().isOk())
@@ -284,8 +282,8 @@ class MarketingChannelsControllerTest {
         Organization o = orgs.findById(orgA).orElseThrow();
         o.setTimezone(java.time.ZoneOffset.ofHours(12 - Instant.now().atZone(java.time.ZoneOffset.UTC).getHour()).getId());
         orgs.save(o);
-        when(provider.sendBatch(org.mockito.ArgumentMatchers.anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyList())).thenAnswer(inv ->
+                com.imin.iminapi.marketing.email.CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
         Campaign c = newCampaign(orgA);
         c.setStatus("scheduled");
         c.setScheduledAt(Instant.now().minusSeconds(60));

@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -49,8 +50,8 @@ class CampaignDispatcherTest {
 
     @BeforeEach
     void stubProvider() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
     }
 
     @AfterEach

@@ -37,21 +37,24 @@ public class MetaConnectionController {
         return service.get(principal.orgId());
     }
 
+    /** ADMIN or OWNER only (403 for a MEMBER): installs a tracker on every buyer page of the org. Audited. */
     @PutMapping("/connection")
     public MetaConnectionDto put(@CurrentUser AuthPrincipal principal,
                                  @Valid @RequestBody PutMetaConnectionRequest body) {
-        return service.upsert(principal.orgId(), principal.userId(), body);
+        return service.upsert(principal, body);
     }
 
+    /** ADMIN or OWNER only (403 for a MEMBER). Audited. */
     @DeleteMapping("/connection")
     public ResponseEntity<Void> delete(@CurrentUser AuthPrincipal principal) {
-        service.delete(principal.orgId());
+        service.delete(principal);
         return ResponseEntity.noContent().build();
     }
 
+    /** ADMIN or OWNER only (403 for a MEMBER): sends an event to Meta with the stored token. */
     @PostMapping("/connection/test")
     public MetaTestEventResult test(@CurrentUser AuthPrincipal principal) {
-        return service.test(principal.orgId());
+        return service.test(principal);
     }
 
     @GetMapping("/stats")

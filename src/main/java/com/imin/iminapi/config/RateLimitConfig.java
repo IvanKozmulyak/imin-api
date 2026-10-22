@@ -129,6 +129,10 @@ public class RateLimitConfig {
     private int unsubscribeCapacity;
     @Value("${imin.ratelimit.unsubscribe.window-minutes}")
     private int unsubscribeWindow;
+    @Value("${imin.ratelimit.unsubscribe-token.capacity}")
+    private int unsubscribeTokenCapacity;
+    @Value("${imin.ratelimit.unsubscribe-token.window-minutes}")
+    private int unsubscribeTokenWindow;
     @Value("${imin.ratelimit.ai-content.capacity}")
     private int aiContentCapacity;
     @Value("${imin.ratelimit.ai-content.window-minutes}")
@@ -336,10 +340,13 @@ public class RateLimitConfig {
                 .addLimit(Bandwidth.simple(buyerResetPasswordTokenCapacity,
                         Duration.ofMinutes(buyerResetPasswordTokenWindow)))
                 .build());
-        // Owned opt-out, keyed per client IP. Deliberately loose — an opt-out is
-        // the one request that must never be hard to complete.
+        // Owned opt-out, keyed per client IP; the marketing POST consumes it only for a token that fails verification.
         configs.put("unsubscribe", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(unsubscribeCapacity, Duration.ofMinutes(unsubscribeWindow)))
+                .build());
+        // Verified marketing one-click POSTs, keyed per token: only replaying one link is refused.
+        configs.put("unsubscribe-token", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(unsubscribeTokenCapacity, Duration.ofMinutes(unsubscribeTokenWindow)))
                 .build());
         // POST /events/ai-content: unauthenticated and billed to imin per call.
         configs.put("ai-content", BucketConfiguration.builder()

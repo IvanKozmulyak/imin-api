@@ -1,6 +1,9 @@
 package com.imin.iminapi.marketing.webhook;
 
+import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.service.MarketingOptOutRecorder;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentChanged;
 import com.imin.iminapi.audience.service.EmailNormalizer;
@@ -56,6 +59,8 @@ public class ResendWebhookProjector {
     private final FanFeatureRepository fanFeatureRepo;
     private final ConsentConfirmationTokenRepository confirmationTokens;
     private final MarketingEmailProperties marketingProps;
+    private final ConsumerRepository consumers;
+    private final MarketingOptOutRecorder optOuts;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
@@ -65,7 +70,9 @@ public class ResendWebhookProjector {
                                   ApplicationEventPublisher events,
                                   FanFeatureRepository fanFeatureRepo,
                                   ConsentConfirmationTokenRepository confirmationTokens,
-                                  MarketingEmailProperties marketingProps) {
+                                  MarketingEmailProperties marketingProps,
+                                  ConsumerRepository consumers,
+                                  MarketingOptOutRecorder optOuts) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
@@ -75,6 +82,8 @@ public class ResendWebhookProjector {
         this.fanFeatureRepo = fanFeatureRepo;
         this.confirmationTokens = confirmationTokens;
         this.marketingProps = marketingProps;
+        this.consumers = consumers;
+        this.optOuts = optOuts;
     }
 
     /**
@@ -135,6 +144,8 @@ public class ResendWebhookProjector {
                 if (recipientId != null) {
                     recipientRepo.markBounced(recipientId, permanent ? "hard_bounce" : "soft_bounce", occurredAt);
                 }
+                // After the row records the bounce, so the org window's hard-bounce count includes it.
+                complaintRateBreaker.evaluate(campaignId, orgIdOf(campaignId));
             }
             case ProviderEvent.TYPE_COMPLAINED -> {
                 UUID orgId = orgIdOf(campaignId);
@@ -170,6 +181,46 @@ public class ResendWebhookProjector {
             }
             default -> { /* unknown type — logged and deduped upstream, no projection */ }
         }
+    }
+
+    /**
+     * An event no campaign row or reminder claims (transactional mail, or a campaign row already purged): only a
+     * Permanent bounce is acted on, by listing the address as undeliverable; nothing else is projected.
+     */
+    @Transactional
+    public void projectUnmatched(String type, String email, String bounceType) {
+        if (!ProviderEvent.TYPE_BOUNCED.equals(type) || !isPermanentBounce(bounceType)) return;
+        if (email == null || email.isBlank()) return;
+        suppressionService.addDeliverabilityIfAbsent(EmailNormalizer.normalize(email), "hard-bounce");
+    }
+
+    /**
+     * A complaint about a tagged campaign email whose row is gone or never recorded. The org comes from the campaign:
+     * the member at that address is suppressed and objects to profiling as in the complaint branch; with no member,
+     * the per-address opt-out from this org is recorded instead. Either way the breaker counts it.
+     */
+    @Transactional
+    public void projectTaggedComplaint(UUID campaignId, String email, Instant occurredAt) {
+        UUID orgId = orgIdOf(campaignId);
+        if (orgId == null || email == null || email.isBlank()) return;
+        String address = EmailNormalizer.normalize(email);
+        UUID membershipId = consumers.findByNormalizedEmail(address)
+                .flatMap(cn -> membershipRepo.findByOrgIdAndConsumerId(orgId, cn.getConsumerId()))
+                .map(Membership::getMembershipId)
+                .orElse(null);
+        if (membershipId != null) {
+            project(campaignId, null, membershipId, address, ProviderEvent.TYPE_COMPLAINED, null, occurredAt);
+            return;
+        }
+        try {
+            optOuts.record(address, orgId, "email", "complaint");
+        } catch (org.springframework.dao.DataIntegrityViolationException lostRace) {
+            // The row this wanted already exists.
+        } catch (RuntimeException e) {
+            log.error("[resend-projector] opt-out for a complaint on campaign {} not recorded: {}", campaignId,
+                    e.getClass().getSimpleName());
+        }
+        complaintRateBreaker.evaluate(campaignId, orgId);
     }
 
     private void projectClick(UUID campaignId, UUID recipientId, Instant occurredAt, String clickLink) {

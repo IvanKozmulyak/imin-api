@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.clearInvocations;
@@ -124,11 +125,11 @@ class EmailChannelSenderAddressSourceTest {
     @SuppressWarnings("unchecked")
     private String sendOneAndCaptureHtml(Campaign c, Member m) {
         clearInvocations(provider);
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
         sender.sendNextBatch(c);
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         List<CampaignEmailProvider.OutgoingEmail> mine = captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> m.email().equals(e.to())).toList();
         assertThat(mine).hasSize(1);
@@ -138,7 +139,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void firstEmailToImportedMember_hasTheSourceLine_theSecondDoesNot() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         imported(orgId, m, "Shotgun", true, Instant.now());
 
@@ -157,7 +158,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void memberWithoutImportProvenance_neverGetsTheLine() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         Campaign c = campaign(orgId, "email", "sending");
         row(c, m, "pending");
@@ -166,7 +167,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void rejectedProvenanceRow_doesNotMakeTheMemberImported() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         imported(orgId, m, "Dice", false, Instant.now());
         Campaign c = campaign(orgId, "email", "sending");
@@ -176,7 +177,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void severalImports_nameEveryPlatformOnce_oldestFirst() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         Instant now = Instant.now();
         imported(orgId, m, "Dice", true, now.minusSeconds(3600));
@@ -189,7 +190,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void anEarlierBouncedEmail_orAnEarlierSms_isNotAReceivedEmail() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         imported(orgId, m, "Shotgun", true, Instant.now());
         row(campaign(orgId, "email", "sent"), m, "bounced");
@@ -202,7 +203,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void anEarlierEmailOfAnotherOrg_doesNotCount() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         imported(orgId, m, "Shotgun", true, Instant.now());
         row(campaign(UUID.randomUUID(), "email", "sent"), m, "delivered");
@@ -214,7 +215,7 @@ class EmailChannelSenderAddressSourceTest {
 
     @Test
     void anAcceptedRowFromAnotherOrgsImport_doesNotMakeTheMemberImportedHere() {
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         Member m = member(orgId);
         imported(UUID.randomUUID(), m, "Shotgun", true, Instant.now());
         Campaign c = campaign(orgId, "email", "sending");

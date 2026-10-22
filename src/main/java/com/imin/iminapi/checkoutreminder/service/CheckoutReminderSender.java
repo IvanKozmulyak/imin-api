@@ -24,7 +24,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Sends due reminders, at most once each. A row is claimed (committed as SENDING) before the
@@ -42,7 +41,6 @@ public class CheckoutReminderSender {
     static final int BATCH = 50;
     /** Provider calls that never reached Resend, tolerated before the reminder is dropped as SEND_FAILED. */
     static final int MAX_ATTEMPTS = 3;
-    private static final Pattern RATE_LIMITED = Pattern.compile("Failed to send batch emails:\\s*429\\b");
 
     private final CheckoutReminderProperties props;
     private final CheckoutReminderRepository reminders;
@@ -106,11 +104,11 @@ public class CheckoutReminderSender {
         CheckoutReminderEmail.Message m = email.build(new CheckoutReminderEmail.Facts(pass.org(), pass.event(),
                 pass.tier(), r.getQty(), r.getBuyerLocale(), r.isPromoUsed(), r.getConsentProof()),
                 unsubscribeUrl, false);
-        List<String> ids;
+        CampaignEmailProvider.BatchResult sent;
         try {
-            ids = provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
+            sent = provider.sendBatch(null, List.of(new CampaignEmailProvider.OutgoingEmail(
                     m.from(), r.getEmailNormalized(), m.subject(), m.html(), m.text(), unsubscribeUrl)));
-        } catch (CampaignEmailProvider.TerminalBatchFailure e) {
+        } catch (CampaignEmailProvider.CampaignRejected e) {
             reminders.markNotSent(id, CheckoutReminderReason.SEND_FAILED.name());
             log.error("[checkout-reminder] provider refused reminder {} with HTTP {}", id, e.upstreamStatus());
             return;
@@ -130,7 +128,19 @@ public class CheckoutReminderSender {
             }
             return;
         }
-        reminders.markSent(id, ids.isEmpty() ? null : ids.get(0), clock.instant());
+        if (sent != null && sent.rejected(0)) {
+            // The provider refused this address on its own; nothing left.
+            reminders.markNotSent(id, CheckoutReminderReason.SEND_FAILED.name());
+            log.error("[checkout-reminder] provider refused reminder {}: {}", id, sent.rowErrors().get(0));
+            return;
+        }
+        if (sent == null || sent.unconfirmed(0)) {
+            // The answer does not say whether it went out: never retried, like any other unknown outcome.
+            reminders.markNotSent(id, CheckoutReminderReason.SEND_UNKNOWN.name());
+            log.error("[checkout-reminder] provider's answer does not account for reminder {}; not retried", id);
+            return;
+        }
+        reminders.markSent(id, sent.idAt(0), clock.instant());
     }
 
     /**
@@ -143,7 +153,7 @@ public class CheckoutReminderSender {
                     || c instanceof NoRouteToHostException) {
                 return true;
             }
-            if (c.getMessage() != null && RATE_LIMITED.matcher(c.getMessage()).find()) return true;
+            if (c instanceof CampaignEmailProvider.RetryableBatchFailure rf && rf.upstreamStatus() == 429) return true;
         }
         return false;
     }

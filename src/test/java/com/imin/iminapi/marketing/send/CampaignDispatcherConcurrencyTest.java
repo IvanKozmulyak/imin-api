@@ -57,6 +57,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -97,15 +98,15 @@ class CampaignDispatcherConcurrencyTest {
     /** Records every address handed to the provider; the first call for {@link #holdFor} blocks until released (a slow provider). */
     @BeforeEach
     void recordProviderSends() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
             Set<String> hold = holdFor.get();
             if (hold != null && batch.stream().anyMatch(e -> hold.contains(e.to())) && holdFor.compareAndSet(hold, null)) {
                 held.countDown();
                 if (!release.await(WAIT.toSeconds() * 2, TimeUnit.SECONDS)) throw new IllegalStateException("never released");
             }
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
     }
 
@@ -337,14 +338,14 @@ class CampaignDispatcherConcurrencyTest {
         // Claimed too, then heartbeated by another drive while its status stays 'sending'.
         Campaign heartbeat = campaign(orgId, ancient.plusSeconds(3));
         requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 4, 10);
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
             // The first batch outlasts the run budget, and meanwhile other writers touch two claimed campaigns.
             clock.advance(CampaignDispatcher.RUN_BUDGET.plusSeconds(1));
             elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled' WHERE id = ?", changed.getId()));
             elsewhere(() -> campaigns.touch(heartbeat.getId(), Instant.now()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         dispatcher.runOnce();
@@ -367,7 +368,7 @@ class CampaignDispatcherConcurrencyTest {
         pendingRecipients(c, 2);
         requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
             elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
             throw new IllegalStateException("provider client blew up");
         });
@@ -408,15 +409,15 @@ class CampaignDispatcherConcurrencyTest {
         List<String> own = pendingRecipients(next, 2);
         requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 2, 10);
         AtomicReference<PgFaults.Fault> fault = new AtomicReference<>();
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             if (batch.stream().anyMatch(e -> brokenTo.contains(e.to()))) {
                 // The drive throws, and the write that would mark it failed is rejected too.
                 elsewhere(() -> fault.set(PgFaults.failWrites(jdbc, "campaigns", "id", broken.getId())));
                 throw new IllegalStateException("provider client blew up");
             }
             batch.forEach(e -> sentTo.add(e.to()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         try {
@@ -445,12 +446,12 @@ class CampaignDispatcherConcurrencyTest {
         Map<String, Object> releasedBefore = stateOf(released);
         requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 3, 10);
         AtomicReference<PgFaults.Fault> fault = new AtomicReference<>();
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             // The first batch outlasts the run budget, and the release of the first unstarted claim will be rejected.
             clock.advance(CampaignDispatcher.RUN_BUDGET.plusSeconds(1));
             elsewhere(() -> fault.set(PgFaults.failWrites(jdbc, "campaigns", "id", stuck.getId())));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         try {
@@ -527,8 +528,8 @@ class CampaignDispatcherConcurrencyTest {
             }
             case PAUSED -> {
                 Organization o = awakeOrg();
-                o.setMarketingPausedAt(Instant.now().minus(1, ChronoUnit.HOURS));
-                return orgs.save(o).getId();
+                orgs.pauseMarketingIfNotPaused(o.getId(), "complaint_rate", Instant.now().minus(1, ChronoUnit.HOURS));
+                return o.getId();
             }
             default -> {
                 Organization o = fx.org();
@@ -586,8 +587,8 @@ class CampaignDispatcherConcurrencyTest {
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
         AtomicReference<Future<?>> stop = new AtomicReference<>();
         // The organizer stops the campaign while the first batch is at the provider.
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
             if (stop.get() == null) {
                 stop.set(executor().submit(() -> campaignService.cancel(owner, c.getId())));
@@ -599,7 +600,7 @@ class CampaignDispatcherConcurrencyTest {
                     return null;
                 }).get(WAIT.toSeconds() * 2, TimeUnit.SECONDS);
             }
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         dispatcher.runOnce();
@@ -642,11 +643,11 @@ class CampaignDispatcherConcurrencyTest {
         requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
         // Any writer that stops the campaign while a batch is out (a raw write: no cancel skips the rows).
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
             elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         dispatcher.runOnce();
@@ -671,11 +672,11 @@ class CampaignDispatcherConcurrencyTest {
         List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE);
         requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
                 audiencePlan.legalIdentityAllCampaigns(), 1, 10);
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
             elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
 
         dispatcher.runOnce();

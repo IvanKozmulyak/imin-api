@@ -149,7 +149,7 @@ class ConsentConfirmationServiceTest {
         for (UUID cid : cids) jdbc.update("delete from consumers where consumer_id = ?", cid);
         jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
         jdbc.update("delete from erased_addresses where org_id = ?", orgId);
-        jdbc.update("delete from erased_addresses where org_id is null and email_normalized like ?", "%-" + run + "@confirm.test");
+        jdbc.update("delete from erased_addresses where org_id is null and email_normalized like ?", "%-" + run + "@confirm.fixtures.imin.wtf");
         jdbc.update("delete from survey_responses where event_id = ?", event.getId());
         jdbc.update("delete from audit_logs where org_id = ?", orgId);
         jdbc.update("delete from events where org_id = ?", orgId);
@@ -174,7 +174,7 @@ class ConsentConfirmationServiceTest {
     @Test
     void doorSignUp_sendsOneEmail_fromTheOrganizerViaImin_withASevenDayLink() {
         Instant before = Instant.now();
-        signUpAtDoor("Guest-" + run + "@Confirm.test", "en");
+        signUpAtDoor("Guest-" + run + "@Confirm.fixtures.imin.wtf", "en");
 
         assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("guest"));
         RecordingEmailService.SentEmail sent = lastOwn();
@@ -600,7 +600,7 @@ class ConsentConfirmationServiceTest {
     private List<RecordingEmailService.SentEmail> ownMail() {
         AsyncDrain.drain(ticketEmailExecutor);
         return mail.sent().stream()
-                .filter(m -> m.to().endsWith("-" + run + "@confirm.test") || m.to().equals(orgContact)).toList();
+                .filter(m -> m.to().endsWith("-" + run + "@confirm.fixtures.imin.wtf") || m.to().equals(orgContact)).toList();
     }
 
     private RecordingEmailService.SentEmail lastOwn() {
@@ -610,7 +610,7 @@ class ConsentConfirmationServiceTest {
 
     /** Unique per test: consumers and platform-wide erasure entries are keyed by address. */
     private String a(String local) {
-        return local + "-" + run + "@confirm.test";
+        return local + "-" + run + "@confirm.fixtures.imin.wtf";
     }
 
     private void assertNotResurrected(String address, Consumer<UUID> optOut) {

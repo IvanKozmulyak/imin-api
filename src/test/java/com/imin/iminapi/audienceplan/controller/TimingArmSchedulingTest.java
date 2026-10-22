@@ -631,7 +631,7 @@ class TimingArmSchedulingTest {
             List<UUID> out = new ArrayList<>();
             for (int i = 0; i < n; i++) {
                 Consumer c = new Consumer();
-                c.setNormalizedEmail("timing-" + UUID.randomUUID() + "@example.com");
+                c.setNormalizedEmail("timing-" + UUID.randomUUID() + "@fixtures.imin.wtf");
                 Membership m = new Membership();
                 m.setOrgId(orgId);
                 m.setConsumerId(consumerRepo.save(c).getConsumerId());

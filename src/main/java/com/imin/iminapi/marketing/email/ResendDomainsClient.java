@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.email;
 
+import com.imin.iminapi.email.EmailProperties;
 import com.resend.Resend;
 import com.resend.services.domains.model.Domain;
 import com.resend.services.domains.model.ListDomainsResponse;
@@ -16,8 +17,8 @@ import java.util.Optional;
 
 /**
  * Reads the marketing sending domain's SPF / DKIM / DMARC verification status from the Resend
- * <b>domains</b> API and caches it. Reuses the app's existing {@link Resend} SDK client — the same
- * bean that already sends mail — so there is no new HTTP dependency and no second credential.
+ * <b>domains</b> API and caches it. The key is the first set of RESEND_TRACKING_READ_KEY,
+ * IMIN_MARKETING_RESEND_API_KEY and RESEND_API_KEY, so the team that owns the marketing domain is the one read.
  *
  * <p><b>Honest by construction.</b> Every failure path degrades to {@link Optional#empty()}:
  * the key lacking the {@code domains} scope (Resend answers 401/403), Resend unreachable, the
@@ -53,14 +54,21 @@ public class ResendDomainsClient {
             DnsRecordStatus.UNKNOWN
     };
 
-    private final Resend resend;
     private final MarketingEmailProperties emailProps;
+    private final EmailProperties transactional;
 
     private volatile Cached cache;
 
-    public ResendDomainsClient(Resend resend, MarketingEmailProperties emailProps) {
-        this.resend = resend;
+    public ResendDomainsClient(MarketingEmailProperties emailProps, EmailProperties transactional) {
         this.emailProps = emailProps;
+        this.transactional = transactional;
+    }
+
+    /** The read key, else the marketing send key, else the transactional key. */
+    String lookupKey() {
+        String read = transactional == null ? null : transactional.getResendTrackingReadKey();
+        if (read != null && !read.isBlank()) return read.trim();
+        return emailProps.resendApiKey(transactional);
     }
 
     /**
@@ -100,6 +108,7 @@ public class ResendDomainsClient {
      * this Resend account. Throws on any API/transport error (caller degrades to empty).
      */
     protected List<DnsRecordRow> fetchRecordsForDomain(String domain) throws Exception {
+        Resend resend = new Resend(lookupKey());
         ListDomainsResponse list = resend.domains().list();
         String id = (list == null || list.getData() == null) ? null : list.getData().stream()
                 .filter(d -> domain.equalsIgnoreCase(d.getName()))

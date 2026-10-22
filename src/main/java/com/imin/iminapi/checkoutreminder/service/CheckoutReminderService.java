@@ -267,8 +267,11 @@ public class CheckoutReminderService {
                 .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                         "Put a night on sale to send a test"));
         String unsubscribeUrl = emailProps.unsubscribeUrl("preview");
-        provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
+        CampaignEmailProvider.BatchResult result = provider.sendBatch(null, List.of(new CampaignEmailProvider.OutgoingEmail(
                 m.from(), caller.getEmail(), m.subject(), m.html(), m.text(), unsubscribeUrl)));
+        if (result != null && result.rejected(0)) {
+            throw new CampaignEmailProvider.CampaignRejected("Email service rejected the test email", 422);
+        }
     }
 
     // ── buyer ──────────────────────────────────────────────────────────────

@@ -68,7 +68,7 @@ public final class PlanPopulation {
         for (int i = 0; i < n; i++) {
             UUID consumerId = UUID.randomUUID();
             UUID membershipId = UUID.randomUUID();
-            consumers.add(new Object[] {consumerId, "plan-" + UUID.randomUUID() + "@example.test"});
+            consumers.add(new Object[] {consumerId, "plan-" + UUID.randomUUID() + "@" + com.imin.iminapi.support.IminFixtures.MAIL_DOMAIN});
             memberships.add(new Object[] {membershipId, orgId, consumerId, status, basis});
             ids.add(membershipId);
         }

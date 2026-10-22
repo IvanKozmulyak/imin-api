@@ -26,6 +26,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -73,10 +74,10 @@ class MarketingEmailLegalAssertionsTest {
 
     @SuppressWarnings("unchecked")
     private List<CampaignEmailProvider.OutgoingEmail> sendToTwo() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv ->
-                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv ->
+                CampaignEmailProvider.BatchResult.accepted(((List<?>) inv.getArgument(1)).stream().map(x -> "msg-" + UUID.randomUUID()).toList()));
 
-        UUID orgId = UUID.randomUUID();
+        UUID orgId = fx.org().getId();
         orgIds.add(orgId);
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
@@ -104,7 +105,7 @@ class MarketingEmailLegalAssertionsTest {
         sender.sendNextBatch(c);
 
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         List<CampaignEmailProvider.OutgoingEmail> mine = captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> addresses.contains(e.to())).toList();
         assertThat(mine).hasSize(2);

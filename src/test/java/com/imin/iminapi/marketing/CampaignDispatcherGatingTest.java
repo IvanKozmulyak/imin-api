@@ -55,8 +55,9 @@ class CampaignDispatcherGatingTest {
     private Organization org(String tz, boolean paused) {
         Organization o = fx.org();
         o.setTimezone(tz);
-        if (paused) o.setMarketingPausedAt(Instant.now());
         o = orgs.save(o);
+        // The pause is written only by its targeted UPDATE; a whole-org save never touches it.
+        if (paused) orgs.pauseMarketingIfNotPaused(o.getId(), "complaint_rate", Instant.now());
         orgIds.add(o.getId());
         return o;
     }

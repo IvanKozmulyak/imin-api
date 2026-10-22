@@ -118,7 +118,7 @@ class SendGateNoEmailTest {
         given(List.of(orphan), List.of());
         // Even with a non-empty deliverability list in play, the orphan is not attributed to it.
         when(suppressionRepo.findDeliverabilityEmailsIn(anyCollection()))
-                .thenReturn(List.of("someone-else@example.com"));
+                .thenReturn(List.of("someone-else@fixtures.imin.wtf"));
 
         SendGateService.GateResult r = gate.evaluate(orgA, ids(List.of(orphan)));
 
@@ -137,7 +137,7 @@ class SendGateNoEmailTest {
         UUID goodConsumer = UUID.randomUUID();
         Membership good = member(goodConsumer);
         Membership orphan = member(UUID.randomUUID());
-        given(List.of(good, orphan), List.of(consumer(goodConsumer, "ok@example.com")));
+        given(List.of(good, orphan), List.of(consumer(goodConsumer, "ok@fixtures.imin.wtf")));
 
         PreviewAudienceResponse preview =
                 gate.previewCounts(orgA, ids(List.of(good, orphan)), "email");
@@ -156,7 +156,7 @@ class SendGateNoEmailTest {
     void member_with_an_address_is_unaffected_by_the_new_clause() {
         UUID cid = UUID.randomUUID();
         Membership good = member(cid);
-        given(List.of(good), List.of(consumer(cid, "fine@example.com")));
+        given(List.of(good), List.of(consumer(cid, "fine@fixtures.imin.wtf")));
 
         SendGateService.GateResult r = gate.evaluate(orgA, ids(List.of(good)));
 
@@ -169,9 +169,9 @@ class SendGateNoEmailTest {
     void deliverability_suppression_still_applies_when_an_address_exists() {
         UUID cid = UUID.randomUUID();
         Membership bounced = member(cid);
-        given(List.of(bounced), List.of(consumer(cid, "bounce@example.com")));
+        given(List.of(bounced), List.of(consumer(cid, "bounce@fixtures.imin.wtf")));
         when(suppressionRepo.findDeliverabilityEmailsIn(anyCollection()))
-                .thenReturn(List.of("bounce@example.com"));
+                .thenReturn(List.of("bounce@fixtures.imin.wtf"));
 
         SendGateService.GateResult r = gate.evaluate(orgA, ids(List.of(bounced)));
 

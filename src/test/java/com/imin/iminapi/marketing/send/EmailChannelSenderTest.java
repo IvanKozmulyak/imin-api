@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -63,7 +64,7 @@ class EmailChannelSenderTest {
     @SuppressWarnings("unchecked")
     private CampaignEmailProvider.OutgoingEmail sentEmail() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         List<CampaignEmailProvider.OutgoingEmail> mine = captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> ownAddresses.contains(e.to())).toList();
         assertThat(mine).hasSize(1);
@@ -73,8 +74,10 @@ class EmailChannelSenderTest {
     private Campaign campaignWithPending(int n) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
-        c.setOrgId(UUID.randomUUID());
+        // A real org: the per-batch send gate reads its pause.
+        c.setOrgId(fx.org().getId());
         orgIds.add(c.getOrgId());
+        realOrgIds.add(c.getOrgId());
         c.setChannel("email");
         c.setName("Blast");
         c.setStatus("sending");
@@ -104,7 +107,7 @@ class EmailChannelSenderTest {
     @Test
     void sendsPendingRowsAndRecordsProviderIds() {
         Campaign c = campaignWithPending(2);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a", "id-b"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a", "id-b")));
 
         boolean more = sender.sendNextBatch(c);
 
@@ -120,7 +123,7 @@ class EmailChannelSenderTest {
         // recipient's email through CampaignEmailRenderer (branded HTML shell + mandatory
         // unsubscribe footer), NOT ship raw markdown as text.
         Campaign c = campaignWithPending(1);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -135,7 +138,7 @@ class EmailChannelSenderTest {
         Campaign c = campaignWithPending(1);
         c.setSubjectAiGenerated(true);
         campaigns.save(c);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -148,7 +151,7 @@ class EmailChannelSenderTest {
     @Test
     void humanWrittenCampaign_sendsNoDisclosure() {
         Campaign c = campaignWithPending(1);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 
@@ -158,36 +161,32 @@ class EmailChannelSenderTest {
     }
 
     /**
-     * mkt-core-16 (P3): provider ids are matched to recipients purely by position, and
-     * CampaignEmailProvider returns whatever Resend's data array held with no assertion that
-     * it is the same length. A short list left the tail rows 'sent' with a null
-     * provider_message_id, so findByProviderMessageId could never resolve their
-     * delivery/bounce/complaint events — permanently invisible to the stats and to the
-     * complaint breaker. The row must at least say so.
+     * A provider answer that does not account for a row says nothing about whether it went out: that row is neither
+     * counted as sent (stats, daily cap) nor mailed again, but skipped as delivery_unconfirmed.
      */
     @Test
-    void aShortProviderIdListMarksTheUntrackableTail() {
+    void aShortProviderIdListLeavesTheTailUnconfirmed() {
         Campaign c = campaignWithPending(2);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-only-one"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-only-one")));
 
         sender.sendNextBatch(c);
 
-        List<CampaignRecipient> sent = recipients.findByCampaignIdAndStatus(c.getId(), "sent");
-        assertThat(sent).hasSize(2);   // the mail left; we do not pretend otherwise
-        assertThat(sent).anySatisfy(r -> {
-            assertThat(r.getProviderMessageId()).isNull();
-            assertThat(r.getErrorCode()).isEqualTo("no_provider_id");
-        });
-        assertThat(sent).anySatisfy(r -> {
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "sent")).singleElement().satisfies(r -> {
             assertThat(r.getProviderMessageId()).isEqualTo("id-only-one");
             assertThat(r.getErrorCode()).isNull();
         });
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "skipped")).singleElement().satisfies(r -> {
+            assertThat(r.getSkipReason()).isEqualTo("delivery_unconfirmed");
+            assertThat(r.getSentAt()).isNull();
+            assertThat(r.getProviderMessageId()).isNull();
+        });
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isZero();
     }
 
     @Test
     void providerFailureLeavesRowsPendingAndIncrementsAttempt() {
         Campaign c = campaignWithPending(1);
-        when(provider.sendBatch(anyList())).thenThrow(
+        when(provider.sendBatch(any(), anyList())).thenThrow(
                 new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, "down"));
 
         sender.sendNextBatch(c);
@@ -215,7 +214,7 @@ class EmailChannelSenderTest {
         c.setLocale("fr");
         c.setBodyMd("Bonjour {{firstName}},\n\nVenez nombreux.");
         campaigns.save(c);
-        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+        when(provider.sendBatch(any(), anyList())).thenReturn(CampaignEmailProvider.BatchResult.accepted(List.of("id-a")));
 
         sender.sendNextBatch(c);
 

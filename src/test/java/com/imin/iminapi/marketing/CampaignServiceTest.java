@@ -85,7 +85,7 @@ class CampaignServiceTest {
     @SuppressWarnings("unchecked")
     private List<CampaignEmailProvider.OutgoingEmail> sentToCaller() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream().flatMap(List::stream)
                 .filter(e -> callerEmail.equals(e.to())).toList();
     }
@@ -339,7 +339,7 @@ class CampaignServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Marketing email sender not configured");
         assertThat(sentToCaller()).isEmpty();
-        verify(provider, never()).sendBatch(any());
+        verify(provider, never()).sendBatch(any(), any());
     }
 
     @Test

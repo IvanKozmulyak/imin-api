@@ -932,7 +932,7 @@ class AudiencePlanInvitationIntegrationTest {
             List<UUID> out = new ArrayList<>();
             for (int i = 0; i < n; i++) {
                 Consumer c = new Consumer();
-                c.setNormalizedEmail("invite-" + UUID.randomUUID() + "@example.com");
+                c.setNormalizedEmail("invite-" + UUID.randomUUID() + "@fixtures.imin.wtf");
                 Membership m = new Membership();
                 m.setOrgId(orgId);
                 m.setConsumerId(consumerRepo.save(c).getConsumerId());

@@ -42,7 +42,8 @@ class CampaignSendUnitSendsSwitchTest {
         // The row is still 'sending' when the drive finishes.
         when(campaigns.markSentIfSending(any(), any())).thenReturn(1);
         unit = new CampaignSendUnit(campaigns, recipients, materializer, sender,
-                events, tm, new AudiencePlanAccess(props), Clock.systemUTC());
+                events, tm, new AudiencePlanAccess(props), Clock.systemUTC(),
+                new com.imin.iminapi.marketing.email.MarketingEmailProperties());
     }
 
     private static Campaign campaign(String origin) {

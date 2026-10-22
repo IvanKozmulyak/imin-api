@@ -20,11 +20,13 @@ import java.util.stream.Collectors;
 /**
  * FR-SND-1 Send Gate — THE ONLY path that yields sendable recipients.
  *
- * <p>A membership is sendable IFF ALL five conditions hold:
+ * <p>A membership is sendable IFF ALL six conditions hold:
  * <ol>
  *   <li>consent_status != 'unsubscribed'  (M3: reads denormalized column, not consent_records)</li>
  *   <li>NOT marketing-suppressed for this org</li>
- *   <li>has a deliverable address on file (no-email gate — spec §4 "no deliverable address")</li>
+ *   <li>has an address on file (no-email gate — spec §4 "no deliverable address")</li>
+ *   <li>that address can be mailed at all: well-formed and not on a reserved test domain
+ *       ({@link MailboxSyntax}, {@code invalid_address})</li>
  *   <li>NOT deliverability-suppressed (shared, keyed by normalized_email)</li>
  *   <li>consent_basis IS NOT NULL  (no-lawful-basis gate)</li>
  * </ol>
@@ -125,6 +127,11 @@ public class SendGateService {
                 excluded.add(new ExclusionReason(mid, "no_email"));
                 continue;
             }
+            // Clause 3b: a malformed or reserved-domain address fails at the provider; excluded, so counts stay true.
+            if (!MailboxSyntax.isDeliverable(email)) {
+                excluded.add(new ExclusionReason(mid, "invalid_address"));
+                continue;
+            }
             // Clause 4: not deliverability-suppressed (shared by email across all orgs)
             if (deliverabilityBlocked.contains(email)) {
                 excluded.add(new ExclusionReason(mid, "deliverability_suppressed"));
@@ -155,7 +162,7 @@ public class SendGateService {
 
     /** Group a flat GateResult into per-reason counts. Pure function — unit-testable. */
     public static PreviewAudienceResponse bucket(GateResult result) {
-        int noBasis = 0, unsub = 0, mktSupp = 0, delivSupp = 0, noPhone = 0, noEmail = 0;
+        int noBasis = 0, unsub = 0, mktSupp = 0, delivSupp = 0, noPhone = 0, noEmail = 0, invalidAddress = 0;
         for (ExclusionReason r : result.excluded()) {
             switch (r.reason()) {
                 case "no_lawful_basis" -> noBasis++;
@@ -164,12 +171,14 @@ public class SendGateService {
                 case "deliverability_suppressed" -> delivSupp++;
                 case "no_phone" -> noPhone++;
                 case "no_email" -> noEmail++;
+                case "invalid_address" -> invalidAddress++;
                 default -> { /* unknown reason: ignore, never crash the preview */ }
             }
         }
         return new PreviewAudienceResponse(
                 result.sendable().size(),
-                new PreviewAudienceResponse.Excluded(noBasis, unsub, mktSupp, delivSupp, noPhone, noEmail));
+                new PreviewAudienceResponse.Excluded(noBasis, unsub, mktSupp, delivSupp, noPhone, noEmail,
+                        0, 0, 0, 0, invalidAddress));
     }
 
     /**

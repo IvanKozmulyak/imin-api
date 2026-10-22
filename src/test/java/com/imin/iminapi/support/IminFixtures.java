@@ -47,9 +47,13 @@ public class IminFixtures {
         return UUID.randomUUID().toString();
     }
 
+    /** A mailable fixture address: the send gate excludes reserved test domains (example.*, .test) as invalid. */
     public String email(String tag) {
-        return tag + "-" + uid() + "@example.test";
+        return tag + "-" + uid() + "@" + MAIL_DOMAIN;
     }
+
+    /** Fixture mail domain: a subdomain of IMIN's own, so no address can belong to someone else. */
+    public static final String MAIL_DOMAIN = "fixtures.imin.wtf";
 
     public Organization org() {
         Organization o = new Organization();

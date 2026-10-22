@@ -18,6 +18,11 @@ import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.marketing.send.RecipientMaterializer;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.AuditRows;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
@@ -77,6 +82,10 @@ class CampaignControllerTest {
     @Autowired MutableClock clock;
     @Autowired CampaignDispatcher dispatcher;
     @Autowired com.imin.iminapi.support.RecordingRateLimiter limiter;
+    @Autowired RecipientMaterializer materializer;
+    @Autowired OrganizationRepository orgRepo;
+    @Autowired UserRepository users;
+    @Autowired AuditRows audit;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -583,5 +592,120 @@ class CampaignControllerTest {
     private static RequestPostProcessor auth(AuthPrincipal p) {
         return authentication(new UsernamePasswordAuthenticationToken(p, null,
                 List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
+    }
+
+    /** A segment of one member at {@code address}, subscribed with a lawful basis. */
+    private UUID memberAt(UUID orgId, String address, List<UUID> segmentMembers) {
+        Consumer cn = new Consumer();
+        cn.setNormalizedEmail(address);
+        cn = consumers.save(cn);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(cn.getConsumerId());
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
+        UUID id = memberships.save(m).getMembershipId();
+        segmentMembers.add(id);
+        return id;
+    }
+
+    @Test
+    void previewCountsInvalidAddressesSeparately() throws Exception {
+        List<UUID> members = new ArrayList<>();
+        UUID reserved = memberAt(owner.orgId(), "fan-" + UUID.randomUUID() + "@example.com", members);
+        memberAt(owner.orgId(), fx.email("real"), members);
+        Segment seg = new Segment();
+        seg.setOrgId(owner.orgId());
+        seg.setName("Mixed " + UUID.randomUUID());
+        seg.setKind("static");
+        seg.setSnapshotIds(om.writeValueAsString(members.stream().map(UUID::toString).toList()));
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Mixed", segments.save(seg).getId(), null,
+                "Subject", null, "Body", null)).id();
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/preview-audience", id).with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sendable").value(1))
+                .andExpect(jsonPath("$.excluded.invalidAddress").value(1))
+                .andExpect(jsonPath("$.excluded.noEmail").value(0));
+
+        send(owner, id, "{}").andExpect(status().isAccepted());
+        materializer.materialize(campaigns.findById(id).orElseThrow());
+
+        assertThat(recipients.findByCampaignIdAndStatus(id, "skipped"))
+                .singleElement()
+                .satisfies(r -> {
+                    assertThat(r.getMembershipId()).isEqualTo(reserved);
+                    assertThat(r.getSkipReason()).isEqualTo("invalid_address");
+                });
+        assertThat(recipients.countByCampaignIdAndStatus(id, "pending")).isEqualTo(1L);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"MEMBER, 403", "ADMIN, 202"})
+    void retryNeedsAnAdmin(UserRole role, int expected) throws Exception {
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Failed blast", null, null,
+                "Subject", null, "Body", null)).id();
+        service.forceStatusForTest(id, "failed");
+        for (int i = 0; i < 2; i++) {
+            CampaignRecipient r = new CampaignRecipient();
+            r.setId(UUID.randomUUID());
+            r.setCampaignId(id);
+            r.setEmail(fx.email("failed"));
+            r.setStatus("failed");
+            r.setErrorCode("send_failed");
+            r.setAttemptCount((short) 3);
+            recipients.save(r);
+        }
+        AuthPrincipal caller = new AuthPrincipal(owner.userId(), owner.orgId(), role, UUID.randomUUID());
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/retry", id).with(auth(caller)))
+                .andExpect(status().is(expected));
+
+        if (expected == 403) {
+            assertThat(recipients.countByCampaignIdAndStatus(id, "failed")).isEqualTo(2L);
+            assertThat(campaigns.findById(id).orElseThrow().getStatus()).isEqualTo("failed");
+            assertThat(audit.forOrg(owner.orgId())).noneMatch(r -> "CAMPAIGN_RETRIED".equals(r.getAction()));
+        } else {
+            assertThat(recipients.findByCampaignIdAndStatus(id, "pending"))
+                    .hasSize(2)
+                    .allSatisfy(r -> assertThat(r.getAttemptCount()).isZero());
+            assertThat(campaigns.findById(id).orElseThrow().getStatus()).isEqualTo("scheduled");
+            audit.assertRecorded(owner.orgId(), "CAMPAIGN_RETRIED", "campaign", id);
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({"orgPaused, org_paused", "holdOnItsEvent, moderation_hold", "holdOnAnotherEvent, ''"})
+    void aHeldCampaignSaysWhy(String hold, String expected) throws Exception {
+        var org = orgRepo.findById(owner.orgId()).orElseThrow();
+        var creator = users.findById(owner.userId()).orElseThrow();
+        UUID itsEvent = fx.event(org, creator, EventStatus.LIVE, Instant.now().plus(Duration.ofDays(10))).getId();
+        UUID otherEvent = fx.event(org, creator, EventStatus.LIVE, Instant.now().plus(Duration.ofDays(20))).getId();
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Held", null, itsEvent,
+                "Subject", null, "Body", null)).id();
+        service.forceStatusForTest(id, "scheduled");
+        switch (hold) {
+            case "orgPaused" -> orgRepo.pauseMarketingIfNotPaused(owner.orgId(), "complaint_rate", Instant.now());
+            case "holdOnItsEvent" -> hold(itsEvent);
+            default -> hold(otherEvent);
+        }
+        Object want = expected.isEmpty() ? null : expected;
+
+        mvc.perform(get("/api/v1/marketing/campaigns/{id}", id).with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(want == null ? jsonPath("$.sendHold").value(nullValue()) : jsonPath("$.sendHold").value(want));
+        mvc.perform(get("/api/v1/marketing/campaigns").with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(want == null
+                        ? jsonPath("$[?(@.id == '" + id + "')].sendHold").value(hasItem(nullValue()))
+                        : jsonPath("$[?(@.id == '" + id + "')].sendHold").value(hasItem(want)));
+    }
+
+    private void hold(UUID eventId) {
+        jdbc.update("""
+                INSERT INTO moderation_holds (id, org_id, event_id, suspend_sales, hold_payouts, ground, facts,
+                                              placed_by, placed_at)
+                VALUES (?, ?, ?, TRUE, FALSE, 'fraud', 'test hold', ?, now())
+                """, UUID.randomUUID(), owner.orgId(), eventId, owner.userId());
     }
 }

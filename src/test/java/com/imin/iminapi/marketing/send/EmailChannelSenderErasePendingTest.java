@@ -31,6 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
@@ -55,10 +56,10 @@ class EmailChannelSenderErasePendingTest {
 
     @BeforeEach
     void recordSends() {
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(1);
             batch.forEach(e -> sentTo.add(e.to()));
-            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList());
         });
     }
 

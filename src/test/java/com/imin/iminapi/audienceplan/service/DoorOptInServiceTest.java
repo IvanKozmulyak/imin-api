@@ -563,7 +563,7 @@ class DoorOptInServiceTest {
 
     /** Addresses are keyed across orgs, so every test writes its own. */
     private static String addr(String tag) {
-        return tag + "-" + UUID.randomUUID() + "@door.test";
+        return tag + "-" + UUID.randomUUID() + "@door.fixtures.imin.wtf";
     }
 
     private DoorOptInRequest body(String email, Boolean ticked, String text, String version, String locale) {

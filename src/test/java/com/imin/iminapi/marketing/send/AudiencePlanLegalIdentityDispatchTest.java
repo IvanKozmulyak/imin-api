@@ -30,6 +30,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -60,9 +61,9 @@ class AudiencePlanLegalIdentityDispatchTest {
     @BeforeEach
     void setUp() {
         flips.set(props, "sendsEnabled", true);
-        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
-            List<?> batch = inv.getArgument(0);
-            return batch.stream().map(e -> "id-" + UUID.randomUUID()).toList();
+        when(provider.sendBatch(any(), anyList())).thenAnswer(inv -> {
+            List<?> batch = inv.getArgument(1);
+            return CampaignEmailProvider.BatchResult.accepted(batch.stream().map(e -> "id-" + UUID.randomUUID()).toList());
         });
     }
 
@@ -123,7 +124,7 @@ class AudiencePlanLegalIdentityDispatchTest {
     @SuppressWarnings("unchecked")
     private List<String> sentTo() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        verify(provider, atLeast(0)).sendBatch(any(), captor.capture());
         return captor.getAllValues().stream().flatMap(List::stream)
                 .map(CampaignEmailProvider.OutgoingEmail::to).filter(ownAddresses::contains).toList();
     }

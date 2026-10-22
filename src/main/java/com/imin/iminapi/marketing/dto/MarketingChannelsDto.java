@@ -43,6 +43,8 @@ import java.time.Instant;
  *       (RFC 8058) pointing at the owned {@code /api/v1/public/unsubscribe/{token}} endpoint on the API.
  *       The footer link goes to the buyer-site page instead. There is no code path that sends a
  *       campaign email without them.</li>
+ *   <li>{@code replyTo} — the Reply-To this org's campaigns carry ({@code MarketingEmailProperties#replyTo}): the
+ *       organizer's legal contact when it is one mailable address, else IMIN's configured inbox, else null.</li>
  *   <li>{@code sentLast30d} — org-scoped count of recipient rows whose email left in the last 30 days
  *       (windowed on {@code sent_at}), bounced and complained included: the campaign pages' Sent, via
  *       {@code CampaignRecipientRepository#countSentForOrgSince}. {@code sentLast24h} stays the enforced cap count.</li>
@@ -75,23 +77,24 @@ import java.time.Instant;
  *   <li>{@code frequencyFloorHours} — {@code MarketingGuardProperties#getFrequencyFloorHours()}
  *       (default 24): a membership contacted inside this window is skipped with
  *       {@code skip_reason='frequency_capped'} ({@code CampaignVolumeGuard}).</li>
- *   <li>{@code complaintRate} — {@code complaintCount / deliveredCount}, org-wide across all the
- *       org's campaigns, from {@code provider_events}. 0.0 when nothing was delivered.
- *       <b>This is an org-wide aggregate view, NOT the number the breaker thresholds:</b>
- *       {@code ComplaintRateBreaker} evaluates PER CAMPAIGN, so a single bad campaign can trip
- *       the pause while this org-wide rate still reads below {@code autoPauseThreshold}. It is
- *       named {@code complaintRate} — what it literally is — and never dressed up as a
- *       reputation grade.</li>
- *   <li>{@code complaintCount}/{@code deliveredCount} — the raw org-scoped
- *       {@code email.complained} / {@code email.delivered} counts behind that ratio, exposed so
- *       the rate is auditable rather than an opaque float.</li>
- *   <li>{@code autoPauseThreshold} — {@code ComplaintRateBreaker.THRESHOLD} (0.001 = 0.1%),
- *       read from the breaker constant itself.</li>
- *   <li>{@code autoPauseMinVolume} — {@code ComplaintRateBreaker.MIN_VOLUME} (200). Below this
- *       per-campaign volume the breaker never trips, however bad the ratio looks.</li>
- *   <li>{@code paused}/{@code pausedAt} — {@code organizations.marketing_paused_at} (V57). When
- *       set, {@code CampaignDispatcher} skips every one of the org's campaigns. {@code pausedAt}
- *       is null exactly when {@code paused} is false.</li>
+ *   <li>{@code complaintRate} — {@code complaintCount / deliveredCount} over the breaker's own org window: the
+ *       last {@code windowDays} days, or since the last staff resume when that is later, from {@code provider_events}.
+ *       0.0 when nothing was delivered. {@code ComplaintRateBreaker} thresholds this org window AND each campaign on
+ *       its own (since the last resume), so one bad campaign can still trip the pause while this rate reads below
+ *       {@code autoPauseThreshold}. Never dressed up as a reputation grade.</li>
+ *   <li>{@code complaintCount}/{@code deliveredCount} — the raw org-scoped {@code email.complained} /
+ *       {@code email.delivered} counts in that window, exposed so the rate is auditable.</li>
+ *   <li>{@code bounceRate}/{@code hardBounceCount} — hard bounces ÷ (delivered + bounced) in the same window, and the
+ *       hard-bounce count behind it; the breaker pauses at {@code bounceThreshold}.</li>
+ *   <li>{@code autoPauseThreshold} — {@code ComplaintRateBreaker.THRESHOLD} (0.001 = 0.1%), and
+ *       {@code bounceThreshold} — {@code ComplaintRateBreaker.BOUNCE_THRESHOLD} (0.05 = 5%), read from the breaker.</li>
+ *   <li>{@code autoPauseMinVolume} — {@code ComplaintRateBreaker.MIN_VOLUME} (200). Below this volume, per campaign
+ *       or in the org window, the breaker never trips, however bad the ratio looks.</li>
+ *   <li>{@code windowDays} — {@code ComplaintRateBreaker.ORG_WINDOW_DAYS} (30).</li>
+ *   <li>{@code paused}/{@code pausedAt}/{@code pausedReason} — {@code organizations.marketing_paused_at} and
+ *       {@code marketing_paused_reason} ({@code complaint_rate} | {@code bounce_rate}). While set no batch of the org
+ *       starts. Only IMIN staff lift it ({@code POST /api/v1/internal/marketing/orgs/{orgId}/resume}). Both are null
+ *       exactly when {@code paused} is false.</li>
  * </ul>
  *
  * <h2>SMS ({@link Sms})</h2>
@@ -123,8 +126,6 @@ import java.time.Instant;
  *       {@code deliveredCount}) are published under their real names instead. (SPF/DKIM/DMARC are
  *       NOT a reputation grade; they now live under {@code email.dns}, read from Resend — see the
  *       Email section.)</li>
- *   <li><b>Bounce rate</b> — {@code ProviderEvent.TYPE_BOUNCED} is projected, but nothing
- *       enforces on it; it is omitted here to keep this surface to config + enforced counts.</li>
  *   <li><b>SMS message encoding</b> — no GSM-7/UCS-2 encoding handling exists anywhere in the
  *       tree (there is no SMS send path at all), so an encoding field would be invented data and
  *       is omitted. The intended SMS <i>policy</i> fields that ARE sourced from config live on
@@ -147,7 +148,8 @@ public record MarketingChannelsDto(Email email, Sms sms) {
             boolean oneClickUnsubscribe,
             QuietHoursWindow quietHours,
             Guardrails guardrails,
-            long sentLast30d
+            long sentLast30d,
+            String replyTo
     ) {}
 
     /** The org-local window in which the dispatcher hard-blocks email. */
@@ -159,7 +161,7 @@ public record MarketingChannelsDto(Email email, Sms sms) {
             boolean quietNow
     ) {}
 
-    /** The enforced volume + complaint guardrails, with the org's live position against them. */
+    /** The enforced volume, complaint and bounce guardrails, with the org's live position against them. */
     public record Guardrails(
             int dailyCap,
             long sentLast24h,
@@ -170,7 +172,12 @@ public record MarketingChannelsDto(Email email, Sms sms) {
             double autoPauseThreshold,
             long autoPauseMinVolume,
             boolean paused,
-            Instant pausedAt
+            Instant pausedAt,
+            String pausedReason,
+            double bounceRate,
+            long hardBounceCount,
+            double bounceThreshold,
+            int windowDays
     ) {}
 
     /**

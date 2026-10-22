@@ -842,7 +842,7 @@ class SurveyServiceTest {
 
     /** Addresses are keyed across orgs, so every test writes its own. */
     private static String addr(String tag) {
-        return tag + "-" + UUID.randomUUID() + "@survey.test";
+        return tag + "-" + UUID.randomUUID() + "@survey.fixtures.imin.wtf";
     }
 
     private static SurveyResponseRequest request(String commune, List<String> genres, String heard, String age,
