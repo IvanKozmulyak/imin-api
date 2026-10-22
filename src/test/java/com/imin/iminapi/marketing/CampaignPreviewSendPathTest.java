@@ -11,22 +11,28 @@ import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
+import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.send.RecipientMaterializer;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -51,6 +57,7 @@ class CampaignPreviewSendPathTest {
     @Autowired AudiencePlanProperties props;
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
+    @Autowired RecipientMaterializer materializer;
 
     private Organization org;
     private User owner;
@@ -216,6 +223,54 @@ class CampaignPreviewSendPathTest {
         assertThat(r.excluded().consentGate()).isEqualTo(1);
     }
 
+    /**
+     * A ticket holder is left out of an event email that says so; a refunded holder is not, and a held-out holder
+     * keeps its experiment reason. Preview and materialization agree. With the flag off, holders are mailed.
+     */
+    @ParameterizedTest(name = "skipTicketHolders={0}")
+    @ValueSource(booleans = {true, false})
+    void ticketHolders_areLeftOutOnlyWhenTheCampaignSaysSo(boolean skip) {
+        UUID orgId = newOrg();
+        Event event = fx.event(org, owner, EventStatus.LIVE, Instant.now().plus(7, ChronoUnit.DAYS));
+        Membership holder = member(orgId);
+        Membership refunded = member(orgId);
+        Membership heldOutHolder = member(orgId);
+        Membership clean = member(orgId);
+        ticketFor(event, holder, Ticket.STATE_ISSUED);
+        ticketFor(event, refunded, Ticket.STATE_REFUNDED);
+        ticketFor(event, heldOutHolder, Ticket.STATE_ISSUED);
+        holdOut(orgId, event.getId(), heldOutHolder.getMembershipId());
+        UUID seg = segmentOf(orgId, List.of(holder, refunded, heldOutHolder, clean));
+        Campaign c = campaign(orgId, event.getId(), "manual", "draft", seg);
+        c.setSkipTicketHolders(skip);
+        c = campaigns.save(c);
+
+        PreviewAudienceResponse r = service.previewAudience(owner(), c.getId());
+
+        assertThat(r.sendable()).isEqualTo(skip ? 2 : 3);
+        assertThat(r.excluded().hasTicket()).isEqualTo(skip ? 1 : 0);
+        assertThat(r.excluded().experimentHoldout()).isEqualTo(1);
+        assertSendGateCountsKept(r);
+
+        materializer.materialize(c);
+
+        assertThat(skipReasonOf(c, holder)).isEqualTo(skip ? SendPathGuard.HAS_TICKET : null);
+        assertThat(skipReasonOf(c, heldOutHolder)).isEqualTo(SendPathGuard.EXPERIMENT_HOLDOUT);
+        assertThat(skipReasonOf(c, refunded)).isNull();
+        assertThat(skipReasonOf(c, clean)).isNull();
+    }
+
+    private void ticketFor(Event event, Membership m, String state) {
+        String email = consumers.findAllByConsumerIdIn(List.of(m.getConsumerId())).get(0).getNormalizedEmail();
+        fx.ticket(fx.order(event, email), state);
+    }
+
+    private String skipReasonOf(Campaign c, Membership m) {
+        return recipients.findByCampaignId(c.getId(), Pageable.unpaged()).stream()
+                .filter(r -> m.getMembershipId().equals(r.getMembershipId()))
+                .findFirst().orElseThrow().getSkipReason();
+    }
+
     @Test
     void noSegment_isAllZero() {
         UUID orgId = newOrg();
@@ -224,6 +279,6 @@ class CampaignPreviewSendPathTest {
         PreviewAudienceResponse r = service.previewAudience(owner(), c.getId());
 
         assertThat(r).isEqualTo(new PreviewAudienceResponse(0,
-                new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)));
+                new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)));
     }
 }

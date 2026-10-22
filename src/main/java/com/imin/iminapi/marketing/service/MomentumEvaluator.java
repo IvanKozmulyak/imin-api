@@ -204,9 +204,9 @@ public class MomentumEvaluator {
             }
         }
 
-        String why;
+        Persisted persisted;
         try {
-            why = persistSuggestion(e, fired, m, segmentId, now, null);
+            persisted = persistSuggestion(e, fired, m, segmentId, now, null);
         } catch (RuntimeException ex) {
             if (planned != null) {
                 try {
@@ -219,7 +219,7 @@ public class MomentumEvaluator {
         }
         // Best-effort in-app ping in its OWN (REQUIRES_NEW) transaction — a failure here
         // cannot roll back the suggestion just persisted (see MomentumNotifier).
-        notifier.notifyOwner(e.getOrgId(), fired.wireValue(), why);
+        notifier.notifyOwner(e.getOrgId(), persisted.id(), fired.wireValue(), persisted.why());
     }
 
     /**
@@ -252,9 +252,9 @@ public class MomentumEvaluator {
 
         publishTriggered(e, trigger);
         UUID segmentId = planTarget.snapshot(e.getOrgId(), clickedNoBuySegmentName(e.getName()), targets);
-        String why;
+        Persisted persisted;
         try {
-            why = persistSuggestion(e, trigger, m, segmentId, now, targets.size());
+            persisted = persistSuggestion(e, trigger, m, segmentId, now, targets.size());
         } catch (RuntimeException ex) {
             try {
                 planTarget.discard(e.getOrgId(), segmentId);
@@ -263,7 +263,7 @@ public class MomentumEvaluator {
             }
             throw ex;
         }
-        notifier.notifyOwner(e.getOrgId(), trigger.wireValue(), why);
+        notifier.notifyOwner(e.getOrgId(), persisted.id(), trigger.wireValue(), persisted.why());
     }
 
     private static String clickedNoBuySegmentName(String eventName) {
@@ -298,9 +298,12 @@ public class MomentumEvaluator {
         }
     }
 
-    /** Writes the suggestion and returns its "why" line; {@code clickedNoTicket} is null for sales-curve triggers. */
-    private String persistSuggestion(Event e, MomentumTriggerType fired, MomentumMetrics m, UUID segmentId,
-                                   Instant now, Integer clickedNoTicket) {
+    /** A stored suggestion's id and its "why" line, for the owner's notification. */
+    private record Persisted(UUID id, String why) {}
+
+    /** Writes the suggestion; {@code clickedNoTicket} is null for sales-curve triggers. */
+    private Persisted persistSuggestion(Event e, MomentumTriggerType fired, MomentumMetrics m, UUID segmentId,
+                                        Instant now, Integer clickedNoTicket) {
         MomentumDraftPayload draft = copy.generate(
                 fired,
                 e.getName(),
@@ -321,7 +324,7 @@ public class MomentumEvaluator {
         s.setDraftPayload(toDraftJson(draft));
         s.setSuggestedAt(now);
         suggestions.save(s);
-        return draft.why();
+        return new Persisted(s.getId(), draft.why());
     }
 
     /** The org's default campaign language; an unknown country leaves English. */
@@ -399,20 +402,16 @@ public class MomentumEvaluator {
                 .replace("\n", "\\n").replace("\r", "") + "\"";
     }
 
-    /** Expire live 'suggested' rows whose event has started (spec §6.1 expiry). */
+    /**
+     * Expire live 'suggested' rows whose event has started or is gone (spec §6.1 expiry). The write is conditional,
+     * so an approval or dismissal made after this read is never reverted to 'expired'.
+     */
     private void expireStale(Instant now) {
         for (MomentumSuggestion s : suggestions.findByStatus("suggested")) {
-            events.findActive(s.getEventId()).ifPresentOrElse(ev -> {
-                if (ev.getStartsAt() != null && !ev.getStartsAt().isAfter(now)) {
-                    s.setStatus("expired");
-                    s.setActedAt(now);
-                    suggestions.save(s);
-                }
-            }, () -> {
-                s.setStatus("expired");
-                s.setActedAt(now);
-                suggestions.save(s);
-            });
+            boolean over = events.findActive(s.getEventId())
+                    .map(ev -> ev.getStartsAt() != null && !ev.getStartsAt().isAfter(now))
+                    .orElse(true);
+            if (over) suggestions.expireIfLive(s.getId(), now);
         }
     }
 }

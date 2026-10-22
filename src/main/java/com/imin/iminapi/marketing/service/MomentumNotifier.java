@@ -38,17 +38,21 @@ public class MomentumNotifier {
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    /** Notify the org owner that a suggestion is waiting. Never throws. */
-    public void notifyOwner(UUID orgId, String triggerWire, String why) {
+    /**
+     * Notify the org owner that a suggestion is waiting. Never throws. The kind carries the trigger
+     * ({@code momentum_suggestion.<trigger>}) so the dashboard words the title in the owner's language; the link
+     * opens that card on the Momentum tab. The English title is the fallback.
+     */
+    public void notifyOwner(UUID orgId, UUID suggestionId, String triggerWire, String why) {
         try {
             // The transaction ends inside the try, so a rollback-only mark or a failed commit flush is caught too.
-            requiresNew.executeWithoutResult(status -> write(orgId, triggerWire, why));
+            requiresNew.executeWithoutResult(status -> write(orgId, suggestionId, triggerWire, why));
         } catch (Exception notifyEx) {
             log.warn("Momentum: notification write failed for org {}: {}", orgId, LogSafe.redact(notifyEx.getMessage()));
         }
     }
 
-    private void write(UUID orgId, String triggerWire, String why) {
+    private void write(UUID orgId, UUID suggestionId, String triggerWire, String why) {
         UUID ownerUserId = users.findByOrgIdOrderByCreatedAtAsc(orgId).stream()
                 .filter(u -> u.getRole() == UserRole.OWNER)
                 .map(User::getId)
@@ -57,10 +61,10 @@ public class MomentumNotifier {
         if (ownerUserId == null) return; // no owner user — skip cleanly
         Notification n = new Notification();
         n.setUserId(ownerUserId);
-        n.setKind("momentum_suggestion");
+        n.setKind("momentum_suggestion." + triggerWire);
         n.setTitle("New campaign suggestion: " + triggerWire.replace('_', ' '));
         n.setBody(why);
-        n.setLink("/marketing"); // Momentum tab
+        n.setLink("/marketing?tab=momentum&suggestion=" + suggestionId);
         notifications.save(n);
     }
 }

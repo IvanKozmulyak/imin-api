@@ -243,6 +243,8 @@ class CampaignControllerTest {
     @CsvSource({
             "blank subject, subject",
             "blank body,    bodyMd",
+            "body is only the tickets button, bodyMd",
+            "body is only a labelled tickets button on its own line, bodyMd",
             "no segment,    segmentId",
             "segment deleted after it was chosen, segmentId",
             "nobody in the segment can be emailed (unsubscribed), audience"})
@@ -252,7 +254,7 @@ class CampaignControllerTest {
                 : segmentOf(owner.orgId(), "audience".equals(field) ? "unsubscribed" : "subscribed");
         UUID id = service.create(owner, new CreateCampaignRequest("email", "Launch night", segmentId, null,
                 "subject".equals(field) ? " " : "Subject", null,
-                "bodyMd".equals(field) ? " " : "Body", null)).id();
+                bodyOf(label, field), null)).id();
         if (label.startsWith("segment deleted")) jdbc.update("DELETE FROM segments WHERE id = ?", segmentId);
 
         mvc.perform(post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(owner))
@@ -264,6 +266,12 @@ class CampaignControllerTest {
 
         assertThat(campaigns.findByIdAndOrgId(id, owner.orgId())).get()
                 .extracting(Campaign::getStatus).isEqualTo("draft");
+    }
+
+    private static String bodyOf(String label, String field) {
+        if (label.startsWith("body is only the tickets button")) return "{{tickets_button}}";
+        if (label.startsWith("body is only a labelled")) return "\n{{tickets_button:Book now}}\n";
+        return "bodyMd".equals(field) ? " " : "Body";
     }
 
     private UUID segmentOf(UUID orgId, String consentStatus) {
@@ -401,6 +409,39 @@ class CampaignControllerTest {
         assertThat(counts(byId, sms)).as("sms").containsOnlyNulls();
         assertThat(counts(byId, draft)).as("draft").containsOnlyNulls();
         assertThat(counts(byId, sentNothing)).as("email that sent nothing").containsOnlyNulls();
+    }
+
+    /** Promote lists only this org's emails for this night; the excluded rows are newer, so a dropped filter shows them first. */
+    @Test
+    void listByEvent_keepsOnlyThisOrgsCampaignsForThatEvent() throws Exception {
+        UUID event = UUID.randomUUID();
+        UUID older = draft(owner, null, event).id();
+        UUID newer = draft(owner, null, event).id();
+        UUID otherNight = draft(owner, null, UUID.randomUUID()).id();
+        UUID unlinked = draft(owner, null, null).id();
+        UUID otherOrgs = draft(otherOwner, null, event).id();
+        UUID theirEvent = UUID.randomUUID();
+        draft(otherOwner, null, theirEvent);
+        Instant base = Instant.parse("2026-10-01T10:00:00Z");
+        List<UUID> byAge = List.of(older, newer, otherNight, unlinked, otherOrgs);
+        for (int i = 0; i < byAge.size(); i++) {
+            jdbc.update("UPDATE campaigns SET created_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(base.plusSeconds(60L * i)), byAge.get(i));
+        }
+
+        String json = mvc.perform(get("/api/v1/marketing/campaigns").param("eventId", event.toString())
+                        .with(auth(owner)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        List<String> ids = om.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<
+                List<Map<String, Object>>>() {}).stream().map(r -> (String) r.get("id")).toList();
+        assertThat(ids).containsExactly(newer.toString(), older.toString());
+
+        mvc.perform(get("/api/v1/marketing/campaigns").param("eventId", event.toString()).with(auth(otherOwner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].id").value(org.hamcrest.Matchers.contains(otherOrgs.toString())));
+        mvc.perform(get("/api/v1/marketing/campaigns").param("eventId", theirEvent.toString()).with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
     }
 
     private static List<Object> counts(Map<String, Map<String, Object>> byId, UUID id) {

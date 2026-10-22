@@ -51,7 +51,9 @@ public record CampaignDto(
          */
         Long revMinor,
         /** Language of the fan-facing shell and unsubscribe page: en|es|fr|uk. Never null. */
-        String locale
+        String locale,
+        /** With an event: people holding a live ticket for it are left out (skip reason {@code has_ticket}). */
+        boolean skipTicketHolders
 ) {
     /**
      * Projection with no attributed revenue — for campaigns that cannot have any yet
@@ -69,6 +71,6 @@ public record CampaignDto(
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
-                c.getCreatedAt(), c.getUpdatedAt(), revMinor, c.getLocale());
+                c.getCreatedAt(), c.getUpdatedAt(), revMinor, c.getLocale(), c.isSkipTicketHolders());
     }
 }

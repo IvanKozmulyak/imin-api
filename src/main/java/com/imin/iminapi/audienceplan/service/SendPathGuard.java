@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import org.springframework.stereotype.Service;
@@ -22,9 +23,11 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Send-time skips on top of SendGateService: for a campaign about an event, its holdout members and the
- * per-event and 30-day send caps; for an audience-plan campaign, a Momentum campaign sending to a plan
- * snapshot, or every campaign while {@code consent-gate-all-campaigns} is on, ConsentGate as well.
+ * Send-time skips on top of SendGateService: for a campaign about an event, its holdout members, people
+ * already holding a live ticket for it (only with {@code skipTicketHolders}) and the per-event and 30-day send
+ * caps; for an audience-plan campaign, a Momentum campaign sending to a plan snapshot, or every campaign while
+ * {@code consent-gate-all-campaigns} is on, ConsentGate as well. One reason per member, in that order, so a
+ * held-out holder stays in its experiment arm.
  */
 @Service
 public class SendPathGuard {
@@ -33,6 +36,7 @@ public class SendPathGuard {
     public static final String EVENT_CAP = "event_cap";
     public static final String MONTHLY_CAP = "monthly_cap";
     public static final String CONSENT_GATE = "consent_gate";
+    public static final String HAS_TICKET = "has_ticket";
     static final String MOMENTUM_ORIGIN = "momentum";
 
     /** Emails about one event at or above which a person gets no more about it. */
@@ -49,14 +53,17 @@ public class SendPathGuard {
     private final ConsentGate consentGate;
     private final AudiencePlanProperties props;
     private final SegmentRepository segments;
+    private final FanFeatureRepository fanFeatures;
 
     public SendPathGuard(AudienceAssignmentRepository assignments, CampaignRecipientRepository recipients,
-                         ConsentGate consentGate, AudiencePlanProperties props, SegmentRepository segments) {
+                         ConsentGate consentGate, AudiencePlanProperties props, SegmentRepository segments,
+                         FanFeatureRepository fanFeatures) {
         this.assignments = assignments;
         this.recipients = recipients;
         this.consentGate = consentGate;
         this.props = props;
         this.segments = segments;
+        this.fanFeatures = fanFeatures;
     }
 
     /** Skip reason per member that must not be emailed by this campaign now; members absent may be sent. */
@@ -70,8 +77,15 @@ public class SendPathGuard {
         if (ids.isEmpty()) return Map.of();
 
         Set<UUID> heldOut = new HashSet<>();
+        Set<UUID> holders = new HashSet<>();
         Map<UUID, Long> eventSends = new HashMap<>();
         Map<UUID, Long> recentSends = new HashMap<>();
+        if (aboutEvent && c.isSkipTicketHolders()) {
+            // Matched by order email to the member's address: a live ticket of a real order for this event.
+            for (Object id : fanFeatures.findMembershipIdsHoldingEventTicket(c.getOrgId(), c.getEventId())) {
+                holders.add(ConsentGate.uuid(id));
+            }
+        }
         if (aboutEvent) {
             Instant monthSince = now.minus(MONTHLY_CAP_DAYS, ChronoUnit.DAYS);
             for (int from = 0; from < ids.size(); from += MAX_IDS_PER_QUERY) {
@@ -87,6 +101,7 @@ public class SendPathGuard {
         for (UUID id : ids) {
             String reason = null;
             if (heldOut.contains(id)) reason = EXPERIMENT_HOLDOUT;
+            else if (holders.contains(id)) reason = HAS_TICKET;
             else if (eventSends.getOrDefault(id, 0L) >= EVENT_CAP_SENDS) reason = EVENT_CAP;
             else if (recentSends.getOrDefault(id, 0L) >= MONTHLY_CAP_SENDS) reason = MONTHLY_CAP;
             // A member ConsentGate did not return (another org, or gone) is not mailable either.

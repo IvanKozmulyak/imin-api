@@ -36,18 +36,27 @@ public final class CampaignRequests {
             /** True when the preheader or body is AI-generated. Only true is meaningful; sticky. */
             Boolean bodyAiGenerated,
             /** Language of the fan-facing shell: en|es|fr|uk. Null → the org default. */
-            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale
+            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale,
+            /** True leaves out people who already hold a live ticket for the linked event. Null → false. */
+            Boolean skipTicketHolders
     ) {
         public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
                                      String subject, String preheader, String bodyMd, String templateKey) {
-            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null);
+            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null, null);
         }
 
         public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
                                      String subject, String preheader, String bodyMd, String templateKey,
                                      Boolean subjectAiGenerated, Boolean bodyAiGenerated) {
             this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
-                    subjectAiGenerated, bodyAiGenerated, null);
+                    subjectAiGenerated, bodyAiGenerated, null, null);
+        }
+
+        public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
+                                     String subject, String preheader, String bodyMd, String templateKey,
+                                     Boolean subjectAiGenerated, Boolean bodyAiGenerated, String locale) {
+            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
+                    subjectAiGenerated, bodyAiGenerated, locale, null);
         }
     }
 
@@ -81,18 +90,28 @@ public final class CampaignRequests {
             /** {@code email} or {@code sms}; applied only when non-null (draft-only, refused on audience-plan campaigns). */
             String channel,
             /** Language of the fan-facing shell: en|es|fr|uk. Applied only when non-null. */
-            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale
+            @Pattern(regexp = "en|es|fr|uk", message = "must be one of en, es, fr, uk") String locale,
+            /** Leave out people holding a live ticket for the linked event; applied only when non-null (draft-only). */
+            Boolean skipTicketHolders
     ) {
         public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
                                     String subject, String preheader, String bodyMd, String templateKey) {
-            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null, null);
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null, null, null, null);
         }
 
         public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
                                     String subject, String preheader, String bodyMd, String templateKey,
                                     Boolean subjectAiGenerated, Boolean bodyAiGenerated) {
             this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
-                    subjectAiGenerated, bodyAiGenerated, null, null);
+                    subjectAiGenerated, bodyAiGenerated, null, null, null);
+        }
+
+        public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
+                                    String subject, String preheader, String bodyMd, String templateKey,
+                                    Boolean subjectAiGenerated, Boolean bodyAiGenerated, String channel,
+                                    String locale) {
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey,
+                    subjectAiGenerated, bodyAiGenerated, channel, locale, null);
         }
     }
 

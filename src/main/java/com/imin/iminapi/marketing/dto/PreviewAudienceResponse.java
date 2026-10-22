@@ -19,20 +19,30 @@ public record PreviewAudienceResponse(int sendable, Excluded excluded) {
             int monthlyCap,
             int consentGate,
             // An address on file that cannot be mailed: malformed or on a reserved test domain (email only).
-            int invalidAddress
+            int invalidAddress,
+            /** Holds a live ticket for the campaign's event (campaigns with {@code skipTicketHolders}). */
+            int hasTicket
     ) {
         /** SendGate counts alone; the send-path counts are 0 because no send-path guard ran. */
         public Excluded(int noBasis, int unsubscribed, int marketingSuppressed, int deliverabilitySuppressed,
                         int noPhone, int noEmail) {
-            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail, 0, 0, 0, 0, 0);
+            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail, 0, 0, 0, 0, 0, 0);
         }
 
-        /** SendGate counts and the send-path skips, with no invalid address counted. */
+        /** SendGate counts and the send-path skips, with no invalid address or ticket holder counted. */
         public Excluded(int noBasis, int unsubscribed, int marketingSuppressed, int deliverabilitySuppressed,
                         int noPhone, int noEmail, int experimentHoldout, int eventCap, int monthlyCap,
                         int consentGate) {
             this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail,
-                    experimentHoldout, eventCap, monthlyCap, consentGate, 0);
+                    experimentHoldout, eventCap, monthlyCap, consentGate, 0, 0);
+        }
+
+        /** Every count but the ticket holders, for callers that predate them. */
+        public Excluded(int noBasis, int unsubscribed, int marketingSuppressed, int deliverabilitySuppressed,
+                        int noPhone, int noEmail, int experimentHoldout, int eventCap, int monthlyCap,
+                        int consentGate, int invalidAddress) {
+            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail,
+                    experimentHoldout, eventCap, monthlyCap, consentGate, invalidAddress, 0);
         }
     }
 }

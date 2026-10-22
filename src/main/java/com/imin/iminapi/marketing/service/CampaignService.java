@@ -165,6 +165,7 @@ public class CampaignService {
         c.setSubjectAiGenerated(Boolean.TRUE.equals(req.subjectAiGenerated()));
         c.setBodyAiGenerated(Boolean.TRUE.equals(req.bodyAiGenerated()));
         c.setLocale(req.locale() != null ? req.locale() : defaultLocale(p));
+        c.setSkipTicketHolders(Boolean.TRUE.equals(req.skipTicketHolders()));
         c.setCreatedBy(p.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);
@@ -182,8 +183,16 @@ public class CampaignService {
 
     @Transactional(readOnly = true)
     public List<CampaignSummary> list(AuthPrincipal p, String channel, String status, int page, int size) {
-        List<Campaign> rows = campaigns.listByOrg(p.orgId(),
-                blankToNull(channel), blankToNull(status), PageRequest.of(page, size));
+        return list(p, channel, status, null, page, size);
+    }
+
+    /** The org's campaigns, newest first; with {@code eventId}, only those linked to that event (another org's: none). */
+    @Transactional(readOnly = true)
+    public List<CampaignSummary> list(AuthPrincipal p, String channel, String status, UUID eventId, int page, int size) {
+        List<Campaign> rows = eventId == null
+                ? campaigns.listByOrg(p.orgId(), blankToNull(channel), blankToNull(status), PageRequest.of(page, size))
+                : campaigns.listByOrgAndEvent(p.orgId(), eventId,
+                        blankToNull(channel), blankToNull(status), PageRequest.of(page, size));
         // Attributed revenue for the whole page in ONE query (V62) — never per row.
         // Only sent campaigns can have any; drafts are left null (see CampaignSummary.revMinor).
         List<UUID> canceledIds = rows.stream().filter(CampaignService::mayHaveSentThenStopped).map(Campaign::getId).toList();
@@ -335,6 +344,7 @@ public class CampaignService {
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());
         if (req.templateKey() != null) c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
         if (req.locale() != null) c.setLocale(req.locale());
+        if (req.skipTicketHolders() != null) c.setSkipTicketHolders(req.skipTicketHolders());
         // AI provenance is sticky: the client's true, or saved text a model offered for this campaign.
         if (Boolean.TRUE.equals(req.subjectAiGenerated())
                 || aiSuggestions.wasOffered(c.getId(), CampaignAiSuggestions.SUBJECT, req.subject())) {
@@ -394,6 +404,7 @@ public class CampaignService {
         copy.setBodyAiGenerated(src.isBodyAiGenerated());
         copy.setTemplateKey(src.getTemplateKey());
         copy.setLocale(src.getLocale());
+        copy.setSkipTicketHolders(src.isSkipTicketHolders());
         copy.setBodyTemplate(src.getBodyTemplate());
         copy.setSenderId(src.getSenderId());
         copy.setCreatedBy(p.userId());
@@ -427,7 +438,7 @@ public class CampaignService {
                         base.marketingSuppressed(), base.deliverabilitySuppressed(), base.noPhone(), base.noEmail(),
                         count(skipped, SendPathGuard.EXPERIMENT_HOLDOUT), count(skipped, SendPathGuard.EVENT_CAP),
                         count(skipped, SendPathGuard.MONTHLY_CAP), count(skipped, SendPathGuard.CONSENT_GATE),
-                        base.invalidAddress()));
+                        base.invalidAddress(), count(skipped, SendPathGuard.HAS_TICKET)));
     }
 
     private static int count(Map<UUID, String> skipped, String reason) {
@@ -451,12 +462,13 @@ public class CampaignService {
 
     /**
      * Refuses a draft the dispatcher could only send as an empty shell, to nobody, or not at all: 400
-     * {@code FIELD_INVALID} with every missing field. Writes nothing; the frequency floor is not applied here.
+     * {@code FIELD_INVALID} with every missing field; a body holding only tickets-button tokens counts as blank.
+     * Writes nothing; the frequency floor is not applied here.
      */
     private void requireReadyToSend(Campaign c) {
         Map<String, String> missing = new LinkedHashMap<>();
         if (c.getSubject() == null || c.getSubject().isBlank()) missing.put("subject", "required");
-        if (c.getBodyMd() == null || c.getBodyMd().isBlank()) missing.put("bodyMd", "required");
+        if (!hasTextBesideTicketsButton(c.getBodyMd())) missing.put("bodyMd", "required");
         if (c.getSegmentId() == null || segments.nameOrNull(c.getOrgId(), c.getSegmentId()) == null) {
             missing.put("segmentId", "required");
         } else if (sendableAudience(c.getOrgId(), c,
@@ -467,6 +479,15 @@ public class CampaignService {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
                     "Campaign is not ready to send", missing);
         }
+    }
+
+    // The renderer's own token pattern (CampaignEmailRenderer.TICKETS_TOKEN_INLINE): what becomes a button is not text.
+    private static final java.util.regex.Pattern TICKETS_TOKEN =
+            java.util.regex.Pattern.compile("\\{\\{\\s*tickets_button(?::[^}]*)?\\s*\\}\\}");
+
+    /** True when the body says something besides tickets-button tokens and whitespace. */
+    static boolean hasTextBesideTicketsButton(String bodyMd) {
+        return bodyMd != null && !TICKETS_TOKEN.matcher(bodyMd).replaceAll("").isBlank();
     }
 
     /** A past schedule would dispatch at once while the UI says "scheduled"; 2 min absorbs client clock skew. */

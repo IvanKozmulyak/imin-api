@@ -38,15 +38,19 @@ public class CampaignController {
     /** Upper bound on any page this controller serves. */
     static final int MAX_PAGE_SIZE = 200;
 
-    /** One page of the org's campaigns; {@code sendHold} says why a scheduled or sending one starts no batch now. */
+    /**
+     * One page of the org's campaigns, newest first; {@code sendHold} says why a scheduled or sending one starts no
+     * batch now. {@code eventId} keeps only campaigns linked to that event; another org's event id gives an empty list.
+     */
     @GetMapping
     public List<CampaignSummary> list(
             @AuthenticationPrincipal AuthPrincipal principal,
             @RequestParam(required = false) String channel,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) UUID eventId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.list(principal, channel, status, clampPage(page), clampSize(size));
+        return service.list(principal, channel, status, eventId, clampPage(page), clampSize(size));
     }
 
     /**

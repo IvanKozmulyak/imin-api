@@ -21,6 +21,7 @@ import java.util.UUID;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** Momentum route wiring and statuses; MomentumServiceTest owns the payloads and effects. */
@@ -77,6 +78,10 @@ class MomentumControllerTest {
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/marketing/suggestions/" + approved.getId() + "/approve").with(authentication(auth)))
                 .andExpect(status().isOk());
+        // The webapp reads INVALID_STATE as "suggestion gone".
+        mvc.perform(post("/api/v1/marketing/suggestions/" + approved.getId() + "/approve").with(authentication(auth)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
         mvc.perform(post("/api/v1/marketing/suggestions/" + dismissed.getId() + "/dismiss").with(authentication(auth)))
                 .andExpect(status().isNoContent());
     }

@@ -288,18 +288,24 @@ public class MomentumService {
         return Character.toUpperCase(s.charAt(0)) + s.substring(1);
     }
 
+    /**
+     * Turns a live suggestion into one draft: the conditional claim runs before the insert, so a second click,
+     * another tab, a dismissal or the expiry sweep that got there first answers 409 and no draft is made. The draft
+     * leaves out people already holding a ticket for the event.
+     */
     @Transactional
     public CampaignDto approve(AuthPrincipal principal, UUID suggestionId) {
         MomentumSuggestion s = loadOwned(principal, suggestionId);
-        if (!"suggested".equals(s.getStatus())) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Suggestion is not live");
-        }
         JsonNode draft = parse(s.getDraftPayload());
 
         Instant now = Instant.now();
+        UUID campaignId = UUID.randomUUID();
+        if (suggestions.approveIfLive(s.getId(), principal.orgId(), campaignId, now) == 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Suggestion is not live");
+        }
         Campaign c = new Campaign();
-        c.setId(UUID.randomUUID());
+        c.setId(campaignId);
         c.setOrgId(principal.orgId());
         c.setChannel("email");
         c.setName(clamp(text(draft, "subject", "Momentum campaign"), MAX_NAME));
@@ -308,6 +314,7 @@ public class MomentumService {
         c.setSegmentId(uuidOrNull(text(draft, "segmentId", null)));
         c.setOrigin("momentum");
         c.setMomentumSuggestionId(s.getId());
+        c.setSkipTicketHolders(true);
         c.setSubject(clamp(text(draft, "subject", null), MAX_SUBJECT));
         c.setPreheader(clamp(text(draft, "preheader", null), MAX_PREHEADER));
         c.setBodyMd(text(draft, "bodyMd", null));
@@ -322,27 +329,17 @@ public class MomentumService {
         c.setUpdatedAt(now);
         campaigns.save(c);
 
-        s.setStatus("approved");
-        s.setCampaignId(c.getId());
-        s.setActedAt(now);
-        suggestions.save(s);
-
         return CampaignDto.from(c);
     }
 
+    /** Dismisses a live suggestion through one conditional update; an approved or expired one answers 409. */
     @Transactional
     public void dismiss(AuthPrincipal principal, UUID suggestionId) {
         MomentumSuggestion s = loadOwned(principal, suggestionId);
-        // Same guard approve uses (mkt-core-9). Without it an already-approved suggestion —
-        // campaign row created, campaignId set — could be flipped to 'dismissed', orphaning
-        // the link and double-counting it in state()'s approved30d/dismissed30d.
-        if (!"suggested".equals(s.getStatus())) {
+        if (suggestions.dismissIfLive(s.getId(), principal.orgId(), Instant.now()) == 0) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Suggestion is not live");
         }
-        s.setStatus("dismissed");
-        s.setActedAt(Instant.now());
-        suggestions.save(s);
     }
 
     private MomentumSuggestion loadOwned(AuthPrincipal principal, UUID id) {

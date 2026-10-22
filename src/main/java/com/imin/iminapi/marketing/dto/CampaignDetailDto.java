@@ -62,7 +62,9 @@ public record CampaignDetailDto(
          * sending after complaints or bounces; the reason is on GET /marketing/channels) or {@code moderation_hold}
          * (an active hold on the org or on this campaign's event); null when nothing holds it or it is not waiting.
          */
-        String sendHold
+        String sendHold,
+        /** With an event: people holding a live ticket for it are left out (skip reason {@code has_ticket}). */
+        boolean skipTicketHolders
 ) {
     public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
                                          String triggerType, String failureReason, String eventName, Long revMinor,
@@ -74,6 +76,7 @@ public record CampaignDetailDto(
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
                 c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType,
-                c.getAttempts(), failureReason, eventName, revMinor, skipReasons, c.getLocale(), sendHold);
+                c.getAttempts(), failureReason, eventName, revMinor, skipReasons, c.getLocale(), sendHold,
+                c.isSkipTicketHolders());
     }
 }

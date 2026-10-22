@@ -65,6 +65,10 @@ public class Campaign {
     @Column(name = "momentum_suggestion_id")
     private UUID momentumSuggestionId;
 
+    /** V203: with an event, people holding a live ticket for it are skipped as {@code has_ticket}. */
+    @Column(name = "skip_ticket_holders", nullable = false)
+    private boolean skipTicketHolders;
+
     // email-only
     private String subject;
     private String preheader;

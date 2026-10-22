@@ -349,6 +349,7 @@ class MomentumEvaluatorTest {
         assertThat(reloaded.getStatus()).isEqualTo("expired");
     }
 
+    /** The notification opens its own card on the Momentum tab, and its kind names the trigger for a localized title. */
     @Test
     void firedSuggestionNotifiesTheOrgOwnerInApp() {
         UUID event = liveEvent(5, 100,
@@ -358,14 +359,15 @@ class MomentumEvaluatorTest {
 
         evaluate(event); // must not throw
 
-        assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).contains("launch_push");
+        MomentumSuggestion fired = live(event).stream()
+                .filter(s -> "launch_push".equals(s.getTriggerType())).findFirst().orElseThrow();
         List<Notification> unread = notifications.findByUserIdAndReadAtIsNull(ownerId);
         assertThat(unread).singleElement().satisfies(n -> {
             assertThat(n.getId()).isNotNull();
-            assertThat(n.getKind()).isEqualTo("momentum_suggestion");
+            assertThat(n.getKind()).isEqualTo("momentum_suggestion.launch_push");
             assertThat(n.getTitle()).isEqualTo("New campaign suggestion: launch push");
             assertThat(n.getBody()).isEqualTo("why");
-            assertThat(n.getLink()).isEqualTo("/marketing");
+            assertThat(n.getLink()).isEqualTo("/marketing?tab=momentum&suggestion=" + fired.getId());
         });
     }
 
@@ -427,7 +429,7 @@ class MomentumEvaluatorTest {
         assertThat(JSON.readTree(made.getMetricsSnapshot()).path("clickedNoTicket").asInt(-1))
                 .isEqualTo(included.size());
         assertThat(notifications.findByUserIdAndReadAtIsNull(ownerOf(event)))
-                .extracting(Notification::getKind).containsExactly("momentum_suggestion");
+                .extracting(Notification::getKind).containsExactly("momentum_suggestion.clicked_no_buy");
     }
 
     enum Guardrail {

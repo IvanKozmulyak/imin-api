@@ -179,6 +179,21 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                              @Param("status") String status,
                              Pageable pageable);
 
+    /** {@link #listByOrg} for one event; its own query so no nullable UUID is ever bound. */
+    @Query("""
+            select c from Campaign c
+             where c.orgId = :orgId
+               and c.eventId = :eventId
+               and (:channel is null or c.channel = :channel)
+               and (:status  is null or c.status  = :status)
+             order by c.createdAt desc, c.id desc
+            """)
+    List<Campaign> listByOrgAndEvent(@Param("orgId") UUID orgId,
+                                     @Param("eventId") UUID eventId,
+                                     @Param("channel") String channel,
+                                     @Param("status") String status,
+                                     Pageable pageable);
+
     /**
      * Org's campaigns created since a cutoff — feeds the marketing hub 30-day
      * attributed-purchases roll-up (summed per-campaign via CampaignAttributionService).

@@ -120,7 +120,8 @@ class MomentumEvaluatorPlanTargetTest {
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + snapshotId + "\"");
         verify(segments, never()).defaultTargetSegmentId(any());
         verify(planTarget, never()).discard(any(), any());
-        verify(notifier).notifyOwner(orgId, "launch_push", "why");
+        UUID suggestionId = saved().getId();
+        verify(notifier).notifyOwner(orgId, suggestionId, "launch_push", "why");
     }
 
     @Test
@@ -172,7 +173,8 @@ class MomentumEvaluatorPlanTargetTest {
         verify(copy).generate(any(), any(), any(), any(), any(), any(), eq(repeatId), any());
         assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
         verify(planTarget, never()).discard(any(), any());
-        verify(notifier).notifyOwner(orgId, "launch_push", "why");
+        UUID suggestionId = saved().getId();
+        verify(notifier).notifyOwner(orgId, suggestionId, "launch_push", "why");
     }
 
     @Test
@@ -194,7 +196,7 @@ class MomentumEvaluatorPlanTargetTest {
         assertThatThrownBy(() -> evaluator.evaluateOne(event, NOW)).isSameAs(boom);
 
         verify(planTarget).discard(orgId, snapshotId);
-        verify(notifier, never()).notifyOwner(any(), any(), any());
+        verify(notifier, never()).notifyOwner(any(), any(), any(), any());
     }
 
     @Test
@@ -224,7 +226,7 @@ class MomentumEvaluatorPlanTargetTest {
         assertThatThrownBy(() -> evaluator.evaluateOne(event, NOW)).isSameAs(boom);
 
         verify(planTarget).discard(orgId, snapshotId);
-        verify(notifier, never()).notifyOwner(any(), any(), any());
+        verify(notifier, never()).notifyOwner(any(), any(), any(), any());
     }
 
     @Test

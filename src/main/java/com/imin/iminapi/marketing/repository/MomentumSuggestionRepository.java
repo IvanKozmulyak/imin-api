@@ -3,9 +3,11 @@ package com.imin.iminapi.marketing.repository;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -51,4 +53,28 @@ public interface MomentumSuggestionRepository extends JpaRepository<MomentumSugg
     @Query("SELECT s FROM MomentumSuggestion s WHERE s.orgId = :orgId AND s.status <> 'suggested' " +
            "ORDER BY COALESCE(s.actedAt, s.suggestedAt) DESC")
     List<MomentumSuggestion> findRecentActedByOrg(@Param("orgId") UUID orgId, Pageable page);
+
+    // The three writers of a suggestion's end state; each moves only a live row, so none can revert another.
+
+    /** Claims a live suggestion for its draft; 0 when it was already approved, dismissed or expired. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Transactional
+    @Query("UPDATE MomentumSuggestion s SET s.status = 'approved', s.campaignId = :campaignId, s.actedAt = :now "
+           + "WHERE s.id = :id AND s.orgId = :orgId AND s.status = 'suggested'")
+    int approveIfLive(@Param("id") UUID id, @Param("orgId") UUID orgId,
+                      @Param("campaignId") UUID campaignId, @Param("now") Instant now);
+
+    /** Dismisses a live suggestion; 0 when it was no longer live. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Transactional
+    @Query("UPDATE MomentumSuggestion s SET s.status = 'dismissed', s.actedAt = :now "
+           + "WHERE s.id = :id AND s.orgId = :orgId AND s.status = 'suggested'")
+    int dismissIfLive(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") Instant now);
+
+    /** Expires a live suggestion; 0 when an approval or dismissal got there first. */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Transactional
+    @Query("UPDATE MomentumSuggestion s SET s.status = 'expired', s.actedAt = :now "
+           + "WHERE s.id = :id AND s.status = 'suggested'")
+    int expireIfLive(@Param("id") UUID id, @Param("now") Instant now);
 }

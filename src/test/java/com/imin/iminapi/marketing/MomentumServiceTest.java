@@ -5,27 +5,39 @@ import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
+import com.imin.iminapi.marketing.service.MomentumEvaluator;
 import com.imin.iminapi.marketing.service.MomentumService;
 import com.imin.iminapi.marketing.service.MomentumThresholds;
 import com.imin.iminapi.marketing.repository.CampaignRepository; // Phase 2
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PgFaults;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import javax.sql.DataSource;
+
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,6 +52,8 @@ class MomentumServiceTest {
     @Autowired MomentumThresholds thresholds;
     @Autowired OrderRepository orders;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MomentumEvaluator evaluator;
+    @Autowired DataSource dataSource;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -313,6 +327,101 @@ class MomentumServiceTest {
                 .isInstanceOf(ApiException.class);
 
         assertThat(suggestions.findById(s.getId()).orElseThrow().getStatus()).isEqualTo("approved");
+    }
+
+    /** A double click or a second tab makes one draft; that draft leaves out people already holding a ticket. */
+    @Test
+    void approvingTheSameSuggestionTwice_makesOneDraft() {
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        var first = service.approve(principal, s.getId());
+
+        assertThatThrownBy(() -> service.approve(principal, s.getId()))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(ErrorCode.INVALID_STATE);
+                });
+        assertThat(draftsOf(s.getId())).containsExactly(first.id());
+        assertThat(first.skipTicketHolders()).isTrue();
+        assertThat(campaigns.findById(first.id()).orElseThrow().isSkipTicketHolders()).isTrue();
+        assertThat(suggestions.findById(s.getId()).orElseThrow().getCampaignId()).isEqualTo(first.id());
+    }
+
+    enum Ordering { EXPIRE_THEN_APPROVE, APPROVE_THEN_DISMISS, DISMISS_THEN_APPROVE }
+
+    /** Whichever end state lands first stays: a later approve, dismiss or expiry answers 409 or does nothing. */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Ordering.class)
+    void anEndStateNeverFlips(Ordering ordering) {
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        String expected = switch (ordering) {
+            case EXPIRE_THEN_APPROVE -> {
+                support.markStarted(event);
+                evaluator.runOnce();
+                assertThatThrownBy(() -> service.approve(principal, s.getId())).isInstanceOf(ApiException.class);
+                yield "expired";
+            }
+            case APPROVE_THEN_DISMISS -> {
+                service.approve(principal, s.getId());
+                assertThatThrownBy(() -> service.dismiss(principal, s.getId())).isInstanceOf(ApiException.class);
+                yield "approved";
+            }
+            case DISMISS_THEN_APPROVE -> {
+                service.dismiss(principal, s.getId());
+                assertThatThrownBy(() -> service.approve(principal, s.getId())).isInstanceOf(ApiException.class);
+                yield "dismissed";
+            }
+        };
+
+        assertThat(suggestions.findById(s.getId()).orElseThrow().getStatus()).isEqualTo(expected);
+        assertThat(draftsOf(s.getId())).hasSize("approved".equals(expected) ? 1 : 0);
+    }
+
+    /** The expiry sweep read the row while an approval was still committing; its write must not turn it 'expired'. */
+    @Test
+    void anApprovalCommittedAfterTheSweepReadTheRow_staysApproved() throws Exception {
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+        support.markStarted(event);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "momentum_suggestions", "id", s.getId())) {
+            Future<?> approving = pool.submit(() -> service.approve(principal, s.getId()));
+            pause.awaitBlocked(Duration.ofSeconds(10));
+            Future<?> sweeping = pool.submit(() -> evaluator.runOnce());
+            awaitRowLockWait(Duration.ofSeconds(20));
+            pause.release();
+            approving.get(30, TimeUnit.SECONDS);
+            sweeping.get(120, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(suggestions.findById(s.getId()).orElseThrow().getStatus()).isEqualTo("approved");
+        assertThat(draftsOf(s.getId())).hasSize(1);
+    }
+
+    /** Waits until another statement queues on a momentum_suggestions row lock (not on the advisory pause). */
+    private void awaitRowLockWait(Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            Integer waiting = jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+                    + " AND wait_event IN ('transactionid', 'tuple') AND query ILIKE 'update momentum_suggestions%'",
+                    Integer.class);
+            if (waiting != null && waiting > 0) return;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("the expiry sweep never queued on the suggestion row within " + timeout);
+    }
+
+    private List<UUID> draftsOf(UUID suggestionId) {
+        return jdbc.queryForList("SELECT id FROM campaigns WHERE momentum_suggestion_id = ?", UUID.class, suggestionId);
     }
 
     @Test
