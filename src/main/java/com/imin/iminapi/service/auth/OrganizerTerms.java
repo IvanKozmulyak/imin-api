@@ -16,7 +16,7 @@ public final class OrganizerTerms {
     public static final String CURRENT_VERSION = "1.0";
 
     // Bump order: add the new id here and ship the API, then ship the dashboard, then drop the old id.
-    private static final Set<String> ACCEPTED_VERSIONS = Set.of(CURRENT_VERSION, "1.1");
+    private static final Set<String> ACCEPTED_VERSIONS = Set.of(CURRENT_VERSION, "1.1", "1.2");
 
     /** The {@code termsVersion} field message for a blank or unknown version. */
     public static final String STALE_MESSAGE = "The organizer terms have changed; accept the current version";

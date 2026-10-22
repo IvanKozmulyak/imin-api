@@ -41,7 +41,8 @@ class SignupTermsTest {
                 Arguments.of("acceptedTerms", null, "acceptedTerms", "must not be null"),
                 Arguments.of("acceptedTerms", false, "acceptedTerms", "must be true"),
                 Arguments.of("termsVersion", null, "termsVersion", "must not be blank"),
-                Arguments.of("termsVersion", "2020-01-01", "termsVersion", OrganizerTerms.STALE_MESSAGE));
+                Arguments.of("termsVersion", "2020-01-01", "termsVersion", OrganizerTerms.STALE_MESSAGE),
+                Arguments.of("termsVersion", "1.3", "termsVersion", OrganizerTerms.STALE_MESSAGE));
     }
 
     @ParameterizedTest(name = "{0}={1} -> {2}")
@@ -60,9 +61,9 @@ class SignupTermsTest {
         assertThat(users.existsByEmailLower(email.toLowerCase())).isFalse();
     }
 
-    /** 1.1 is accepted before it becomes current, so the dashboard can ship it without 400ing every sign-up. */
+    /** 1.1 and 1.2 are accepted before they become current, so the dashboard can ship them without 400ing every sign-up. */
     @ParameterizedTest(name = "\"{0}\" -> {1}")
-    @CsvSource({"' 1.0 ', 1.0", "' 1.1 ', 1.1"})
+    @CsvSource({"' 1.0 ', 1.0", "' 1.1 ', 1.1", "' 1.2 ', 1.2"})
     void signupWithAKnownTermsVersion_recordsTheMatchedVersion(String sent, String stored) throws Exception {
         String email = fx.email("signup");
         Instant before = Instant.now();
