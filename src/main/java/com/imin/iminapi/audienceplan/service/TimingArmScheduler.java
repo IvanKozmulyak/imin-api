@@ -50,6 +50,9 @@ public class TimingArmScheduler {
     static final String EARLY_BIRD_END = key(TimingArm.EARLY_BIRD_END);
     static final String SLUMP = key(TimingArm.SLUMP);
 
+    /** Campaign statuses of a slump arm that already reach, or are about to reach, its people. */
+    private static final List<String> COVERING_STATUSES = List.of("scheduled", "sending", "sent");
+
     /** Either a send instant, or {@code armed} for a slump arm that waits for Momentum. */
     public record Approval(Instant at, boolean armed) {}
 
@@ -179,6 +182,12 @@ public class TimingArmScheduler {
             }
         }
         return scheduled;
+    }
+
+    /** Whether an armed slump arm of the event already has its campaign scheduled, sending or sent. */
+    @Transactional(readOnly = true)
+    public boolean slumpArmsCover(UUID orgId, UUID eventId) {
+        return experiments.existsArmedWithCampaignStatus(orgId, eventId, SLUMP, COVERING_STATUSES);
     }
 
     private ZoneId orgZone(UUID orgId) {

@@ -4,6 +4,7 @@ import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.marketing.service.MomentumEvaluator;
 import com.imin.iminapi.marketing.service.MomentumService;
@@ -31,6 +32,7 @@ import javax.sql.DataSource;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -54,6 +56,7 @@ class MomentumServiceTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired MomentumEvaluator evaluator;
     @Autowired DataSource dataSource;
+    @Autowired MomentumFloorSkipRepository floorSkips;
 
     private final List<UUID> orgIds = new ArrayList<>();
 
@@ -163,40 +166,89 @@ class MomentumServiceTest {
         assertThat(state.cooldownDays()).isEqualTo(thresholds.getCooldownDays());
     }
 
+    /** Rows carry what happened, not English text: the dashboard words them; a vanished event has no name. */
     @Test
-    void stateLogIsNewestFirstAndMapsIconToneText() {
+    void stateLogIsNewestFirstWithStatusTriggerAndTime() {
         UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600),
                 Instant.now().plusSeconds(864000));
         UUID org = support.orgIdOf(event);
         String eventName = support.eventNameOf(event);
+        UUID missingEvent = UUID.randomUUID(); // momentum_suggestions.event_id has no FK, so the row outlives it
 
         // A live 'suggested' row must NOT appear in the log.
         seedSuggestion(org, event);
-        // Three terminal rows at distinct ages; newest = approved 1d ago.
-        seedActed(org, event, "urgency_72h", "expired", Instant.now().minusSeconds(9L * 86400));
-        seedActed(org, event, "slump", "dismissed", Instant.now().minusSeconds(5L * 86400));
-        seedActed(org, event, "launch_push", "approved", Instant.now().minusSeconds(1L * 86400));
+        Instant expired = Instant.now().minus(Duration.ofDays(9));
+        Instant dismissed = Instant.now().minus(Duration.ofDays(5));
+        Instant gone = Instant.now().minus(Duration.ofDays(3));
+        Instant approved = Instant.now().minus(Duration.ofDays(1));
+        seedActed(org, event, "urgency_72h", "expired", expired);
+        seedActed(org, event, "slump", "dismissed", dismissed);
+        seedActed(org, missingEvent, "sold_out", "dismissed", gone);
+        seedActed(org, event, "launch_push", "approved", approved);
 
         MomentumEngineStateDto state = service.state(support.principalFor(org));
 
-        assertThat(state.log()).hasSize(3);
-        // newest first
-        var first = state.log().get(0);
-        assertThat(first.icon()).isEqualTo("check");
-        assertThat(first.tone()).isEqualTo("green");
-        assertThat(first.text()).isEqualTo("Approved — " + eventName + " launch push");
-        assertThat(first.sub()).isEqualTo("1 day ago");
+        assertThat(state.log()).containsExactly(
+                new MomentumEngineStateDto.LogEntry("approved", "launch_push", event, eventName, micros(approved)),
+                new MomentumEngineStateDto.LogEntry("dismissed", "sold_out", missingEvent, null, micros(gone)),
+                new MomentumEngineStateDto.LogEntry("dismissed", "slump", event, eventName, micros(dismissed)),
+                new MomentumEngineStateDto.LogEntry("expired", "urgency_72h", event, eventName, micros(expired)));
+    }
 
-        var second = state.log().get(1);
-        assertThat(second.icon()).isEqualTo("x");
-        assertThat(second.tone()).isEqualTo("muted");
-        assertThat(second.text()).isEqualTo("Dismissed — " + eventName + " slump");
+    private static Instant micros(Instant at) {
+        return at.truncatedTo(ChronoUnit.MICROS);
+    }
 
-        var third = state.log().get(2);
-        assertThat(third.icon()).isEqualTo("clock");
-        assertThat(third.tone()).isEqualTo("amber");
-        assertThat(third.text()).isEqualTo("Expired — " + eventName + " urgency 72h");
-        assertThat(third.sub()).isEqualTo("1 week ago");
+    enum Excluded { THREE_HOURS_OLD, EVENT_STARTED, ANOTHER_ORG }
+
+    /** Only a fresh skip of a night this org still watches is the current reason Momentum is quiet. */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Excluded.class)
+    void belowFloorShowsOnlyFreshSkipsOfThisOrgsWatchedEvents(Excluded excluded) {
+        UUID event = liveEvent(5, 100, Instant.now().minusSeconds(3600), Instant.now().plusSeconds(864000));
+        UUID org = support.orgIdOf(event);
+        Instant now = Instant.now();
+        // The excluded row is written first and, but for the stale one, checked later, so it would sort first.
+        switch (excluded) {
+            case THREE_HOURS_OLD -> floorSkips.upsert(
+                    support.seedSiblingEvent(event, "Older Night", now.plus(Duration.ofDays(20))), org, "slump", 2, 10,
+                    now.minus(Duration.ofHours(3)));
+            case EVENT_STARTED -> {
+                UUID started = support.seedSiblingEvent(event, "Started Night", now.plus(Duration.ofDays(20)));
+                support.markStarted(started);
+                floorSkips.upsert(started, org, "urgency_72h", 4, 10, now);
+            }
+            case ANOTHER_ORG -> {
+                UUID other = liveEvent(5, 100, now.minusSeconds(3600), now.plusSeconds(864000));
+                floorSkips.upsert(other, support.orgIdOf(other), "sold_out", 1, 10, now);
+            }
+        }
+        Instant checked = now.minus(Duration.ofMinutes(30)).truncatedTo(ChronoUnit.MICROS);
+        floorSkips.upsert(event, org, "launch_push", 3, 10, checked);
+
+        MomentumEngineStateDto state = service.state(support.principalFor(org));
+
+        assertThat(state.belowFloor()).containsExactly(new MomentumEngineStateDto.FloorSkipEntry(
+                event, support.eventNameOf(event), "launch_push", 3, 10, checked));
+    }
+
+    /** A draft carrying the event poster renders with the poster template, as the card promised. */
+    @ParameterizedTest(name = "posterUrl {0} -> {1}")
+    @CsvSource(delimiter = '|', nullValues = "NULL", value = {
+            "'\"https://cdn.imin.wtf/ai-posters/night.png\"' | poster",
+            "NULL                                              | classic",
+            "'\"  \"'                                         | classic",
+    })
+    void approveDraftsWithThePosterTemplateWhenTheSuggestionCarriesAPoster(String posterJson, String template) {
+        UUID event = liveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        s.setDraftPayload("{\"subject\":\"Announcing\",\"bodyMd\":\"b\",\"segmentId\":null,\"posterUrl\":"
+                + (posterJson == null ? "null" : posterJson) + "}");
+        suggestions.save(s);
+
+        var campaign = service.approve(support.principalFor(support.orgIdOf(event)), s.getId());
+
+        assertThat(campaigns.findById(campaign.id()).orElseThrow().getTemplateKey()).isEqualTo(template);
     }
 
     @Test
@@ -214,19 +266,6 @@ class MomentumServiceTest {
         assertThat(other.approved30d()).isZero();
         assertThat(other.dismissed30d()).isZero();
         assertThat(other.log()).isEmpty();
-    }
-
-    @Test
-    void stateLogFallsBackToEventIdPrefixWhenEventGone() {
-        UUID org = UUID.randomUUID();
-        orgIds.add(org);
-        UUID missingEvent = UUID.randomUUID();
-        seedActed(org, missingEvent, "slump", "dismissed", Instant.now().minusSeconds(86400));
-
-        MomentumEngineStateDto state = service.state(support.principalFor(org));
-        assertThat(state.log()).hasSize(1);
-        assertThat(state.log().get(0).text())
-                .isEqualTo("Dismissed — " + missingEvent.toString().substring(0, 8) + " slump");
     }
 
     @Test

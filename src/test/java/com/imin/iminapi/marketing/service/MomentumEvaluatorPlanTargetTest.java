@@ -7,9 +7,11 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
+import com.imin.iminapi.audienceplan.service.TimingArmScheduler;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
+import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
@@ -66,7 +68,8 @@ class MomentumEvaluatorPlanTargetTest {
     final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, salesTotals, suggestions,
             new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher,
             new AllCampaignsConsent(planProps, consentGate),
-            recipients, mock(MembershipRepository.class), organizations);
+            recipients, mock(MembershipRepository.class), organizations, mock(TimingArmScheduler.class),
+            mock(MomentumFloorSkipRepository.class));
 
     UUID orgId;
     UUID repeatId;
@@ -89,6 +92,7 @@ class MomentumEvaluatorPlanTargetTest {
         event.setStartsAt(NOW.plus(Duration.ofDays(30)));
         when(salesTotals.soldForEvent(event.getId())).thenReturn(5);
         when(tiers.sumQuantityByEventId(event.getId())).thenReturn(100);
+        when(tiers.findByEventIdOrderBySortOrderAsc(event.getId())).thenReturn(List.of());
         when(orders.findLiveCreatedAtAndTotalSince(eq(event.getId()), any())).thenReturn(List.of());
         when(tickets.findSoldCreatedAtSince(eq(event.getId()), any())).thenReturn(List.of());
         when(suggestions.findByEventIdAndTriggerTypeAndStatus(any(), any(), any())).thenReturn(Optional.empty());

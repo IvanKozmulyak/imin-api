@@ -8,24 +8,29 @@ import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.marketing.MomentumTestSupport;
 import com.imin.iminapi.marketing.config.MarketingChatClient;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.model.MomentumFloorSkip;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Notification;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.support.CampaignRows;
@@ -39,6 +44,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -47,6 +53,8 @@ import org.springframework.test.util.AopTestUtils;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -84,6 +92,9 @@ class MomentumEvaluatorTest {
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
     @Autowired SegmentRepository segmentRepo;
+    @Autowired MomentumFloorSkipRepository floorSkips;
+    @Autowired AudiencePlanProperties planProps;
+    @Autowired TicketTierRepository tierRepo;
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -183,7 +194,8 @@ class MomentumEvaluatorTest {
                 "\"spark\":[0,0,0,0,0,0,0,1,3,1]", "\"seatsLeft\":0");
         var card = momentum.list(support.principalFor(support.orgIdOf(event)), "suggested").stream()
                 .filter(s -> s.eventId().equals(event)).findFirst().orElseThrow();
-        assertThat(card.pace()).startsWith("100 of 100 gone");
+        assertThat(card.facts().seatsGone()).isEqualTo(100);
+        assertThat(card.facts().capacity()).isEqualTo(100);
     }
 
     /** No tier quantity is unknown capacity, not a full room: no seat is left, yet nothing sold out. */
@@ -216,8 +228,8 @@ class MomentumEvaluatorTest {
         assertThat(live(event).get(0).getMetricsSnapshot()).contains("\"sold\":40,", "\"seatsLeft\":40");
         var card = momentum.list(support.principalFor(support.orgIdOf(event)), "suggested").stream()
                 .filter(s -> s.eventId().equals(event)).findFirst().orElseThrow();
-        assertThat(card.headline()).isEqualTo("LAST 40 TICKETS");
-        assertThat(card.pace()).contains("40 of 100 left");
+        assertThat(card.facts().seatsLeft()).isEqualTo(40);
+        assertThat(card.facts().capacity()).isEqualTo(100);
     }
 
     @Test
@@ -302,27 +314,6 @@ class MomentumEvaluatorTest {
         evaluate(event);
         evaluate(event); // second run must not create a duplicate live launch_push
         assertThat(live(event)).filteredOn(s -> s.getTriggerType().equals("launch_push")).hasSize(1);
-    }
-
-    @Test
-    void respectsCooldown() {
-        UUID event = liveEvent(5, 100,
-                Instant.now().minusSeconds(50L * 3600),
-                Instant.now().plusSeconds(30L * 86400));
-        // A dismissed launch_push 3 days ago (< 7-day cooldown) must block a re-suggest.
-        MomentumSuggestion prior = new MomentumSuggestion();
-        prior.setId(UUID.randomUUID());
-        prior.setOrgId(support.orgIdOf(event));
-        prior.setEventId(event);
-        prior.setTriggerType("launch_push");
-        prior.setStatus("dismissed");
-        prior.setMetricsSnapshot("{}");
-        prior.setDraftPayload("{}");
-        prior.setSuggestedAt(Instant.now().minusSeconds(3L * 86400));
-        suggestions.save(prior);
-
-        evaluate(event);
-        assertThat(live(event)).isEmpty();
     }
 
     @Test
@@ -469,6 +460,143 @@ class MomentumEvaluatorTest {
                 Integer.class, org)).isZero();
     }
 
+    /** The dashboard never writes on_sale_at: published 50 h ago with an untimed tier, tickets were buyable from publish. */
+    @Test
+    void launchPushFiresFromPublishWhenTheEventHasNoOnSaleDate() throws Exception {
+        Instant published = Instant.now().minus(Duration.ofHours(50));
+        UUID event = support.seedPublishedEvent(5, 100, published, Instant.now().plus(Duration.ofDays(30)));
+        orgIds.add(support.orgIdOf(event));
+        support.seedDailyTickets(event, 1);
+
+        evaluate(event);
+
+        assertThat(live(event)).extracting(MomentumSuggestion::getTriggerType).containsExactly("launch_push");
+        JsonNode snapshot = JSON.readTree(live(event).get(0).getMetricsSnapshot());
+        assertThat(snapshot.path("hoursSinceOnSale").asLong()).isGreaterThanOrEqualTo(48);
+        assertThat(snapshot.path("sparkStartDate").asText())
+                .isEqualTo(LocalDate.ofInstant(published, ZoneOffset.UTC).toString());
+    }
+
+    /** Outside the 7-day cooldown, a launch or a sell-out that was already suggested never comes back. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"launch_push", "sold_out"})
+    void launchPushAndSoldOutFireOncePerEvent(String trigger) {
+        UUID event = "launch_push".equals(trigger)
+                ? liveEvent(5, 100, Instant.now().minus(Duration.ofHours(50)), Instant.now().plus(Duration.ofDays(30)))
+                : liveEvent(100, 100, Instant.now().minus(Duration.ofDays(10)), Instant.now().plus(Duration.ofDays(5)));
+        prior(event, trigger, "dismissed", Duration.ofDays(8), Duration.ofDays(8));
+
+        evaluate(event);
+
+        assertThat(live(event)).isEmpty();
+        assertThat(notifications.findByUserIdAndReadAtIsNull(ownerOf(event))).isEmpty();
+    }
+
+    /** Suggested 10 days ago (outside the cooldown) but dismissed 2 days ago: the cooldown runs from the dismissal. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"slump", "clicked_no_buy"})
+    void cooldownCountsFromTheLastAction(String trigger) {
+        UUID event;
+        if ("slump".equals(trigger)) {
+            event = slumpEvent();
+        } else {
+            event = quietEvent(0, 100);
+            for (int i = 0; i < 3; i++) {
+                clicker(support.orgIdOf(event), event, fx.email("cnb-cool"), Instant.now().minus(Duration.ofHours(1)),
+                        false, "active");
+            }
+            flips.set(thresholds, "minAudienceFloor", 3);
+        }
+        prior(event, trigger, "dismissed", Duration.ofDays(10), Duration.ofDays(2));
+
+        evaluate(event);
+
+        assertThat(live(event)).isEmpty();
+    }
+
+    enum SlumpArm { SENDS_ON_ARMED_DRAFT, ARM_ALREADY_SENT, SENDS_OFF }
+
+    /**
+     * A slump goes out once: through an armed audience-plan slump arm when sends are on, else as a Momentum card.
+     * The sent case also holds an armed draft, which a published trigger would schedule.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(SlumpArm.class)
+    void slumpIsLeftToTheAudiencePlanSlumpArm(SlumpArm c) {
+        UUID event = slumpEvent();
+        support.giveLegalIdentity(event);
+        flips.set(planProps, "sendsEnabled", c != SlumpArm.SENDS_OFF);
+        UUID sent = c == SlumpArm.ARM_ALREADY_SENT ? support.seedArmedSlump(event, "sent") : null;
+        UUID draft = support.seedArmedSlump(event, "draft");
+
+        evaluate(event);
+
+        List<MomentumSuggestion> slumps = suggestions.findByEventIdAndStatus(event, "suggested");
+        switch (c) {
+            case SENDS_ON_ARMED_DRAFT -> {
+                assertThat(support.campaignStatus(draft)).isEqualTo("scheduled");
+                assertThat(slumps).isEmpty();
+                assertThat(notifications.findByUserIdAndReadAtIsNull(ownerOf(event))).isEmpty();
+            }
+            case ARM_ALREADY_SENT -> {
+                assertThat(support.campaignStatus(sent)).isEqualTo("sent");
+                assertThat(support.campaignStatus(draft)).isEqualTo("draft");
+                assertThat(slumps).isEmpty();
+            }
+            case SENDS_OFF -> {
+                assertThat(support.campaignStatus(draft)).isEqualTo("draft");
+                assertThat(slumps).extracting(MomentumSuggestion::getTriggerType).containsExactly("slump");
+            }
+        }
+    }
+
+    enum Skipped { SOLD_OUT_EMPTY_REPEAT, CLICKERS_BELOW_FLOOR }
+
+    /** A moment held back at the default floor is recorded; the next pass without one clears it. */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Skipped.class)
+    void aFloorSkipIsRecordedAndClearedWhenTheMomentPasses(Skipped c) {
+        flips.set(thresholds, "minAudienceFloor", defaultFloor);
+        UUID event;
+        List<String> clickers = new ArrayList<>();
+        if (c == Skipped.SOLD_OUT_EMPTY_REPEAT) {
+            event = liveEvent(100, 100, Instant.now().minus(Duration.ofDays(10)), Instant.now().plus(Duration.ofDays(5)));
+        } else {
+            event = quietEvent(0, 100);
+            for (int i = 0; i < 3; i++) {
+                clickers.add(fx.email("cnb-floor"));
+                clicker(support.orgIdOf(event), event, clickers.get(i), Instant.now().minus(Duration.ofHours(1)),
+                        false, "active");
+            }
+        }
+
+        evaluate(event);
+
+        MomentumFloorSkip skip = floorSkips.findById(event).orElseThrow();
+        assertThat(skip.getOrgId()).isEqualTo(support.orgIdOf(event));
+        assertThat(skip.getTriggerType()).isEqualTo(c == Skipped.SOLD_OUT_EMPTY_REPEAT ? "sold_out" : "clicked_no_buy");
+        assertThat(skip.getSendable()).isEqualTo(c == Skipped.SOLD_OUT_EMPTY_REPEAT ? 0 : 3);
+        assertThat(skip.getFloor()).isEqualTo(defaultFloor);
+        assertThat(live(event)).isEmpty();
+
+        // The moment passes: a seat frees up, or every clicker buys a ticket.
+        if (c == Skipped.SOLD_OUT_EMPTY_REPEAT) {
+            TicketTier tier = tierRepo.findByEventIdOrderBySortOrderAsc(event).get(0);
+            tier.setSold(90);
+            tierRepo.save(tier);
+        } else {
+            clickers.forEach(email -> ticketFor(event, email, Ticket.STATE_ISSUED));
+        }
+        evaluate(event);
+
+        assertThat(floorSkips.findById(event)).isEmpty();
+    }
+
+    /** 21 % sold, 20 days out, no sales this week: below the pace to 50 %, so SLUMP fires. */
+    private UUID slumpEvent() {
+        return liveEvent(21, 100, Instant.now().minus(Duration.ofDays(12)), Instant.now().plus(Duration.ofDays(20)));
+    }
+
     /** On sale for a day and a month out: no sales-curve rule matches while sell-through stays low. */
     private UUID quietEvent(int sold, int capacity) {
         return liveEvent(sold, capacity, Instant.now().minus(Duration.ofHours(24)), Instant.now().plus(Duration.ofDays(30)));
@@ -551,6 +679,10 @@ class MomentumEvaluatorTest {
     }
 
     private void prior(UUID eventId, String trigger, String status, Duration ago) {
+        prior(eventId, trigger, status, ago, null);
+    }
+
+    private void prior(UUID eventId, String trigger, String status, Duration suggestedAgo, Duration actedAgo) {
         MomentumSuggestion s = new MomentumSuggestion();
         s.setId(UUID.randomUUID());
         s.setOrgId(support.orgIdOf(eventId));
@@ -559,7 +691,8 @@ class MomentumEvaluatorTest {
         s.setStatus(status);
         s.setMetricsSnapshot("{}");
         s.setDraftPayload("{}");
-        s.setSuggestedAt(Instant.now().minus(ago));
+        s.setSuggestedAt(Instant.now().minus(suggestedAgo));
+        if (actedAgo != null) s.setActedAt(Instant.now().minus(actedAgo));
         suggestions.save(s);
     }
 }

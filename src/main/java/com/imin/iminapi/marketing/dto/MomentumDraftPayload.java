@@ -5,7 +5,8 @@ package com.imin.iminapi.marketing.dto;
  * Generated once by the LLM (subject/preheader/bodyMd/why); posterUrl + segmentId are set by
  * MomentumCopyGenerator (never by the LLM). Text-only — no image composition (spec §6.3).
  *
- * @param posterUrl the event's existing 4:5 poster as email header (crop only), or null
+ * @param posterUrl the event's poster, or null; when set, approving the suggestion drafts with the poster template
+ * @param why       the model's one-line reason, stored for the owner's notification and not shown on the card
  * @param locale    language the copy is written in (en|es|fr|uk); set by the server, never the model
  */
 public record MomentumDraftPayload(

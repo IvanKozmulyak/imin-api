@@ -7,6 +7,7 @@ import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,6 +40,20 @@ public interface AudienceExperimentRepository extends Repository<AudienceExperim
 
     /** The stored arming, read fresh rather than from a loaded entity. */
     boolean existsByIdAndArmedAtIsNotNull(UUID id);
+
+    /** Whether an armed {@code arm} of the event has its campaign in one of {@code statuses}. */
+    @Query("""
+            select count(e) > 0 from AudienceExperiment e, Campaign c
+             where c.id = e.campaignId
+               and c.orgId = e.orgId
+               and e.orgId = :orgId
+               and e.eventId = :eventId
+               and e.arm = :arm
+               and e.armedAt is not null
+               and c.status in :statuses
+            """)
+    boolean existsArmedWithCampaignStatus(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
+                                          @Param("arm") String arm, @Param("statuses") Collection<String> statuses);
 
     /** This event's experiments for one class × genre fit, across every plan generation, oldest first. */
     @Query("""

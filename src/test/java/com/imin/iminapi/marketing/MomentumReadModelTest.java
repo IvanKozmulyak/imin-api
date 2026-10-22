@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and {@code segmentLabel} resolved LIVE (a rename must reach the card), {@code smsLocked}
  * derived from the org's REAL opted-in phone count, and the spark series carrying REAL
  * per-day ticket sales — including a declining one, which is the case the deleted FE
- * fabrication was structurally unable to draw.
+ * fabrication was structurally unable to draw — and the facts the card is worded from.
  */
 @IminIntegrationTest
 class MomentumReadModelTest {
@@ -64,6 +64,12 @@ class MomentumReadModelTest {
     private MomentumSuggestion seed(UUID orgId, UUID eventId, String trigger,
                                     int sold, int capacity, Instant onSaleAt, Instant startsAt,
                                     UUID segmentId, List<Instant> soldTicketsAt) {
+        return seed(orgId, eventId, trigger, sold, capacity, onSaleAt, startsAt, segmentId, soldTicketsAt, null);
+    }
+
+    private MomentumSuggestion seed(UUID orgId, UUID eventId, String trigger,
+                                    int sold, int capacity, Instant onSaleAt, Instant startsAt,
+                                    UUID segmentId, List<Instant> soldTicketsAt, Integer clickedNoTicket) {
         MomentumMetrics m = MomentumMetrics.compute(
                 sold, capacity, 3, onSaleAt, startsAt, Instant.now(), soldTicketsAt);
         MomentumSuggestion s = new MomentumSuggestion();
@@ -72,7 +78,7 @@ class MomentumReadModelTest {
         s.setEventId(eventId);
         s.setTriggerType(trigger);
         s.setStatus("suggested");
-        s.setMetricsSnapshot(m.toJson());
+        s.setMetricsSnapshot(m.toJson(clickedNoTicket));
         s.setDraftPayload("{\"subject\":\"S\",\"preheader\":\"p\",\"bodyMd\":\"b\",\"segmentId\":"
                 + (segmentId == null ? "null" : "\"" + segmentId + "\"")
                 + ",\"posterUrl\":null,\"why\":\"w\"}");
@@ -103,8 +109,23 @@ class MomentumReadModelTest {
 
         MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
 
-        assertThat(dto.headline()).isEqualTo("LAST 113 TICKETS");
-        assertThat(dto.pace()).isEqualTo("113 of 600 left, doors in 64h");
+        assertThat(dto.facts().seatsLeft()).isEqualTo(113);
+        assertThat(dto.facts().seatsGone()).isEqualTo(487);
+        assertThat(dto.facts().hoursToStart()).isEqualTo(64);
+    }
+
+    /** The clicked_no_buy audience frozen at evaluation reaches the card; a sales-curve row carries none. */
+    @Test
+    void theSnapshotsClickerCountReachesTheFacts() {
+        UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
+                Instant.now().plus(Duration.ofDays(30)));
+        UUID org = support.orgIdOf(event);
+        seed(org, event, "clicked_no_buy", 10, 100, Instant.now().minus(Duration.ofDays(5)),
+                Instant.now().plus(Duration.ofDays(30)), null, List.of(), 7);
+
+        MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
+
+        assertThat(dto.facts().clickedNoTicket()).isEqualTo(7);
     }
 
     // ---------- eventName ----------
@@ -250,10 +271,11 @@ class MomentumReadModelTest {
         // The decline is genuinely representable: the series ends well below its peak.
         assertThat(dto.spark().get(dto.spark().size() - 1)).isLessThan(dto.spark().get(0));
         assertThat(dto.spark().stream().mapToInt(Integer::intValue).max().orElseThrow()).isEqualTo(16);
-        // …and the prose reads the decline off that real series rather than asserting it.
-        assertThat(dto.pace()).contains("down 46% on the previous 5 days");
-        assertThat(dto.headline()).isEqualTo("20 DAYS OUT");
-        assertThat(dto.daysOutLabel()).isEqualTo("20 days out");
+        // …and the facts read the decline off that real series rather than asserting it.
+        assertThat(dto.facts().declinePct()).isEqualTo(46);
+        assertThat(dto.facts().declineDays()).isEqualTo(5);
+        assertThat(dto.facts().daysOut()).isEqualTo(20);
+        assertThat(dto.facts().clickedNoTicket()).isNull();
     }
 
     @Test
@@ -295,15 +317,16 @@ class MomentumReadModelTest {
 
         MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
         assertThat(dto.spark()).isNull();
-        // Prose still works off the numbers the legacy snapshot DOES have…
-        assertThat(dto.headline()).isEqualTo("TICKETS LIVE");
-        assertThat(dto.daysOutLabel()).isEqualTo("On-sale 5 days");
-        // …and stays silent about velocity it cannot measure.
-        assertThat(dto.pace()).doesNotContain("tickets/day");
+        // The facts the legacy snapshot DOES have still reach the card…
+        assertThat(dto.facts().hoursSinceOnSale()).isEqualTo(120);
+        assertThat(dto.facts().seatsLeft()).isEqualTo(90);
+        // …and it stays silent about a pace it cannot measure.
+        assertThat(dto.facts().ticketsPerDay7d()).isNull();
+        assertThat(dto.facts().projectedSellThroughPct()).isNull();
     }
 
     @Test
-    void malformedSnapshotDegradesToNullProseInsteadOf500ingTheList() {
+    void malformedSnapshotDegradesToNullFactsInsteadOf500ingTheList() {
         UUID event = liveEvent(10, 100, Instant.now().minus(Duration.ofDays(5)),
                 Instant.now().plus(Duration.ofDays(30)));
         UUID org = support.orgIdOf(event);
@@ -319,8 +342,7 @@ class MomentumReadModelTest {
         suggestions.save(s);
 
         MomentumSuggestionDto dto = service.list(support.principalFor(org), "suggested").get(0);
-        assertThat(dto.headline()).isNull();
-        assertThat(dto.pace()).isNull();
+        assertThat(dto.facts()).isNull();
         assertThat(dto.spark()).isNull();
         assertThat(dto.segmentLabel()).isNull();
         // The identity fields still resolve — one bad column does not blank the card.

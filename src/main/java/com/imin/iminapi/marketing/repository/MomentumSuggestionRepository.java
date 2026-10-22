@@ -34,6 +34,9 @@ public interface MomentumSuggestionRepository extends JpaRepository<MomentumSugg
     /** Whether the event has a suggestion in {@code status} under any trigger; clicked_no_buy stands down on one. */
     boolean existsByEventIdAndStatus(UUID eventId, String status);
 
+    /** Whether the event ever had a suggestion of this trigger, in any status. */
+    boolean existsByEventIdAndTriggerType(UUID eventId, String triggerType);
+
     /** Live 'suggested' rows for the expiry sweep. */
     List<MomentumSuggestion> findByStatus(String status);
 

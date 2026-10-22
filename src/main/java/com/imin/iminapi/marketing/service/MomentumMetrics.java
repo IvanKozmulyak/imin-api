@@ -13,25 +13,18 @@ import java.util.List;
  *
  * <p>This record is the FROZEN EVIDENCE for why a suggestion fired: it is serialized
  * into {@code momentum_suggestions.metrics_snapshot} once, at evaluation, and never
- * rewritten. The card's prose (headline / pace / daysOutLabel) is derived from these
- * numbers on read by {@link MomentumProse} — a pure function of a frozen input, so it
- * cannot drift from the numbers it describes.
+ * rewritten. On read, {@code MomentumFacts} restates its numbers for the card, which the
+ * webapp words in the organizer's language.
  *
  * <h2>Two velocities, two precisions — read this before using them</h2>
  * <ul>
- *   <li>{@link #velocity7d()} is <b>ORDERS</b>/day (7-day order arrivals ÷ 7). It is the
- *       input to the existing slump rule and is left EXACTLY as-is so trigger firing does
- *       not change. Note it is compared in {@code MomentumEvaluator.pickTrigger} against
- *       {@link #requiredVelocityToTarget(int)}, which is TICKETS/day — a pre-existing unit
- *       mismatch, reported not silently "fixed", because changing it would change which
- *       suggestions fire.</li>
- *   <li>{@link #ticketsPerDay7d()} is <b>TICKETS</b>/day, summed from the real
- *       {@link #spark()} series. It is prose-only (never a trigger input) and is what the
- *       card means by "selling N/day" — the figure sits next to "487/600 sold", so it has
- *       to be tickets.</li>
- *   <li>{@link #hoursToStart()} is the true hours-to-doors. {@code pickTrigger} still uses
- *       the coarse {@code daysOut * 24} it always used (unchanged firing); this field
- *       exists so "Doors in 64h" can be true rather than rounded to "Doors in 48h".</li>
+ *   <li>{@link #velocity7d()} is <b>ORDERS</b>/day (7-day order arrivals ÷ 7). It is kept in the
+ *       snapshot for audit only: no trigger reads it and the card does not show it.</li>
+ *   <li>{@link #ticketsPerDay7d()} is <b>TICKETS</b>/day, summed from the real {@link #spark()}
+ *       series. The slump rule compares it with {@link #requiredVelocityToTarget(int)} (also
+ *       tickets/day), and the card shows it as the selling pace.</li>
+ *   <li>{@link #hoursToStart()} is the true hours-to-doors. The urgency rule reads it, not
+ *       {@code daysOut * 24}, whose floor fired the 72h window up to ~95h out.</li>
  * </ul>
  */
 public record MomentumMetrics(
@@ -41,7 +34,7 @@ public record MomentumMetrics(
         int daysOut,
         long hoursSinceOnSale,
         double velocity7d,
-        /** True hours until doors. Prose-only — see the class note. */
+        /** True hours until doors — see the class note. */
         long hoursToStart,
         /**
          * REAL tickets sold per UTC day, oldest → newest, one point per day, zero-filled.
@@ -53,7 +46,7 @@ public record MomentumMetrics(
         List<Integer> spark,
         /** UTC date that {@code spark[0]} covers; null when {@code spark} is empty. */
         LocalDate sparkStartDate,
-        /** TICKETS/day over the last 7 spark points. Prose-only — see the class note. */
+        /** TICKETS/day over the last 7 spark points — see the class note. */
         double ticketsPerDay7d,
         /**
          * Seats still unsold, every order mode: test-era tickets hold seats though they are not live

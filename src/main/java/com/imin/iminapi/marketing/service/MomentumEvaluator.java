@@ -5,10 +5,12 @@ import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
 import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
+import com.imin.iminapi.audienceplan.service.TimingArmScheduler;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
+import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
@@ -27,6 +29,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -34,11 +37,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Hourly Momentum evaluator (spec §6.1). Walks published, future, on-sale events,
- * computes sales-curve metrics, applies the four trigger rules with guardrails
- * (min-audience floor, 7-day cooldown, one live suggestion per trigger, expiry),
- * and persists a pre-drafted suggestion. Then, on every pass, it considers
- * {@code clicked_no_buy}: recent ticket-link clickers with no live ticket. Suggestions only — never sends.
+ * Hourly Momentum evaluator (spec §6.1). Walks published, future, on-sale events, computes sales-curve metrics
+ * from the moment tickets became buyable ({@link EffectiveOnSale}), applies the four trigger rules with guardrails
+ * (one live suggestion per trigger, launch_push and sold_out once per event, a cooldown counted from the last
+ * suggestion or action, a SLUMP left to a scheduled audience-plan slump arm, the min-audience floor, expiry), and
+ * persists a pre-drafted suggestion. Then, on every pass, it considers {@code clicked_no_buy}: recent ticket-link
+ * clickers with no live ticket. A moment skipped at the floor is recorded in {@code momentum_floor_skips} and
+ * cleared by the next pass without one. Suggestions only — never sends.
  */
 @Component
 public class MomentumEvaluator {
@@ -65,6 +70,8 @@ public class MomentumEvaluator {
     private final CampaignRecipientRepository recipients;
     private final MembershipRepository memberships;
     private final OrganizationRepository organizations;
+    private final TimingArmScheduler timingArms;
+    private final MomentumFloorSkipRepository floorSkips;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
@@ -75,7 +82,8 @@ public class MomentumEvaluator {
                              ApplicationEventPublisher publisher,
                              AllCampaignsConsent allCampaignsConsent,
                              CampaignRecipientRepository recipients, MembershipRepository memberships,
-                             OrganizationRepository organizations) {
+                             OrganizationRepository organizations, TimingArmScheduler timingArms,
+                             MomentumFloorSkipRepository floorSkips) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -93,6 +101,8 @@ public class MomentumEvaluator {
         this.recipients = recipients;
         this.memberships = memberships;
         this.organizations = organizations;
+        this.timingArms = timingArms;
+        this.floorSkips = floorSkips;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -145,8 +155,11 @@ public class MomentumEvaluator {
                 e.getId(), now.minus(Duration.ofDays(MomentumMetrics.SPARK_DAYS)));
         // Seats, not live sales, decide sold out and "N left": a test-era ticket still holds its seat.
         int seatsLeft = Math.max(0, capacity - tiers.sumSoldByEventId(e.getId()));
+        // The dashboard never writes on_sale_at, so the clock usually starts at publish or the first tier opening.
+        Instant onSale = EffectiveOnSale.of(e.getOnSaleAt(), e.getPublishedAt(), e.getCreatedAt(),
+                tiers.findByEventIdOrderBySortOrderAsc(e.getId()));
         MomentumMetrics m = MomentumMetrics.compute(
-                sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now, soldAt, seatsLeft);
+                sold, capacity, last7d.size(), onSale, e.getStartsAt(), now, soldAt, seatsLeft);
 
         MomentumTriggerType fired = pickTrigger(m);
         log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} hoursToStart={} ticketsPerDay7d={} required50={} -> {}",
@@ -155,20 +168,51 @@ public class MomentumEvaluator {
                 String.format(java.util.Locale.ROOT, "%.2f", m.requiredVelocityToTarget(thresholds.getSlumpTargetPct())),
                 fired == null ? "no-trigger" : fired.wireValue());
 
-        if (fired != null) fireSalesCurveTrigger(e, m, fired, now);
+        FloorSkip skip = fired == null ? null : fireSalesCurveTrigger(e, m, fired, now);
         // A sales-curve suggestion stored just above is live, so clicked_no_buy stands down this pass.
-        considerClickedNoBuy(e, m, now);
+        FloorSkip clickSkip = considerClickedNoBuy(e, m, now);
+        recordFloorSkip(e, skip != null ? skip : clickSkip, now);
     }
 
-    private void fireSalesCurveTrigger(Event e, MomentumMetrics m, MomentumTriggerType fired, Instant now) {
+    /** A moment held back only because fewer than {@code floor} people can get the email. */
+    private record FloorSkip(MomentumTriggerType trigger, int sendable, int floor) {}
+
+    /** The event's skip row follows this pass: written for a floor skip, cleared otherwise; a failure is only logged. */
+    private void recordFloorSkip(Event e, FloorSkip skip, Instant now) {
+        try {
+            if (skip == null) {
+                floorSkips.deleteByEventId(e.getId());
+            } else {
+                floorSkips.upsert(e.getId(), e.getOrgId(), skip.trigger().wireValue(), skip.sendable(), skip.floor(),
+                        now.truncatedTo(ChronoUnit.MICROS));
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Momentum: floor skip of event {} not recorded: {}", e.getId(), ex.getMessage());
+        }
+    }
+
+    /** Null unless the moment was skipped at the min-audience floor. */
+    private FloorSkip fireSalesCurveTrigger(Event e, MomentumMetrics m, MomentumTriggerType fired, Instant now) {
         // Guardrail: single live suggestion per (event, trigger).
         if (suggestions.findByEventIdAndTriggerTypeAndStatus(
                 e.getId(), fired.wireValue(), "suggested").isPresent()) {
-            return;
+            return null;
         }
-        if (inCooldown(e, fired, now)) return;
+        // A launch and a sell-out happen once; their card never comes back, whatever was done with it.
+        if ((fired == MomentumTriggerType.LAUNCH_PUSH || fired == MomentumTriggerType.SOLD_OUT)
+                && suggestions.existsByEventIdAndTriggerType(e.getId(), fired.wireValue())) {
+            return null;
+        }
+        if (inCooldown(e, fired, now)) return null;
+        // An audience-plan slump arm already on its way covers this slump: no second "sales slowed" email.
+        if (fired == MomentumTriggerType.SLUMP && timingArms.slumpArmsCover(e.getOrgId(), e.getId())) return null;
 
         publishTriggered(e, fired);
+        // Publishing schedules the event's armed slump drafts while audience-plan sends are on.
+        if (fired == MomentumTriggerType.SLUMP && timingArms.slumpArmsCover(e.getOrgId(), e.getId())) {
+            log.info("Momentum: event {} slump left to the audience plan slump arm", e.getId());
+            return null;
+        }
 
         // Target: the plan's best segment (holdouts removed) when it clears the floor, else the prebuilt Repeat.
         MomentumPlanTarget.Target planned = planTarget(e);
@@ -197,10 +241,11 @@ public class MomentumEvaluator {
 
             // Guardrail: min-audience floor via SendGate (spec §6.1), and ConsentGate while it applies to every campaign.
             int sendable = sendableCount(e.getOrgId(), memberIds);
-            if (sendable < thresholds.getMinAudienceFloor()) {
+            int floor = thresholds.getMinAudienceFloor();
+            if (sendable < floor) {
                 log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
-                        e.getId(), fired.wireValue(), sendable, thresholds.getMinAudienceFloor());
-                return;
+                        e.getId(), fired.wireValue(), sendable, floor);
+                return new FloorSkip(fired, sendable, floor);
             }
         }
 
@@ -220,34 +265,37 @@ public class MomentumEvaluator {
         // Best-effort in-app ping in its OWN (REQUIRES_NEW) transaction — a failure here
         // cannot roll back the suggestion just persisted (see MomentumNotifier).
         notifier.notifyOwner(e.getOrgId(), persisted.id(), fired.wireValue(), persisted.why());
+        return null;
     }
 
     /**
      * Members who clicked this event's ticket link in its email campaigns within {@link #CLICKED_NO_BUY_WINDOW},
      * minus live-ticket holders, frozen into a Momentum segment. Objected and erase-pending members never qualify.
+     * Null unless the moment was skipped at the min-audience floor.
      */
-    private void considerClickedNoBuy(Event e, MomentumMetrics m, Instant now) {
+    private FloorSkip considerClickedNoBuy(Event e, MomentumMetrics m, Instant now) {
         MomentumTriggerType trigger = MomentumTriggerType.CLICKED_NO_BUY;
-        if (m.capacity() > 0 && m.seatsLeft() <= 0) return;
+        if (m.capacity() > 0 && m.seatsLeft() <= 0) return null;
         // Any live suggestion for the event, whatever its trigger, holds this one back so they never stack.
-        if (suggestions.existsByEventIdAndStatus(e.getId(), "suggested")) return;
-        if (inCooldown(e, trigger, now)) return;
+        if (suggestions.existsByEventIdAndStatus(e.getId(), "suggested")) return null;
+        if (inCooldown(e, trigger, now)) return null;
 
         List<UUID> clickers = recipients.findTicketClickersForEvent(
                 e.getOrgId(), e.getId(), now.minus(CLICKED_NO_BUY_WINDOW));
-        if (clickers.isEmpty()) return;
+        if (clickers.isEmpty()) return null;
         Set<UUID> holders = new HashSet<>();
         for (Object[] pair : memberships.findAttendedEventPairs(e.getOrgId(), List.of(e.getId()))) {
             holders.add((UUID) pair[0]);
         }
         List<UUID> targets = clickers.stream().filter(id -> !holders.contains(id)).toList();
-        if (targets.isEmpty()) return;
+        if (targets.isEmpty()) return null;
 
         int sendable = sendableCount(e.getOrgId(), targets);
-        if (sendable < thresholds.getMinAudienceFloor()) {
+        int floor = thresholds.getMinAudienceFloor();
+        if (sendable < floor) {
             log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
-                    e.getId(), trigger.wireValue(), sendable, thresholds.getMinAudienceFloor());
-            return;
+                    e.getId(), trigger.wireValue(), sendable, floor);
+            return new FloorSkip(trigger, sendable, floor);
         }
 
         publishTriggered(e, trigger);
@@ -264,6 +312,7 @@ public class MomentumEvaluator {
             throw ex;
         }
         notifier.notifyOwner(e.getOrgId(), persisted.id(), trigger.wireValue(), persisted.why());
+        return null;
     }
 
     private static String clickedNoBuySegmentName(String eventName) {
@@ -271,12 +320,15 @@ public class MomentumEvaluator {
         return eventName == null || eventName.isBlank() ? base : base + " · " + eventName.trim();
     }
 
-    /** Guardrail: cooldown per (event, trigger), counted from the last suggestion in any status. */
+    /** Guardrail: cooldown per (event, trigger), counted from when the last one was suggested or acted on. */
     private boolean inCooldown(Event e, MomentumTriggerType trigger, Instant now) {
         Optional<MomentumSuggestion> last = suggestions
                 .findTopByEventIdAndTriggerTypeOrderBySuggestedAtDesc(e.getId(), trigger.wireValue());
-        return last.isPresent() && last.get().getSuggestedAt()
-                .isAfter(now.minus(Duration.ofDays(thresholds.getCooldownDays())));
+        if (last.isEmpty()) return false;
+        Instant from = last.get().getSuggestedAt();
+        Instant acted = last.get().getActedAt();
+        if (acted != null && (from == null || acted.isAfter(from))) from = acted;
+        return from != null && from.isAfter(now.minus(Duration.ofDays(thresholds.getCooldownDays())));
     }
 
     /** The event's audience plan is refreshed off-thread; the draft still uses the plan stored now. */

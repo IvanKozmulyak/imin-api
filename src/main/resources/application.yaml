@@ -1006,7 +1006,8 @@ imin:
   momentum:
     # Momentum Engine trigger thresholds (spec §6.1 "initial thresholds, config-tunable").
     # Every launch-tuning number lives here so tuning is a config change, not a code change.
-    min-audience-floor: 10
+    # Fewest SendGate-sendable (and, while it applies, ConsentGate-mailable) people a Momentum draft needs.
+    min-audience-floor: ${IMIN_MOMENTUM_MIN_AUDIENCE_FLOOR:10}
     cooldown-days: 7
     launch-after-hours: 48
     launch-max-sell-through-pct: 15

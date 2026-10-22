@@ -20,10 +20,9 @@ import java.util.UUID;
  * <ul>
  *   <li>{@code metricsSnapshot} — raw JSON passthrough, unchanged. Still the audit record.</li>
  *   <li>{@code spark} — lifted verbatim out of that snapshot (see below).</li>
- *   <li>{@code headline} / {@code pace} / {@code daysOutLabel} — derived on read by
- *       {@code MomentumProse}, but ONLY from the frozen snapshot. Pure function of a frozen
- *       input ⇒ identical to deriving at write, and it also backfills rows written before
- *       these fields existed. They restate the snapshot; they never re-measure it.</li>
+ *   <li>{@code facts} — the snapshot's numbers restated as fields (see {@link MomentumFacts}). The webapp words
+ *       the card from them in the organizer's language; the api sends no card prose. Null when the snapshot
+ *       cannot be parsed.</li>
  * </ul>
  * <b>Resolved live</b> — identity and capability, which are not evidence and SHOULD track
  * reality, so a rename or a new opt-in is reflected immediately:
@@ -47,11 +46,7 @@ import java.util.UUID;
  *              synthesized from one scalar can only draw the shape the synthesis implies, which
  *              is why the {@code slump} trigger could never render the decline it exists to
  *              signal. This field is the honest replacement; keep it honest.
- * @param headline short all-caps banner, e.g. {@code "LAST 113 TICKETS"}
- * @param pace one sentence restating the trend, e.g. {@code "Selling 5 tickets/day, down 46%
- *             on the previous 5 days — at this pace you finish around 74% of capacity"}
- * @param daysOutLabel contextual time prose, e.g. {@code "Doors in 64h"}, {@code "On-sale 2
- *                     days"}, {@code "Sold out 6 days early"}
+ * @param facts the snapshot's numbers for the card; null when the snapshot is unparseable
  * @param smsLocked true ⇔ the org has 0 SMS-subscribed phones with a number on file
  *                  ({@code MembershipRepository.countSmsSubscribedByOrgId})
  */
@@ -65,9 +60,7 @@ public record MomentumSuggestionDto(
         String draftPayload,
         UUID campaignId,
         Instant suggestedAt,
-        String headline,
-        String pace,
-        String daysOutLabel,
+        MomentumFacts facts,
         List<Integer> spark,
         String segmentLabel,
         boolean smsLocked) {

@@ -1,6 +1,10 @@
 package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.audience.service.SegmentService;
+import com.imin.iminapi.audienceplan.model.AudienceExperiment;
+import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
+import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -44,11 +48,14 @@ public class MomentumTestSupport {
     private final TicketRepository tickets;
     private final OrderRepository orders;
     private final SegmentService segmentService;
+    private final CampaignRepository campaigns;
+    private final AudienceExperimentRepository experiments;
 
     public MomentumTestSupport(OrganizationRepository orgs, UserRepository users,
                                EventRepository events, TicketTierRepository tiers,
                                TicketRepository tickets, OrderRepository orders,
-                               SegmentService segmentService) {
+                               SegmentService segmentService, CampaignRepository campaigns,
+                               AudienceExperimentRepository experiments) {
         this.orgs = orgs;
         this.users = users;
         this.events = events;
@@ -56,6 +63,8 @@ public class MomentumTestSupport {
         this.tickets = tickets;
         this.orders = orders;
         this.segmentService = segmentService;
+        this.campaigns = campaigns;
+        this.experiments = experiments;
     }
 
     /**
@@ -124,6 +133,74 @@ public class MomentumTestSupport {
         }
 
         return eventId;
+    }
+
+    /**
+     * As {@link #seedLiveEvent}, with no on-sale date, published at {@code publishedAt}: the dashboard's shape, where
+     * the one untimed enabled tier was buyable from publish.
+     */
+    public UUID seedPublishedEvent(int sold, int capacity, Instant publishedAt, Instant startsAt) {
+        UUID eventId = seedLiveEvent(sold, capacity, null, startsAt);
+        Event e = events.findById(eventId).orElseThrow();
+        e.setPublishedAt(publishedAt);
+        events.save(e);
+        return eventId;
+    }
+
+    /** Another LIVE event of the same org, with no on-sale date and no tiers. */
+    public UUID seedSiblingEvent(UUID eventId, String name, Instant startsAt) {
+        Event first = events.findById(eventId).orElseThrow();
+        Event e = new Event();
+        e.setOrgId(first.getOrgId());
+        e.setName(name);
+        e.setSlug("event-" + UUID.randomUUID());
+        e.setStatus(EventStatus.LIVE);
+        e.setStartsAt(startsAt);
+        e.setCreatedBy(first.getCreatedBy());
+        return events.save(e).getId();
+    }
+
+    /** Gives the event's org the legal name and contact an audience-plan send needs. */
+    public void giveLegalIdentity(UUID eventId) {
+        Organization org = orgs.findById(orgIdOf(eventId)).orElseThrow();
+        org.setLegalName("Momentum Test SAS");
+        org.setLegalContact("legal@" + com.imin.iminapi.support.IminFixtures.MAIL_DOMAIN);
+        orgs.save(org);
+    }
+
+    /**
+     * An approved (armed) audience-plan slump arm of the event whose draft campaign is in {@code campaignStatus}.
+     * Returns the campaign id.
+     */
+    public UUID seedArmedSlump(UUID eventId, String campaignStatus) {
+        UUID orgId = orgIdOf(eventId);
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("Slump arm");
+        c.setStatus(campaignStatus);
+        c.setOrigin("audience_plan");
+        c.setEventId(eventId);
+        c.setSubject("Still a few tickets");
+        c.setBodyMd("b");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaigns.save(c);
+        AudienceExperiment arm = new AudienceExperiment();
+        arm.setOrgId(orgId);
+        arm.setEventId(eventId);
+        arm.setArm("slump");
+        arm.setCampaignId(c.getId());
+        arm.setSeed(1L);
+        arm.setArmedAt(Instant.now().truncatedTo(ChronoUnit.MICROS));
+        experiments.save(arm);
+        return c.getId();
+    }
+
+    /** A campaign's stored status. */
+    public String campaignStatus(UUID campaignId) {
+        return campaigns.findById(campaignId).orElseThrow().getStatus();
     }
 
     /**

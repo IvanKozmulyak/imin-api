@@ -5,11 +5,14 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.marketing.dto.CampaignDto;      // Phase 2
 import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
+import com.imin.iminapi.marketing.dto.MomentumFacts;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.Campaign;        // Phase 2
+import com.imin.iminapi.marketing.model.MomentumFloorSkip;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import com.imin.iminapi.marketing.repository.CampaignRepository;   // Phase 2
+import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
@@ -28,7 +31,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -45,6 +51,8 @@ import java.util.stream.Collectors;
 public class MomentumService {
 
     private static final Duration ACTED_WINDOW = Duration.ofDays(30);
+    /** A skip older than two hourly passes is no longer the current reason Momentum is quiet. */
+    private static final Duration FLOOR_SKIP_FRESHNESS = Duration.ofHours(2);
     private static final int LOG_LIMIT = 10;
     // V52 column widths the approved draft lands in — model copy is clamped to them.
     private static final int MAX_NAME = 120;
@@ -58,12 +66,13 @@ public class MomentumService {
     private final MembershipRepository memberships;
     private final MomentumThresholds thresholds;
     private final CampaignAttributionService attribution;
+    private final MomentumFloorSkipRepository floorSkips;
     private final ObjectMapper json = new ObjectMapper();
 
     public MomentumService(MomentumSuggestionRepository suggestions, CampaignRepository campaigns,
                            EventRepository events, SegmentRepository segmentRepo,
                            MembershipRepository memberships, MomentumThresholds thresholds,
-                           CampaignAttributionService attribution) {
+                           CampaignAttributionService attribution, MomentumFloorSkipRepository floorSkips) {
         this.suggestions = suggestions;
         this.campaigns = campaigns;
         this.events = events;
@@ -71,6 +80,7 @@ public class MomentumService {
         this.memberships = memberships;
         this.thresholds = thresholds;
         this.attribution = attribution;
+        this.floorSkips = floorSkips;
     }
 
     /**
@@ -78,11 +88,10 @@ public class MomentumService {
      *
      * <p>Resolution strategy is per-field and deliberate — see the field-by-field rationale on
      * {@link MomentumSuggestionDto}. In short: the METRICS stay frozen in {@code metrics_snapshot}
-     * (they are the evidence for why the engine fired and must not drift), the PROSE is derived
-     * from that frozen snapshot on read (pure function of a frozen input ⇒ same answer, but it
-     * also backfills pre-existing rows and keeps wording fixable), and IDENTITY/CAPABILITY
-     * ({@code eventName}, {@code segmentLabel}, {@code smsLocked}) is resolved LIVE so a rename
-     * or a fresh SMS opt-in is reflected instead of being stale prose.
+     * (they are the evidence for why the engine fired and must not drift), the FACTS restate that
+     * frozen snapshot on read for the webapp to word in the organizer's language, and
+     * IDENTITY/CAPABILITY ({@code eventName}, {@code segmentLabel}, {@code smsLocked}) is resolved
+     * LIVE so a rename or a fresh SMS opt-in is reflected.
      *
      * <p>All three live lookups are batched — one events query, one segments query, one phone
      * count for the whole page — so enriching N suggestions stays 3 queries, not 3N.
@@ -119,24 +128,20 @@ public class MomentumService {
                                         Map<UUID, String> eventNames,
                                         Map<UUID, String> segmentNames,
                                         boolean smsLocked) {
-        MomentumMetrics m = parseMetrics(s.getMetricsSnapshot());
-        MomentumTriggerType trigger = parseTrigger(s.getTriggerType());
+        Snapshot snap = parseSnapshot(s.getMetricsSnapshot());
 
         // Null rather than a stand-in when the event is genuinely gone: the FE can say so.
         String eventName = s.getEventId() == null ? null : eventNames.get(s.getEventId());
         String segmentLabel = resolveSegmentLabel(s.getDraftPayload(), segmentNames);
 
-        // Prose only where the snapshot actually supports it. An unparseable/legacy snapshot
-        // yields nulls — the card degrades to its raw numbers instead of inventing a story.
-        String headline = m == null ? null : MomentumProse.headline(trigger, m);
-        String pace = m == null ? null : MomentumProse.pace(trigger, m);
-        String daysOutLabel = m == null ? null : MomentumProse.daysOutLabel(trigger, m);
-        List<Integer> spark = m == null || !m.hasSpark() ? null : m.spark();
+        // An unparseable snapshot gives no facts: the card shows less instead of inventing numbers.
+        MomentumFacts facts = snap == null ? null : MomentumFacts.from(snap.metrics(), snap.clickedNoTicket());
+        List<Integer> spark = snap == null || !snap.metrics().hasSpark() ? null : snap.metrics().spark();
 
         return new MomentumSuggestionDto(
                 s.getId(), s.getEventId(), eventName, s.getTriggerType(), s.getStatus(),
                 s.getMetricsSnapshot(), s.getDraftPayload(), s.getCampaignId(), s.getSuggestedAt(),
-                headline, pace, daysOutLabel, spark, segmentLabel, smsLocked);
+                facts, spark, segmentLabel, smsLocked);
     }
 
     /** Human name of the draft's target segment, or null when unset/deleted (never guessed). */
@@ -152,12 +157,14 @@ public class MomentumService {
         }
     }
 
+    /** A frozen snapshot read back: its metrics and, for clicked_no_buy, the clicker count. */
+    private record Snapshot(MomentumMetrics metrics, Integer clickedNoTicket) {}
+
     /**
      * Rehydrate the frozen metrics snapshot. Tolerant by design: rows written before a field
-     * existed simply lack it, and this must not 500 the whole list — the missing field becomes
-     * absent prose, not fabricated prose.
+     * existed simply lack it, and this must not 500 the whole list.
      */
-    private MomentumMetrics parseMetrics(String snapshot) {
+    private Snapshot parseSnapshot(String snapshot) {
         if (snapshot == null || snapshot.isBlank()) return null;
         try {
             JsonNode n = json.readTree(snapshot);
@@ -170,7 +177,9 @@ public class MomentumService {
             JsonNode startNode = n.get("sparkStartDate");
             LocalDate sparkStart = startNode == null || startNode.isNull()
                     ? null : LocalDate.parse(startNode.asText());
-            return new MomentumMetrics(
+            JsonNode clicked = n.get("clickedNoTicket");
+            Integer clickedNoTicket = clicked != null && clicked.isNumber() ? clicked.asInt() : null;
+            return new Snapshot(new MomentumMetrics(
                     n.path("sold").asInt(),
                     n.path("capacity").asInt(),
                     n.path("sellThroughPct").asInt(),
@@ -183,16 +192,11 @@ public class MomentumService {
                     n.path("ticketsPerDay7d").asDouble(),
                     // Snapshots before seatsLeft read sold over every mode, so capacity − sold was the seats.
                     n.has("seatsLeft") ? n.path("seatsLeft").asInt()
-                            : Math.max(0, n.path("capacity").asInt() - n.path("sold").asInt()));
+                            : Math.max(0, n.path("capacity").asInt() - n.path("sold").asInt())),
+                    clickedNoTicket);
         } catch (Exception e) {
             return null;
         }
-    }
-
-    private MomentumTriggerType parseTrigger(String wire) {
-        if (wire == null) return null;
-        try { return MomentumTriggerType.fromWire(wire); }
-        catch (Exception e) { return null; }
     }
 
     /**
@@ -208,10 +212,11 @@ public class MomentumService {
 
         // watching: the org's events currently eligible for Momentum evaluation. The
         // candidate query spans all orgs (MomentumEvaluator.runOnce), so filter to this org.
-        int watching = 0;
+        Map<UUID, String> watched = new LinkedHashMap<>();
         for (Event e : events.findMomentumCandidates(now)) {
-            if (orgId.equals(e.getOrgId())) watching++;
+            if (orgId.equals(e.getOrgId())) watched.put(e.getId(), e.getName());
         }
+        int watching = watched.size();
 
         // waiting: the org's live 'suggested' suggestions.
         int waiting = suggestions.findByOrgIdAndStatusOrderBySuggestedAtDesc(orgId, "suggested").size();
@@ -229,69 +234,46 @@ public class MomentumService {
         long attributedMinor = attribution.attributedRevenueMinorByCampaign(orgId, momentumCampaigns)
                 .values().stream().mapToLong(Long::longValue).sum();
 
-        // log: 10 most recent non-'suggested' suggestions, newest first.
-        List<MomentumEngineStateDto.LogEntry> log = new ArrayList<>();
-        for (MomentumSuggestion s : suggestions.findRecentActedByOrg(orgId, PageRequest.of(0, LOG_LIMIT))) {
-            log.add(toLogEntry(s, now));
+        // log: 10 most recent non-'suggested' suggestions, newest first; event names in one batch.
+        List<MomentumSuggestion> acted = suggestions.findRecentActedByOrg(orgId, PageRequest.of(0, LOG_LIMIT));
+        Map<UUID, String> logNames = new HashMap<>();
+        for (Event e : events.findAllById(acted.stream().map(MomentumSuggestion::getEventId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet()))) {
+            logNames.put(e.getId(), e.getName());
         }
+        List<MomentumEngineStateDto.LogEntry> log = new ArrayList<>();
+        for (MomentumSuggestion s : acted) {
+            Instant at = s.getActedAt() != null ? s.getActedAt() : s.getSuggestedAt();
+            log.add(new MomentumEngineStateDto.LogEntry(
+                    s.getStatus(), s.getTriggerType(), s.getEventId(), logNames.get(s.getEventId()), at));
+        }
+
+        // belowFloor: fresh skips of events still watched, so a past night or an old skip never shows.
+        List<MomentumEngineStateDto.FloorSkipEntry> belowFloor = floorSkips
+                .findByOrgIdAndCheckedAtAfter(orgId, now.minus(FLOOR_SKIP_FRESHNESS)).stream()
+                .filter(k -> watched.containsKey(k.getEventId()))
+                .sorted(Comparator.comparing(MomentumFloorSkip::getCheckedAt).reversed())
+                .map(k -> new MomentumEngineStateDto.FloorSkipEntry(k.getEventId(), watched.get(k.getEventId()),
+                        k.getTriggerType(), k.getSendable(), k.getFloor(), k.getCheckedAt()))
+                .toList();
+
+        MomentumEngineStateDto.Rules rules = new MomentumEngineStateDto.Rules(
+                thresholds.getLaunchAfterHours(), thresholds.getLaunchMaxSellThroughPct(),
+                thresholds.getSlumpMinDaysOut(), thresholds.getSlumpMinSellThroughPct(), thresholds.getSlumpTargetPct(),
+                thresholds.getUrgencyBeforeHours(), thresholds.getUrgencyMinSellThroughPct(),
+                thresholds.getUrgencyMaxSellThroughPct(), (int) MomentumEvaluator.CLICKED_NO_BUY_WINDOW.toDays());
+        List<String> triggers = Arrays.stream(MomentumTriggerType.values()).map(MomentumTriggerType::wireValue).toList();
 
         return new MomentumEngineStateDto(
                 watching, waiting, approved30d, dismissed30d, attributedMinor,
-                thresholds.getMinAudienceFloor(), thresholds.getCooldownDays(), log);
-    }
-
-    private MomentumEngineStateDto.LogEntry toLogEntry(MomentumSuggestion s, Instant now) {
-        String status = s.getStatus();
-        String icon;
-        String tone;
-        String verb;
-        switch (status) {
-            case "approved"  -> { icon = "check"; tone = "green"; verb = "Approved"; }
-            case "dismissed" -> { icon = "x";     tone = "muted"; verb = "Dismissed"; }
-            case "expired"   -> { icon = "clock"; tone = "amber"; verb = "Expired"; }
-            default          -> { icon = "clock"; tone = "muted"; verb = capitalize(status); }
-        }
-        String eventName = resolveEventName(s.getEventId());
-        String trigger = s.getTriggerType() == null ? "" : s.getTriggerType().replace('_', ' ');
-        String text = (verb + " — " + eventName + " " + trigger).trim();
-        Instant age = s.getActedAt() != null ? s.getActedAt() : s.getSuggestedAt();
-        return new MomentumEngineStateDto.LogEntry(icon, tone, text, humanizeAge(age, now));
-    }
-
-    /** Event name via the events repo; falls back to the event id prefix if the event is gone. */
-    private String resolveEventName(UUID eventId) {
-        if (eventId == null) return "event";
-        String name = events.findById(eventId).map(Event::getName).orElse(null);
-        if (name != null && !name.isBlank()) return name;
-        return eventId.toString().substring(0, 8);
-    }
-
-    /** Static, library-free relative-age humanizer, e.g. "2 days ago". */
-    private String humanizeAge(Instant when, Instant now) {
-        if (when == null) return "";
-        long secs = Math.max(0, Duration.between(when, now).getSeconds());
-        long minutes = secs / 60;
-        long hours = minutes / 60;
-        long days = hours / 24;
-        if (days >= 7) {
-            long weeks = days / 7;
-            return weeks + (weeks == 1 ? " week ago" : " weeks ago");
-        }
-        if (days >= 1) return days + (days == 1 ? " day ago" : " days ago");
-        if (hours >= 1) return hours + (hours == 1 ? " hour ago" : " hours ago");
-        if (minutes >= 1) return minutes + (minutes == 1 ? " minute ago" : " minutes ago");
-        return "just now";
-    }
-
-    private String capitalize(String s) {
-        if (s == null || s.isEmpty()) return s == null ? "" : s;
-        return Character.toUpperCase(s.charAt(0)) + s.substring(1);
+                thresholds.getMinAudienceFloor(), thresholds.getCooldownDays(), log, belowFloor, rules, triggers);
     }
 
     /**
      * Turns a live suggestion into one draft: the conditional claim runs before the insert, so a second click,
      * another tab, a dismissal or the expiry sweep that got there first answers 409 and no draft is made. The draft
-     * leaves out people already holding a ticket for the event.
+     * leaves out people already holding a ticket for the event, and a draft carrying the event poster uses the
+     * poster template.
      */
     @Transactional
     public CampaignDto approve(AuthPrincipal principal, UUID suggestionId) {
@@ -318,6 +300,8 @@ public class MomentumService {
         c.setSubject(clamp(text(draft, "subject", null), MAX_SUBJECT));
         c.setPreheader(clamp(text(draft, "preheader", null), MAX_PREHEADER));
         c.setBodyMd(text(draft, "bodyMd", null));
+        String posterUrl = text(draft, "posterUrl", null);
+        if (posterUrl != null && !posterUrl.isBlank()) c.setTemplateKey("poster");
         // MomentumCopyGenerator wrote this copy: mark it for the Art.50(2) marker.
         c.setSubjectAiGenerated(c.getSubject() != null);
         c.setBodyAiGenerated(c.getBodyMd() != null || c.getPreheader() != null);
