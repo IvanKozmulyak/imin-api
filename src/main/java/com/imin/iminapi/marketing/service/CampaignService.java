@@ -18,10 +18,12 @@ import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.model.RecipientStatuses;
-import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
-import com.imin.iminapi.marketing.render.OrganizerIdentity;
+import com.imin.iminapi.marketing.dto.RenderPreviewRequest;
+import com.imin.iminapi.marketing.dto.RenderPreviewResponse;
+import com.imin.iminapi.marketing.render.CampaignEmailAssembler;
+import com.imin.iminapi.marketing.render.EmailShellCopy;
+import com.imin.iminapi.marketing.render.MergeTags;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
-import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -51,7 +53,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Marketing campaign CRUD + duplicate + (Task 5) preview-audience + test-send.
+ * Marketing campaign CRUD + duplicate + (Task 5) preview-audience + test-send + render-preview.
  * Org comes ONLY from the AuthPrincipal — never a path/body var (SPINE INVARIANT).
  */
 @Service
@@ -78,10 +80,8 @@ public class CampaignService {
     /** Read-only, org-scoped: resolves the recipient log's Person column display names. */
     private final com.imin.iminapi.audience.repository.MembershipRepository memberships;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
-    // Test-send now renders through the SAME branded shell the real batch send uses
-    // (CampaignEmailRenderer + resolved template), so a preview matches the delivered mail.
-    private final CampaignEmailRenderer renderer;
-    private final CampaignTemplateService templateService;
+    // Test send and preview assemble the email through the same path as the batch send, so they match the delivered mail.
+    private final CampaignEmailAssembler assembler;
     private final OrganizationRepository organizations;
     private final EventRepository events;
     private final MarketingEmailProperties emailProps;
@@ -105,7 +105,7 @@ public class CampaignService {
                            CampaignAttributionService attribution,
                            com.imin.iminapi.audience.repository.MembershipRepository memberships,
                            org.springframework.context.ApplicationEventPublisher eventPublisher,
-                           CampaignEmailRenderer renderer, CampaignTemplateService templateService,
+                           CampaignEmailAssembler assembler,
                            OrganizationRepository organizations, EventRepository events,
                            MarketingEmailProperties emailProps,
                            AudiencePlanAccess audiencePlanAccess,
@@ -131,8 +131,7 @@ public class CampaignService {
         this.attribution = attribution;
         this.memberships = memberships;
         this.eventPublisher = eventPublisher;
-        this.renderer = renderer;
-        this.templateService = templateService;
+        this.assembler = assembler;
         this.organizations = organizations;
         this.events = events;
         this.emailProps = emailProps;
@@ -465,44 +464,54 @@ public class CampaignService {
         // The test link names the campaign but unsubscribes nobody; the header keeps the API URL like a real send.
         String testToken = unsubscribeTokens.signTest(c.getOrgId(), c.getId());
         String unsubUrl = emailProps.unsubscribeUrl(testToken);
-        CampaignEmailRenderer.Rendered rendered = renderForTest(c, org, emailProps.unsubscribePageUrl(testToken));
+        // No recipient, so no first name: the token is dropped as for a fan with no name on file.
+        CampaignEmailAssembler.Context ctx = assembler.contextFor(c, org);
+        CampaignEmailAssembler.Email rendered = assembler.render(ctx, c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                null, emailProps.unsubscribePageUrl(testToken), null);
         // Same provider, From and headers as the real batch send, so the test shows what fans will get.
         provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
-                emailProps.fromHeader(org == null ? null : org.displayName()), to,
-                "[TEST] " + c.getSubject(), rendered.html(), rendered.text(), unsubUrl, c.aiDisclosure())));
+                ctx.fromHeader(), to,
+                "[TEST] " + rendered.subject(), rendered.html(), rendered.text(), unsubUrl, c.aiDisclosure())));
         audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
                 "Test email sent to organizer");
     }
 
     /**
-     * Render a test send through the EXACT same {@link CampaignEmailRenderer} path as the real
-     * batch send ({@code EmailChannelSender}): resolved template shell, brand header, poster hero,
-     * {@code {{tickets_button}}} CTA, and the mandatory unsubscribe footer. There is no recipient
-     * row for a self-test, so a signed test token stands in for the per-recipient one — the footer is
-     * still present and honest, it opens the page in its "this was a test email" state.
+     * The email as the send would build it, for the dashboard: writes nothing and records no audit row. On a
+     * draft the request's subject, preheader, body, template and language stand in for the saved ones (unsaved text);
+     * any other status refuses them with 409, since its text can no longer change. {@code named} greets the caller by
+     * their own first name; {@code unnamed}, or a caller with no usable first name, gets the no-name greeting.
      */
-    private CampaignEmailRenderer.Rendered renderForTest(Campaign c, Organization org, String unsubUrl) {
-        // resolve() coalesces null/blank/unknown template_key to the classic builtin, so a pre-V66
-        // or NULL row still renders inside the branded shell rather than as bare text.
-        ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
-        String brandName = org == null ? null : org.displayName();
-        Event event = linkedEvent(c);
-        String posterUrl = event == null ? null : event.getPosterUrl();
-        String ticketsUrl = event == null ? null : emailProps.getBuyerSiteBaseUrl() + "/e/" + event.getId();
-        // A test send has no recipient, so there is no first name (the token is dropped, as for a
-        // fan with no name); {{eventUrl}} resolves to the real event URL.
-        String eventUrl = ticketsUrl != null ? ticketsUrl : emailProps.getBuyerSiteBaseUrl();
-        String subject = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getSubject(), null, eventUrl);
-        String bodyMd = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getBodyMd(), null, eventUrl);
-        String preheader = com.imin.iminapi.marketing.render.MergeTags.apply(
-                c.getPreheader(), null, eventUrl);
-        return renderer.render(
-                subject, preheader, bodyMd,
-                c.getId().toString(), "email", unsubUrl,
-                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure(), OrganizerIdentity.of(org),
-                null, c.getLocale());
+    @Transactional(readOnly = true)
+    public RenderPreviewResponse renderPreview(AuthPrincipal p, UUID id, RenderPreviewRequest req) {
+        Campaign c = require(p.orgId(), id);
+        if (!"email".equals(c.getChannel())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_STATE,
+                    "Only email campaigns have an email preview");
+        }
+        RenderPreviewRequest r = req == null ? RenderPreviewRequest.SAVED : req;
+        if (r.hasOverrides() && !"draft".equals(c.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only a draft can be previewed with unsaved text");
+        }
+        String subject = r.subject() != null ? r.subject() : c.getSubject();
+        String preheader = r.preheader() != null ? r.preheader() : c.getPreheader();
+        String bodyMd = r.bodyMd() != null ? r.bodyMd() : c.getBodyMd();
+        String templateKey = r.templateKey() != null ? r.templateKey() : c.getTemplateKey();
+        String locale = r.locale() != null ? r.locale() : c.getLocale();
+        CampaignEmailAssembler.Context ctx = assembler.contextFor(c, organizationOrNull(c.getOrgId()), templateKey, locale);
+        String firstName = r.unnamed() ? null
+                : MergeTags.firstName(users.findById(p.userId()).map(User::getFirstName).orElse(null));
+        // The test-send token: its page says "this was a test" and unsubscribes nobody.
+        String unsubUrl = emailProps.unsubscribePageUrl(unsubscribeTokens.signTest(c.getOrgId(), c.getId()));
+        CampaignEmailAssembler.Email email = assembler.render(ctx, subject, preheader, bodyMd, firstName, unsubUrl, null);
+        String fromAddress = emailProps.getFromAddress() == null || emailProps.getFromAddress().isBlank()
+                ? null : emailProps.getFromAddress();
+        return new RenderPreviewResponse(email.html(), ctx.fromName(), fromAddress, email.subject(), email.preheader(),
+                firstName, CampaignEmailAssembler.notices(ctx, bodyMd),
+                CampaignEmailAssembler.links(email.html(), unsubUrl).stream()
+                        .map(l -> new RenderPreviewResponse.RenderedLink(l.kind(), l.text(), l.href())).toList(),
+                EmailShellCopy.forLocale(locale).lang());
     }
 
     /** Refuses a campaign that needs a legal identity the org lacks; the org is read only when one is needed. */

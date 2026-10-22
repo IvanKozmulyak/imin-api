@@ -246,6 +246,21 @@ class CampaignServiceTest {
         assertThat(e.html()).contains("href=\"https://app.imin.wtf/unsubscribe/" + token + "\"");
     }
 
+    /** The test inbox shows the subject the preview shows: merge tags filled, the name dropped as for a fan with none. */
+    @Test
+    void test_send_subject_fillsTheMergeTags_likeThePreview() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Tags", null, null,
+                        "Hi {{firstName}}, doors at ten", "Pre", "Body", null));
+        String previewed = service.renderPreview(principal(ORG), d.id(),
+                new com.imin.iminapi.marketing.dto.RenderPreviewRequest(null, null, null, null, null, "unnamed")).subject();
+
+        service.testSend(principal(ORG), d.id(), null);
+
+        assertThat(previewed).isEqualTo("Hi, doors at ten");
+        assertThat(sentTest().subject()).isEqualTo("[TEST] " + previewed);
+    }
+
     @Test
     void test_send_isFromTheOrganizerViaImin_withTheLegalFooterInHtmlAndText() {
         com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();

@@ -64,6 +64,11 @@ public class CampaignEmailRenderer {
         this.utmRewriter = utmRewriter;
     }
 
+    /** Whether the markdown body places a {@code {{tickets_button}}}, bare or labelled. */
+    public static boolean hasTicketsButton(String bodyMd) {
+        return bodyMd != null && TICKETS_TOKEN_INLINE.matcher(bodyMd).find();
+    }
+
     /**
      * Back-compat overload: renders with the default (classic) builtin and no poster.
      * Kept so callers/tests that predate the template system keep working.

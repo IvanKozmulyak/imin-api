@@ -6,8 +6,11 @@ import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.TestSendRequest;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
+import com.imin.iminapi.marketing.dto.RenderPreviewRequest;
+import com.imin.iminapi.marketing.dto.RenderPreviewResponse;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.RateLimiter;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,9 +28,11 @@ import java.util.UUID;
 public class CampaignController {
 
     private final CampaignService service;
+    private final RateLimiter rateLimiter;
 
-    public CampaignController(CampaignService service) {
+    public CampaignController(CampaignService service, RateLimiter rateLimiter) {
         this.service = service;
+        this.rateLimiter = rateLimiter;
     }
 
     /** Upper bound on any page this controller serves. */
@@ -96,6 +101,22 @@ public class CampaignController {
     public PreviewAudienceResponse previewAudience(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
         return service.previewAudience(principal, id);
+    }
+
+    /**
+     * The email as the send renders it, read-only (no write, no audit row, any role). A body may carry a draft's
+     * unsaved subject, preheader, bodyMd, templateKey and locale, and {@code recipient} named|unnamed. 400
+     * {@code FIELD_INVALID} for an oversize or unknown value, 400 {@code INVALID_STATE} for an SMS campaign, 404 for
+     * another org's campaign, 409 {@code INVALID_STATE} for unsaved text on a campaign that is not a draft, 429 past
+     * 120 previews a minute per user (bucket {@code render-preview}).
+     */
+    @PostMapping("/{id}/render-preview")
+    public RenderPreviewResponse renderPreview(
+            @AuthenticationPrincipal AuthPrincipal principal,
+            @PathVariable UUID id,
+            @jakarta.validation.Valid @RequestBody(required = false) RenderPreviewRequest req) {
+        rateLimiter.consume("render-preview", principal.userId().toString());
+        return service.renderPreview(principal, id, req);
     }
 
     @PostMapping("/{id}/test-send")

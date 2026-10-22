@@ -76,6 +76,7 @@ class CampaignControllerTest {
     @Autowired CampaignRecipientRepository recipients;
     @Autowired MutableClock clock;
     @Autowired CampaignDispatcher dispatcher;
+    @Autowired com.imin.iminapi.support.RecordingRateLimiter limiter;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -179,15 +180,19 @@ class CampaignControllerTest {
     @CsvSource({
             "create, subject,     201",
             "patch,  preheader,   201",
-            "create, templateKey, 65"})
+            "create, templateKey, 65",
+            "render-preview, subject, 201",
+            "render-preview, bodyMd,  50001"})
     void overlongField_isAFielded400_andWritesNothing(String route, String field, int length) throws Exception {
         UUID existing = draft(owner, null, null).id();
         Map<String, String> body = "create".equals(route)
                 ? Map.of("channel", "email", "name", "Launch", field, "x".repeat(length))
                 : Map.of(field, "x".repeat(length));
-        MockHttpServletRequestBuilder req = "create".equals(route)
-                ? post("/api/v1/marketing/campaigns")
-                : patch("/api/v1/marketing/campaigns/{id}", existing);
+        MockHttpServletRequestBuilder req = switch (route) {
+            case "create" -> post("/api/v1/marketing/campaigns");
+            case "render-preview" -> post("/api/v1/marketing/campaigns/{id}/render-preview", existing);
+            default -> patch("/api/v1/marketing/campaigns/{id}", existing);
+        };
 
         mvc.perform(req.with(auth(owner)).contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(body)))
                 .andExpect(status().isBadRequest())
@@ -304,9 +309,9 @@ class CampaignControllerTest {
         mvc.perform(req.with(auth(owner))).andExpect(status().is(expected));
     }
 
-    /** Another org's campaign is the no-leak 404 on every state-changing route, and stays as it was. */
+    /** Another org's campaign is the no-leak 404 on every state-changing route and the preview, and stays as it was. */
     @ParameterizedTest(name = "{0} on another org's {1} campaign")
-    @CsvSource({"/cancel, scheduled", "/cancel, sending", "/retry, failed", "/send, draft"})
+    @CsvSource({"/cancel, scheduled", "/cancel, sending", "/retry, failed", "/send, draft", "/render-preview, draft"})
     void anotherOrgsCampaign_isNotFound_andUntouched(String suffix, String status) throws Exception {
         UUID id = draft(otherOwner, null, null).id();
         if (!"draft".equals(status)) service.forceStatusForTest(id, status);
@@ -319,6 +324,41 @@ class CampaignControllerTest {
 
         assertThat(campaigns.findByIdAndOrgId(id, otherOwner.orgId())).get()
                 .extracting(Campaign::getStatus).isEqualTo(status);
+    }
+
+    /** The preview is email only, and only a draft's preview may carry unsaved text; a sent campaign previews as saved. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "SMS campaign                    | sms   | draft | {}                  | 400 | INVALID_STATE",
+            "unsaved text on a sent campaign | email | sent  | '{\"subject\":\"x\"}' | 409 | INVALID_STATE",
+            "saved text on a sent campaign   | email | sent  | {}                  | 200 | "})
+    void renderPreview_refusals(String label, String channel, String status, String body, int expected, String code)
+            throws Exception {
+        UUID id = service.create(owner, new CreateCampaignRequest(channel, "Preview", null, null,
+                "Subject", null, "Body", null)).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+
+        var res = mvc.perform(post("/api/v1/marketing/campaigns/{id}/render-preview", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().is(expected));
+        if (code != null) res.andExpect(jsonPath("$.error.code").value(code));
+        else res.andExpect(jsonPath("$.subject").value("Subject"));
+    }
+
+    /** Previews are metered per user: past the bucket the next one is a 429. */
+    @Test
+    void renderPreview_pastItsBucket_is429() throws Exception {
+        UUID id = draft(owner, null, null).id();
+        limiter.limit("render-preview", 1);
+        String path = "/api/v1/marketing/campaigns/" + id + "/render-preview";
+
+        mvc.perform(post(path).with(auth(owner)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+        mvc.perform(post(path).with(auth(owner)).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error.code").value("RATE_LIMITED"));
+        assertThat(limiter.calls()).containsOnly(
+                new com.imin.iminapi.support.RecordingRateLimiter.Call("render-preview", owner.userId().toString()));
     }
 
     /** Each email row carries its own sent/opened/clicked counts; SMS, drafts and a send that left nothing carry none. */

@@ -948,6 +948,10 @@ imin:
       # POST /api/v1/marketing/checkout-reminders/test, keyed per user id; each call sends a real email.
       capacity: 10
       window-minutes: 60
+    render-preview:
+      # POST /api/v1/marketing/campaigns/{id}/render-preview, keyed per user id; the composer posts once per typing pause.
+      capacity: 120
+      window-minutes: 1
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a

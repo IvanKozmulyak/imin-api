@@ -6,10 +6,10 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.service.CampaignEnded;
+import com.imin.iminapi.marketing.render.CampaignEmailAssembler;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.EmailShellCopy;
 import com.imin.iminapi.marketing.render.MergeTags;
-import com.imin.iminapi.marketing.render.OrganizerIdentity;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.model.Consumer;
@@ -22,9 +22,7 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
 import com.imin.iminapi.marketing.service.MarketingGuardProperties;
-import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
-import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -67,13 +65,11 @@ public class EmailChannelSender {
 
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
-    private final CampaignEmailRenderer renderer;
+    private final CampaignEmailAssembler assembler;
     private final CampaignEmailProvider provider;
     private final UnsubscribeTokenService tokens;
     private final MarketingEmailProperties props;
-    private final CampaignTemplateService templateService;
     private final OrganizationRepository organizations;
-    private final EventRepository events;
     private final MembershipRepository memberships;
     private final ConsumerRepository consumers;
     private final SendGateService sendGate;
@@ -95,13 +91,12 @@ public class EmailChannelSender {
                               ApplicationEventPublisher eventPublisher) {
         this.recipients = recipients;
         this.campaigns = campaigns;
-        this.renderer = renderer;
+        // Built here rather than injected, so this constructor (and the unit tests that call it) keep their shape.
+        this.assembler = new CampaignEmailAssembler(renderer, templateService, events, props);
         this.provider = provider;
         this.tokens = tokens;
         this.props = props;
-        this.templateService = templateService;
         this.organizations = organizations;
-        this.events = events;
         this.memberships = memberships;
         this.consumers = consumers;
         this.sendGate = sendGate;
@@ -173,16 +168,7 @@ public class EmailChannelSender {
 
         // Template, org brand name, and event poster are constant for the whole campaign —
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
-        ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
-        String brandName = org == null ? null : org.displayName();
-        OrganizerIdentity sender = OrganizerIdentity.of(org);
-        String from = props.fromHeader(brandName);
-        Event event = linkedEvent(c);
-        String posterUrl = event == null ? null : event.getPosterUrl();
-        String ticketsUrl = ticketsUrl(c, event);
-        // {{eventUrl}} resolves to the linked event's buyer page; with no linked event,
-        // to the buyer-site root rather than a broken/empty link.
-        String eventUrl = ticketsUrl != null ? ticketsUrl : props.getBuyerSiteBaseUrl();
+        CampaignEmailAssembler.Context ctx = assembler.contextFor(c, org);
         // Per-recipient {{firstName}} — resolve display names for the whole batch in two
         // batched queries (membership -> consumer -> display_name), not per row.
         Map<UUID, String> firstNameByMembership = resolveFirstNames(c.getOrgId(), batch);
@@ -198,17 +184,11 @@ public class EmailChannelSender {
             String unsubUrl = props.unsubscribeUrl(unsubToken);
             String unsubPageUrl = props.unsubscribePageUrl(unsubToken);
             String firstName = r.getMembershipId() == null ? null : firstNameByMembership.get(r.getMembershipId());
-            String subject = MergeTags.apply(c.getSubject(), firstName, eventUrl);
-            String bodyMd = MergeTags.apply(c.getBodyMd(), firstName, eventUrl);
-            String preheader = MergeTags.apply(c.getPreheader(), firstName, eventUrl);
-            CampaignEmailRenderer.Rendered rendered = renderer.render(
-                    subject, preheader, bodyMd,
-                    c.getId().toString(), "email", unsubPageUrl,
-                    template, brandName, posterUrl, ticketsUrl, ai, sender,
-                    addressSource(r.getMembershipId() == null ? null : sourceByMembership.get(r.getMembershipId()), locale),
-                    locale);
+            CampaignEmailAssembler.Email rendered = assembler.render(ctx,
+                    c.getSubject(), c.getPreheader(), c.getBodyMd(), firstName, unsubPageUrl,
+                    addressSource(r.getMembershipId() == null ? null : sourceByMembership.get(r.getMembershipId()), locale));
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
-                    from, r.getEmail(), subject,
+                    ctx.fromHeader(), r.getEmail(), rendered.subject(),
                     rendered.html(), rendered.text(), unsubUrl, ai));
         }
 
@@ -414,35 +394,6 @@ public class EmailChannelSender {
             log.debug("[email-sender] org lookup failed for {}: {}", orgId, e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * The campaign's linked event, org-scoped and active. Null when the campaign has no event or
-     * it resolves outside this org / is soft-deleted. Failure-isolated: a lookup hiccup must not
-     * fail a live send — the render just skips the poster and tickets button. Resolved ONCE per
-     * batch and reused for both the poster header and the tickets-button URL.
-     */
-    private Event linkedEvent(Campaign c) {
-        if (c.getEventId() == null) return null;
-        try {
-            return events.findActive(c.getEventId())
-                    .filter(e -> c.getOrgId().equals(e.getOrgId()))
-                    .orElse(null);
-        } catch (Exception e) {
-            log.debug("[email-sender] event lookup failed for {}: {}", c.getEventId(), e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * The linked event's PUBLIC buyer URL ({@code {base}/e/{eventId}} on imin-public), for the
-     * {@code {{tickets_button}}} CTA. Null when there is no linked event — the renderer then drops
-     * the token rather than link to a fabricated URL. The base is the same imin-public origin the
-     * unsubscribe footer already uses.
-     */
-    private String ticketsUrl(Campaign c, Event event) {
-        if (event == null) return null;
-        return props.getBuyerSiteBaseUrl() + "/e/" + event.getId();
     }
 
     /**

@@ -171,6 +171,10 @@ public class RateLimitConfig {
     private int storyKitDownloadCapacity;
     @Value("${imin.ratelimit.story-kit-download.window-minutes}")
     private int storyKitDownloadWindow;
+    @Value("${imin.ratelimit.render-preview.capacity}")
+    private int renderPreviewCapacity;
+    @Value("${imin.ratelimit.render-preview.window-minutes}")
+    private int renderPreviewWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -389,6 +393,10 @@ public class RateLimitConfig {
         // Kit image and zip downloads (a phone fetches every image once per kit shown), keyed per user id.
         configs.put("story-kit-download", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(storyKitDownloadCapacity, Duration.ofMinutes(storyKitDownloadWindow)))
+                .build());
+        // Campaign email previews (one render per typing pause in the composer), keyed per user id.
+        configs.put("render-preview", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(renderPreviewCapacity, Duration.ofMinutes(renderPreviewWindow)))
                 .build());
 
         return (bucketName, key) -> {
