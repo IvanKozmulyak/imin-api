@@ -12,6 +12,8 @@ import java.util.UUID;
 /**
  * {@code ruleGroups} is the segment's full grammar (a legacy rule array is one {@code and} group);
  * {@code rules} lists the rules only when they form a single {@code and} group, and is empty otherwise.
+ * {@code prebuiltKey} names a built-in segment (REPEAT, VIP, …) so clients can show its name in their
+ * language; null for a segment the organizer made.
  */
 public record SegmentDto(
         UUID id,
@@ -23,7 +25,8 @@ public record SegmentDto(
         List<SegmentRuleGroup> ruleGroups,
         List<String> rulesSummary,
         int liveCount,
-        Instant createdAt
+        Instant createdAt,
+        String prebuiltKey
 ) {
     public static SegmentDto from(Segment s, int liveCount) {
         SegmentRules.Parsed parsed = SegmentRules.parse(s.getRulesJson());
@@ -48,7 +51,7 @@ public record SegmentDto(
             }
         }
         return new SegmentDto(s.getId(), s.getOrgId(), s.getName(), s.getKind(),
-                s.isPrebuilt(), rules, groups, summary, liveCount, s.getCreatedAt());
+                s.isPrebuilt(), rules, groups, summary, liveCount, s.getCreatedAt(), s.getPrebuiltKey());
     }
 
     private static Map<String, String> asMap(SegmentRules.Rule r) {

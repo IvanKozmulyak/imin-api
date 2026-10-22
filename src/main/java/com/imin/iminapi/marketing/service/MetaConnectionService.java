@@ -64,9 +64,10 @@ public class MetaConnectionService {
 
     @Transactional(readOnly = true)
     public MetaConnectionDto get(UUID orgId) {
+        boolean available = cipher.isConfigured();
         return connections.findByOrgIdAndEventIdIsNull(orgId)
-                .map(MetaConnectionDto::from)
-                .orElseGet(MetaConnectionDto::notConnected);
+                .map(c -> MetaConnectionDto.from(c, available))
+                .orElseGet(() -> MetaConnectionDto.notConnected(available));
     }
 
     @Transactional
@@ -98,7 +99,7 @@ public class MetaConnectionService {
         // The pixel id only: the CAPI token is a secret and never enters the audit trail.
         audit.record(p, AuditActions.META_PIXEL_CONNECTED, "meta_pixel", c.getId(),
                 "Meta pixel connected: " + c.getPixelId());
-        return MetaConnectionDto.from(c);
+        return MetaConnectionDto.from(c, cipher.isConfigured());
     }
 
     @Transactional

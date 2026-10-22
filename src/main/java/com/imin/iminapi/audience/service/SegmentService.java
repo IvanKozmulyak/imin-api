@@ -407,11 +407,23 @@ public class SegmentService {
         return segmentRepo.findByIdAndOrgId(segmentId, orgId).map(Segment::getName).orElse(null);
     }
 
-    /** Names of the org's segments among {@code segmentIds}, hidden origins included; other orgs' ids are absent. */
-    public Map<UUID, String> namesByIds(UUID orgId, Collection<UUID> segmentIds) {
+    /** A segment's stored name and its built-in key (null for an organizer's own segment). */
+    public record SegmentLabel(String name, String prebuiltKey) {
+        static SegmentLabel of(Segment s) {
+            return new SegmentLabel(s.getName(), s.getPrebuiltKey());
+        }
+    }
+
+    /** The org's segment label, hidden origins included; null when it does not exist in that org. */
+    public SegmentLabel labelOrNull(UUID orgId, UUID segmentId) {
+        return segmentRepo.findByIdAndOrgId(segmentId, orgId).map(SegmentLabel::of).orElse(null);
+    }
+
+    /** Labels of the org's segments among {@code segmentIds}, hidden origins included; other orgs' ids are absent. */
+    public Map<UUID, SegmentLabel> labelsByIds(UUID orgId, Collection<UUID> segmentIds) {
         if (segmentIds.isEmpty()) return Map.of();
         return segmentRepo.findByOrgIdAndIdIn(orgId, segmentIds).stream()
-                .collect(Collectors.toMap(Segment::getId, Segment::getName));
+                .collect(Collectors.toMap(Segment::getId, SegmentLabel::of));
     }
 
     private Segment requireSegment(UUID orgId, UUID segmentId) {

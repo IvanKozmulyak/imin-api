@@ -202,16 +202,18 @@ public class CampaignService {
         List<UUID> sentIds = rows.stream().filter(sent).map(Campaign::getId).toList();
         var revByCampaign = attribution.attributedRevenueMinorByCampaign(p.orgId(), sentIds);
         // Segment names and linked events for the page in one query each, org-scoped like detail.
-        var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
+        var segmentLabels = segments.labelsByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
         var linkedEvents = activeEventsByIds(p.orgId(), idsOf(rows, Campaign::getEventId));
         Map<UUID, CampaignSummary.Counts> counts = outcomeCounts(rows);
         SendHolds holds = rows.stream().anyMatch(CampaignService::waitingToSend) ? sendHolds(p.orgId()) : SendHolds.NONE;
         return rows.stream()
                 .map(c -> {
                     Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
+                    SegmentService.SegmentLabel seg = c.getSegmentId() == null ? null : segmentLabels.get(c.getSegmentId());
                     return CampaignSummary.from(c,
                             sent.test(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
-                            c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
+                            seg == null ? null : seg.name(),
+                            seg == null ? null : seg.prebuiltKey(),
                             e == null ? null : e.getName(),
                             e == null ? null : e.getTimezone(),
                             CampaignFailureReason.of(c.getLastError()),
@@ -938,7 +940,7 @@ public class CampaignService {
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignDetailDto detailWithStats(AuthPrincipal p, UUID id) {
         Campaign c = require(p.orgId(), id);
-        String segmentName = c.getSegmentId() == null ? null : segments.nameOrNull(p.orgId(), c.getSegmentId());
+        SegmentService.SegmentLabel seg = c.getSegmentId() == null ? null : segments.labelOrNull(p.orgId(), c.getSegmentId());
         Event event = linkedEvent(c);
         // Trigger comes from the suggestion this campaign was approved from; null for manual ones.
         String triggerType = c.getMomentumSuggestionId() == null ? null
@@ -950,7 +952,8 @@ public class CampaignService {
         // Live from the rows (mid-send diverts included), not the snapshot frozen at materialization.
         Map<String, Long> skipReasons = counts.total() == 0 ? null : skipReasonCounts(id);
         String sendHold = waitingToSend(c) ? sendHolds(p.orgId()).of(c) : null;
-        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, statsOf(p.orgId(), id, counts), segmentName,
+        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, statsOf(p.orgId(), id, counts),
+                seg == null ? null : seg.name(), seg == null ? null : seg.prebuiltKey(),
                 event == null ? null : event.getTimezone(), triggerType,
                 CampaignFailureReason.of(c.getLastError()), event == null ? null : event.getName(),
                 attributedRevenue(p.orgId(), c), skipReasons, sendHold);

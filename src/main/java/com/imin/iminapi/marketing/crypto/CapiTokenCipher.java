@@ -40,6 +40,19 @@ public class CapiTokenCipher {
         this.keyB64 = keyB64;
     }
 
+    /**
+     * True when {@link #encrypt} would accept the key: non-blank and Base64 of exactly 32 bytes.
+     * Never throws and never caches, so the Meta screens can ask on every read.
+     */
+    public boolean isConfigured() {
+        if (keyB64 == null || keyB64.isBlank()) return false;
+        try {
+            return Base64.getDecoder().decode(keyB64).length == 32;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     private SecretKeySpec requireKey() {
         SecretKeySpec k = key;
         if (k != null) return k;

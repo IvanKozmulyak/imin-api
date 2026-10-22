@@ -33,6 +33,8 @@ import java.util.UUID;
  *   <li>{@code segmentLabel} — live name of {@code draftPayload.segmentId}. Null when the draft
  *       carries no segment or the segment has since been deleted — the label is genuinely
  *       unknown then, and a guess would be worse than an omission.</li>
+ *   <li>{@code segmentPrebuiltKey} — built-in key of that same segment (REPEAT, VIP, …), so the
+ *       card shows its name in the organizer's language; null for an organizer's own segment.</li>
  *   <li>{@code smsLocked} — live: the org has zero SMS-opted-in phones RIGHT NOW, so an SMS
  *       send is impossible. A capability, not evidence; it must unlock the moment a phone is
  *       collected.</li>
@@ -63,5 +65,6 @@ public record MomentumSuggestionDto(
         MomentumFacts facts,
         List<Integer> spark,
         String segmentLabel,
+        String segmentPrebuiltKey,
         boolean smsLocked) {
 }

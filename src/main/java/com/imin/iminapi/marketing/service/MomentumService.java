@@ -111,28 +111,28 @@ public class MomentumService {
         for (Event e : events.findAllById(eventIds)) {
             eventNames.put(e.getId(), e.getName());
         }
-        // Live #2: segment names for the whole org (prebuilt + custom is a small set).
-        Map<UUID, String> segmentNames = new HashMap<>();
+        // Live #2: segment rows for the whole org (prebuilt + custom is a small set).
+        Map<UUID, Segment> segmentsById = new HashMap<>();
         for (Segment seg : segmentRepo.findByOrgId(orgId)) {
-            segmentNames.put(seg.getId(), seg.getName());
+            segmentsById.put(seg.getId(), seg);
         }
         // Live #3: SMS is locked when the org has zero opted-in phones to send to.
         boolean smsLocked = memberships.countSmsSubscribedByOrgId(orgId) == 0;
 
         return rows.stream()
-                .map(r -> toDto(r, eventNames, segmentNames, smsLocked))
+                .map(r -> toDto(r, eventNames, segmentsById, smsLocked))
                 .toList();
     }
 
     private MomentumSuggestionDto toDto(MomentumSuggestion s,
                                         Map<UUID, String> eventNames,
-                                        Map<UUID, String> segmentNames,
+                                        Map<UUID, Segment> segmentsById,
                                         boolean smsLocked) {
         Snapshot snap = parseSnapshot(s.getMetricsSnapshot());
 
         // Null rather than a stand-in when the event is genuinely gone: the FE can say so.
         String eventName = s.getEventId() == null ? null : eventNames.get(s.getEventId());
-        String segmentLabel = resolveSegmentLabel(s.getDraftPayload(), segmentNames);
+        Segment segment = resolveSegment(s.getDraftPayload(), segmentsById);
 
         // An unparseable snapshot gives no facts: the card shows less instead of inventing numbers.
         MomentumFacts facts = snap == null ? null : MomentumFacts.from(snap.metrics(), snap.clickedNoTicket());
@@ -141,17 +141,20 @@ public class MomentumService {
         return new MomentumSuggestionDto(
                 s.getId(), s.getEventId(), eventName, s.getTriggerType(), s.getStatus(),
                 s.getMetricsSnapshot(), s.getDraftPayload(), s.getCampaignId(), s.getSuggestedAt(),
-                facts, spark, segmentLabel, smsLocked);
+                facts, spark,
+                segment == null ? null : segment.getName(),
+                segment == null ? null : segment.getPrebuiltKey(),
+                smsLocked);
     }
 
-    /** Human name of the draft's target segment, or null when unset/deleted (never guessed). */
-    private String resolveSegmentLabel(String draftPayload, Map<UUID, String> segmentNames) {
+    /** The draft's target segment, or null when unset/deleted (never guessed). */
+    private Segment resolveSegment(String draftPayload, Map<UUID, Segment> segmentsById) {
         if (draftPayload == null || draftPayload.isBlank()) return null;
         try {
             JsonNode n = json.readTree(draftPayload);
             String id = text(n, "segmentId", null);
             if (id == null || id.isBlank()) return null;
-            return segmentNames.get(UUID.fromString(id));
+            return segmentsById.get(UUID.fromString(id));
         } catch (Exception e) {
             return null; // malformed draft or non-UUID segment id — unknown, so say nothing
         }

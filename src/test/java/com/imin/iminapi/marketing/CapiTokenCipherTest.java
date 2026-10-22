@@ -2,8 +2,12 @@ package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.marketing.crypto.CapiTokenCipher;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.Base64;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,5 +61,33 @@ class CapiTokenCipherTest {
         assertThat(tampered).isNotEqualTo(enc);
         assertThatThrownBy(() -> cipher.decrypt(tampered))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    static Stream<Arguments> keys() {
+        return Stream.of(
+                Arguments.of("null", null, false),
+                Arguments.of("blank", "   ", false),
+                Arguments.of("not Base64", "not*base64!", false),
+                Arguments.of("31-byte key", Base64.getEncoder().encodeToString(new byte[31]), false),
+                Arguments.of("32-byte key", TEST_KEY_B64, true));
+    }
+
+    // Meta's Connect form is offered only while isConfigured(); it must agree with encrypt and never throw.
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("keys")
+    void isConfiguredMatchesWhatEncryptAcceptsAndNeverThrows(String label, String key, boolean configured) {
+        CapiTokenCipher cipher = new CapiTokenCipher(key);
+
+        assertThat(cipher.isConfigured()).isEqualTo(configured);
+        boolean encrypts;
+        try {
+            cipher.encrypt("tok");
+            encrypts = true;
+        } catch (RuntimeException e) {
+            encrypts = false;
+        }
+        assertThat(encrypts).isEqualTo(configured);
+        // Asking first must not cache a bad key: a second call answers the same.
+        assertThat(cipher.isConfigured()).isEqualTo(configured);
     }
 }

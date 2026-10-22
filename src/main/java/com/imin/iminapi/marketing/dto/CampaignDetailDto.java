@@ -41,6 +41,8 @@ public record CampaignDetailDto(
         CampaignStatsDto stats,
         /** Name of the org's segment {@code segmentId}, hidden plan/Momentum segments included; null when none or gone. */
         String segmentName,
+        /** Built-in key of that segment (REPEAT, VIP, …) so clients show its name in their language; null for an organizer's own or none. */
+        String segmentPrebuiltKey,
         /** IANA zone of the linked active event, for showing its send times; null without one. */
         String eventTimezone,
         /** Momentum trigger (launch_push|slump|urgency_72h|sold_out|clicked_no_buy) of the suggestion this campaign was approved from; null for manual campaigns. */
@@ -66,7 +68,8 @@ public record CampaignDetailDto(
         /** With an event: people holding a live ticket for it are left out (skip reason {@code has_ticket}). */
         boolean skipTicketHolders
 ) {
-    public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName, String eventTimezone,
+    public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName,
+                                         String segmentPrebuiltKey, String eventTimezone,
                                          String triggerType, String failureReason, String eventName, Long revMinor,
                                          java.util.Map<String, Long> skipReasons, String sendHold) {
         return new CampaignDetailDto(
@@ -75,7 +78,7 @@ public record CampaignDetailDto(
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
-                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, eventTimezone, triggerType,
+                c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, segmentPrebuiltKey, eventTimezone, triggerType,
                 c.getAttempts(), failureReason, eventName, revMinor, skipReasons, c.getLocale(), sendHold,
                 c.isSkipTicketHolders());
     }

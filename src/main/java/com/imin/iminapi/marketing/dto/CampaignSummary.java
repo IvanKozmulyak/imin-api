@@ -30,6 +30,8 @@ public record CampaignSummary(
         Long revMinor,
         /** Name of the org's segment {@code segmentId}, hidden origins included; null when none or gone. */
         String segmentName,
+        /** Built-in key of that segment (REPEAT, VIP, …) so clients show its name in their language; null for an organizer's own or none. */
+        String segmentPrebuiltKey,
         /** Name of the linked, non-deleted event of this org; null without one. */
         String eventName,
         /** IANA zone of that same event, for showing its send times; null without one. */
@@ -55,7 +57,7 @@ public record CampaignSummary(
         String sendHold
 ) {
     /** Projection for the list read path: revenue, the batch-resolved segment and event context, and the counts. */
-    public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
+    public static CampaignSummary from(Campaign c, Long revMinor, String segmentName, String segmentPrebuiltKey,
                                        String eventName, String eventTimezone, String failureReason,
                                        Counts counts, String sendHold) {
         boolean anyLeft = counts != null && counts.sent() > 0;
@@ -64,7 +66,7 @@ public record CampaignSummary(
                 c.getSegmentId(), c.getEventId(), c.getOrigin(),
                 c.getRecipientCount(), c.getExcludedCount(), c.getLastError(),
                 c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor,
-                segmentName, eventName, eventTimezone, failureReason,
+                segmentName, segmentPrebuiltKey, eventName, eventTimezone, failureReason,
                 anyLeft ? counts.sent() : null,
                 anyLeft ? counts.opened() : null,
                 anyLeft ? counts.clicked() : null,

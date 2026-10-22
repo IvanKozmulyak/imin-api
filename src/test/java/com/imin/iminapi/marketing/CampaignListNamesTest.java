@@ -148,17 +148,17 @@ class CampaignListNamesTest {
     }
 
     @Test
-    void namesByIds_emptyIds_isEmpty() {
-        assertThat(segmentService.namesByIds(orgId, Set.of())).isEmpty();
+    void labelsByIds_emptyIds_isEmpty() {
+        assertThat(segmentService.labelsByIds(orgId, Set.of())).isEmpty();
     }
 
     @Test
-    void namesByIds_keepsOnlyTheOrgsSegments() {
+    void labelsByIds_keepsOnlyTheOrgsSegments() {
         UUID mine = segment(orgId, "Mine", Segment.ORIGIN_ORGANIZER);
         UUID theirs = segment(otherOrgId, "Theirs", Segment.ORIGIN_ORGANIZER);
 
-        assertThat(segmentService.namesByIds(orgId, Set.of(mine, theirs)))
-                .containsExactlyEntriesOf(java.util.Map.of(mine, "Mine"));
+        assertThat(segmentService.labelsByIds(orgId, Set.of(mine, theirs)))
+                .containsExactlyEntriesOf(java.util.Map.of(mine, new SegmentService.SegmentLabel("Mine", null)));
     }
 
     // ---- detail ----

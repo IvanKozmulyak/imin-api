@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
@@ -7,11 +8,15 @@ import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
+import com.imin.iminapi.audience.service.PrebuiltSegment;
+import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.send.CampaignDispatcher;
@@ -35,6 +40,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -86,6 +92,8 @@ class CampaignControllerTest {
     @Autowired OrganizationRepository orgRepo;
     @Autowired UserRepository users;
     @Autowired AuditRows audit;
+    @Autowired SegmentService segmentService;
+    @Autowired MomentumSuggestionRepository suggestions;
     final ObjectMapper om = new ObjectMapper();
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -748,5 +756,80 @@ class CampaignControllerTest {
                                               placed_by, placed_at)
                 VALUES (?, ?, ?, TRUE, FALSE, 'fraud', 'test hold', ?, now())
                 """, UUID.randomUUID(), owner.orgId(), eventId, owner.userId());
+    }
+
+    /** Every screen that names a campaign's segment carries the built-in key, so it shows translated; an own segment has none. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"segments", "campaign list", "campaign detail", "suggestions"})
+    void prebuiltSegmentKeyReachesEveryScreenThatNamesTheSegment(String screen) throws Exception {
+        segmentService.ensurePrebuiltSegments(owner.orgId());
+        UUID repeat = segments.findByOrgIdAndPrebuiltKey(owner.orgId(), PrebuiltSegment.REPEAT.key())
+                .orElseThrow().getId();
+        Segment mine = new Segment();
+        mine.setOrgId(owner.orgId());
+        mine.setName("Regulars " + UUID.randomUUID());
+        mine.setKind("static");
+        mine.setSnapshotIds("[]");
+        UUID own = segments.save(mine).getId();
+
+        List<String> keys = switch (screen) {
+            case "segments" -> {
+                JsonNode list = json(get("/api/v1/audience/segments"));
+                yield java.util.Arrays.asList(byId(list, repeat).path("prebuiltKey").asText(null),
+                        byId(list, own).path("prebuiltKey").asText(null));
+            }
+            case "campaign list" -> {
+                UUID a = draft(owner, repeat, null).id();
+                UUID b = draft(owner, own, null).id();
+                JsonNode list = json(get("/api/v1/marketing/campaigns"));
+                yield java.util.Arrays.asList(byId(list, a).path("segmentPrebuiltKey").asText(null),
+                        byId(list, b).path("segmentPrebuiltKey").asText(null));
+            }
+            case "campaign detail" -> {
+                UUID a = draft(owner, repeat, null).id();
+                UUID b = draft(owner, own, null).id();
+                yield java.util.Arrays.asList(json(get("/api/v1/marketing/campaigns/{id}", a)).path("segmentPrebuiltKey").asText(null),
+                        json(get("/api/v1/marketing/campaigns/{id}", b)).path("segmentPrebuiltKey").asText(null));
+            }
+            case "suggestions" -> {
+                UUID a = suggestion(repeat);
+                UUID b = suggestion(own);
+                JsonNode list = json(get("/api/v1/marketing/suggestions"));
+                yield java.util.Arrays.asList(byId(list, a).path("segmentPrebuiltKey").asText(null),
+                        byId(list, b).path("segmentPrebuiltKey").asText(null));
+            }
+            default -> throw new IllegalArgumentException(screen);
+        };
+
+        assertThat(keys).containsExactly("REPEAT", null);
+    }
+
+    private JsonNode json(MockHttpServletRequestBuilder req) throws Exception {
+        String body = mvc.perform(req.with(auth(owner))).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return om.readTree(body);
+    }
+
+    private static JsonNode byId(JsonNode array, UUID id) {
+        for (JsonNode n : array) {
+            if (id.toString().equals(n.path("id").asText())) return n;
+        }
+        throw new AssertionError("no row " + id + " in " + array);
+    }
+
+    private UUID suggestion(UUID segmentId) {
+        var org = orgRepo.findById(owner.orgId()).orElseThrow();
+        var user = users.findById(owner.userId()).orElseThrow();
+        UUID eventId = fx.event(org, user, EventStatus.LIVE, Instant.now().plus(Duration.ofDays(20))).getId();
+        MomentumSuggestion s = new MomentumSuggestion();
+        s.setId(UUID.randomUUID());
+        s.setOrgId(owner.orgId());
+        s.setEventId(eventId);
+        s.setTriggerType("launch_push");
+        s.setStatus("suggested");
+        s.setMetricsSnapshot("{\"sold\":10,\"capacity\":100}");
+        s.setDraftPayload("{\"subject\":\"S\",\"segmentId\":\"" + segmentId + "\"}");
+        s.setSuggestedAt(Instant.now());
+        return suggestions.save(s).getId();
     }
 }
