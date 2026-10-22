@@ -24,6 +24,8 @@ public class Segment {
     public static final String ORIGIN_AUDIENCE_PLAN = "audience_plan";
     /** A static snapshot a Momentum draft sends to, taken from the audience plan; hidden like plan arms. */
     public static final String ORIGIN_MOMENTUM = "momentum";
+    /** A static snapshot of the people a stock alert can reach; hidden like plan and Momentum snapshots. */
+    public static final String ORIGIN_STOCK_ALERT = "stock_alert";
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -50,7 +52,7 @@ public class Segment {
     @Column(name = "prebuilt_key", length = 32)
     private String prebuiltKey;
 
-    /** organizer | audience_plan | momentum */
+    /** organizer | audience_plan | momentum | stock_alert */
     @Column(nullable = false, length = 32)
     private String origin = ORIGIN_ORGANIZER;
 
@@ -70,7 +72,8 @@ public class Segment {
 
     /** A system-made segment backing a campaign: not listed, and not the organizer's to delete. */
     public boolean isSystemOrigin() {
-        return ORIGIN_AUDIENCE_PLAN.equals(origin) || ORIGIN_MOMENTUM.equals(origin);
+        return ORIGIN_AUDIENCE_PLAN.equals(origin) || ORIGIN_MOMENTUM.equals(origin)
+                || ORIGIN_STOCK_ALERT.equals(origin);
     }
 
     @PrePersist

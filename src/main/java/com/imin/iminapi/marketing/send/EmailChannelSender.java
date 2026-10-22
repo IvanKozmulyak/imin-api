@@ -21,6 +21,7 @@ import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.MarketingGuardProperties;
+import com.imin.iminapi.marketing.stock.StockAlertSendGuard;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -84,6 +85,8 @@ public class EmailChannelSender {
     private final AddressSourceLines addressSources;
     private final AudiencePlanAccess audiencePlanAccess;
     private final ApplicationEventPublisher eventPublisher;
+    /** Stock alerts: the frozen facts every recipient's email quotes. */
+    private final StockAlertSendGuard stockGuard;
     /** REQUIRES_NEW: the claim commits the batch key before the provider is called. */
     private final TransactionTemplate claimTx;
     /** REQUIRES_NEW: the delivery holds the batch's rows from the call until the outcome commits. */
@@ -97,7 +100,8 @@ public class EmailChannelSender {
                               SendGateService sendGate, MarketingGuardProperties guardProps,
                               SendPathGuard sendPathGuard, AddressSourceLines addressSources,
                               AudiencePlanAccess audiencePlanAccess,
-                              ApplicationEventPublisher eventPublisher, PlatformTransactionManager txManager) {
+                              ApplicationEventPublisher eventPublisher, PlatformTransactionManager txManager,
+                              StockAlertSendGuard stockGuard) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.assembler = assembler;
@@ -113,6 +117,7 @@ public class EmailChannelSender {
         this.addressSources = addressSources;
         this.audiencePlanAccess = audiencePlanAccess;
         this.eventPublisher = eventPublisher;
+        this.stockGuard = stockGuard;
         this.claimTx = new TransactionTemplate(txManager);
         this.claimTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.deliverTx = new TransactionTemplate(txManager);
@@ -242,6 +247,7 @@ public class EmailChannelSender {
         // Template, org brand name, and event poster are constant for the whole campaign —
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
         CampaignEmailAssembler.Context ctx = assembler.contextFor(c, org);
+        if (SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin())) ctx = ctx.withStockTokens(stockGuard.frozenTokens(c));
         String replyTo = props.replyTo(org);
         // Per-recipient {{firstName}} — resolve display names for the whole batch in two
         // batched queries (membership -> consumer -> display_name), not per row.

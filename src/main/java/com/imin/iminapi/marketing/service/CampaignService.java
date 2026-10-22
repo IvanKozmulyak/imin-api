@@ -24,6 +24,11 @@ import com.imin.iminapi.marketing.render.CampaignEmailAssembler;
 import com.imin.iminapi.marketing.render.EmailShellCopy;
 import com.imin.iminapi.marketing.render.MergeTags;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.repository.StockAlertRepository;
+import com.imin.iminapi.marketing.stock.StockAlertSendGuard;
+import com.imin.iminapi.marketing.stock.StockFactTokens;
+import com.imin.iminapi.marketing.stock.StockFactsReader;
+import com.imin.iminapi.marketing.dto.StockFactsDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -95,6 +100,9 @@ public class CampaignService {
     private final QuietHours quietHours;
     private final com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
     private final com.imin.iminapi.repository.ModerationHoldRepository moderationHolds;
+    /** Stock alerts: their facts are re-read at Send, and fresh in a preview or test send. */
+    private final StockAlertSendGuard stockGuard;
+    private final StockAlertRepository stockAlerts;
     @jakarta.persistence.PersistenceContext
     private jakarta.persistence.EntityManager entityManager;
 
@@ -117,8 +125,11 @@ public class CampaignService {
                            com.imin.iminapi.marketing.repository.MomentumSuggestionRepository momentumSuggestions,
                            Clock clock, QuietHours quietHours,
                            com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens,
-                           com.imin.iminapi.repository.ModerationHoldRepository moderationHolds) {
+                           com.imin.iminapi.repository.ModerationHoldRepository moderationHolds,
+                           StockAlertSendGuard stockGuard, StockAlertRepository stockAlerts) {
         this.clock = clock;
+        this.stockGuard = stockGuard;
+        this.stockAlerts = stockAlerts;
         this.moderationHolds = moderationHolds;
         this.quietHours = quietHours;
         this.unsubscribeTokens = unsubscribeTokens;
@@ -368,8 +379,15 @@ public class CampaignService {
         return CampaignLocale.defaultFor(org == null ? null : org.getCountry(), userLocale);
     }
 
-    /** An invitation arm keeps its segment and event, so its experiment link and holdout skip stay intact. */
+    /** An invitation arm keeps its segment and event (experiment link, holdout); a stock alert keeps its event. */
     private static void requirePlanTargetKept(Campaign c, PatchCampaignRequest req) {
+        if (SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin())) {
+            if (req.eventId() != null && !Objects.equals(req.eventId().value(), c.getEventId())) {
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                        "The event of a stock alert campaign cannot be changed");
+            }
+            return;
+        }
         if (!AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) return;
         boolean segmentChanged = req.segmentId() != null && !Objects.equals(req.segmentId().value(), c.getSegmentId());
         boolean eventChanged = req.eventId() != null && !Objects.equals(req.eventId().value(), c.getEventId());
@@ -387,6 +405,11 @@ public class CampaignService {
     @Transactional
     public CampaignDto duplicate(AuthPrincipal p, UUID id) {
         Campaign src = require(p.orgId(), id);
+        // A copy would quote the alert's facts without its alert, so nothing could re-check them.
+        if (SendPathGuard.STOCK_ALERT_ORIGIN.equals(src.getOrigin())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "A stock alert campaign cannot be duplicated");
+        }
         Instant now = Instant.now();
         Campaign copy = new Campaign();
         copy.setId(UUID.randomUUID());
@@ -440,7 +463,8 @@ public class CampaignService {
                         base.marketingSuppressed(), base.deliverabilitySuppressed(), base.noPhone(), base.noEmail(),
                         count(skipped, SendPathGuard.EXPERIMENT_HOLDOUT), count(skipped, SendPathGuard.EVENT_CAP),
                         count(skipped, SendPathGuard.MONTHLY_CAP), count(skipped, SendPathGuard.CONSENT_GATE),
-                        base.invalidAddress(), count(skipped, SendPathGuard.HAS_TICKET)));
+                        base.invalidAddress(), count(skipped, SendPathGuard.HAS_TICKET),
+                        count(skipped, SendPathGuard.STOCK_ALERT_CAP)));
     }
 
     private static int count(Map<UUID, String> skipped, String reason) {
@@ -471,6 +495,16 @@ public class CampaignService {
         Map<String, String> missing = new LinkedHashMap<>();
         if (c.getSubject() == null || c.getSubject().isBlank()) missing.put("subject", "required");
         if (!hasTextBesideTicketsButton(c.getBodyMd())) missing.put("bodyMd", "required");
+        if (SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin())) {
+            // The facts block is the claim; it must be there and still true now.
+            if (!StockFactTokens.hasFactsBlock(c.getBodyMd())) missing.put("stockFacts", "required");
+            else if (stockGuard.notTrueNow(c).isPresent()) missing.put("stockFacts", "no_longer_true");
+        } else {
+            // Outside a stock alert nothing fills these tokens, and nothing would re-check a number typed for them.
+            if (StockFactTokens.containsStockToken(c.getSubject())) missing.put("subject", "stock_token_outside_alert");
+            if (StockFactTokens.containsStockToken(c.getPreheader())) missing.put("preheader", "stock_token_outside_alert");
+            if (StockFactTokens.containsStockToken(c.getBodyMd())) missing.put("bodyMd", "stock_token_outside_alert");
+        }
         if (c.getSegmentId() == null || segments.nameOrNull(c.getOrgId(), c.getSegmentId()) == null) {
             missing.put("segmentId", "required");
         } else if (sendableAudience(c.getOrgId(), c,
@@ -527,7 +561,7 @@ public class CampaignService {
         String testToken = unsubscribeTokens.signTest(c.getOrgId(), c.getId());
         String unsubUrl = emailProps.unsubscribeUrl(testToken);
         // No recipient, so no first name: the token is dropped as for a fan with no name on file.
-        CampaignEmailAssembler.Context ctx = assembler.contextFor(c, org);
+        CampaignEmailAssembler.Context ctx = withFreshStockTokens(c, assembler.contextFor(c, org), c.getLocale());
         CampaignEmailAssembler.Email rendered = assembler.render(ctx, c.getSubject(), c.getPreheader(), c.getBodyMd(),
                 null, emailProps.unsubscribePageUrl(testToken), null);
         // Same provider, From, Reply-To and headers as the real batch send, so the test shows what fans will get.
@@ -566,7 +600,8 @@ public class CampaignService {
         String bodyMd = r.bodyMd() != null ? r.bodyMd() : c.getBodyMd();
         String templateKey = r.templateKey() != null ? r.templateKey() : c.getTemplateKey();
         String locale = r.locale() != null ? r.locale() : c.getLocale();
-        CampaignEmailAssembler.Context ctx = assembler.contextFor(c, organizationOrNull(c.getOrgId()), templateKey, locale);
+        CampaignEmailAssembler.Context ctx = withFreshStockTokens(c,
+                assembler.contextFor(c, organizationOrNull(c.getOrgId()), templateKey, locale), locale);
         String firstName = r.unnamed() ? null
                 : MergeTags.firstName(users.findById(p.userId()).map(User::getFirstName).orElse(null));
         // The test-send token: its page says "this was a test" and unsubscribes nobody.
@@ -579,6 +614,13 @@ public class CampaignService {
                 CampaignEmailAssembler.links(email.html(), unsubUrl).stream()
                         .map(l -> new RenderPreviewResponse.RenderedLink(l.kind(), l.text(), l.href())).toList(),
                 EmailShellCopy.forLocale(locale).lang());
+    }
+
+    /** A stock alert's preview and test send quote its frozen facts once sent, else facts read now; others unchanged. */
+    private CampaignEmailAssembler.Context withFreshStockTokens(Campaign c, CampaignEmailAssembler.Context ctx,
+                                                                String locale) {
+        if (!SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin())) return ctx;
+        return ctx.withStockTokens(stockGuard.previewTokens(c, locale));
     }
 
     /** Refuses a campaign that needs a legal identity the org lacks; the org is read only when one is needed. */
@@ -713,6 +755,32 @@ public class CampaignService {
         audit.record(principal, AuditActions.CAMPAIGN_SEND_UNDONE, "campaign", campaignId,
                 "Campaign moved back to drafts before sending");
         return CampaignDto.from(require(principal.orgId(), campaignId));
+    }
+
+    /**
+     * Automatic stock alerts: Send's readiness, legal-identity and draft→scheduled checks at {@code when}, audited with
+     * the admin who turned automatic sending on as the actor.
+     */
+    @Transactional
+    public void scheduleAutomated(UUID campaignId, Instant when, UUID enabledBy) {
+        Campaign c = campaigns.findById(campaignId)
+                .filter(x -> SendPathGuard.STOCK_ALERT_ORIGIN.equals(x.getOrigin()))
+                .orElseThrow(() -> ApiException.notFound("Campaign"));
+        if (!"draft".equals(c.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Campaign is not in draft");
+        }
+        requireLegalIdentity(c);
+        requireReadyToSend(c);
+        if (campaigns.markScheduledIfDraft(campaignId, c.getOrgId(), when) == 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Campaign is not in draft");
+        }
+        AuthPrincipal admin = new AuthPrincipal(enabledBy, c.getOrgId(), com.imin.iminapi.model.UserRole.ADMIN, null);
+        audit.record(admin, AuditActions.STOCK_ALERT_AUTO_SCHEDULED, "campaign", campaignId,
+                "Stock alert scheduled automatically for " + when + "; automatic sending was turned on by this admin");
+        if (eventPublisher != null && c.getEventId() != null) {
+            eventPublisher.publishEvent(
+                    new com.imin.iminapi.predictor.service.PredictorMarketingEvents.CampaignScheduled(c.getEventId()));
+        }
     }
 
     private static ApiException notUnschedulable() {
@@ -956,7 +1024,17 @@ public class CampaignService {
                 seg == null ? null : seg.name(), seg == null ? null : seg.prebuiltKey(),
                 event == null ? null : event.getTimezone(), triggerType,
                 CampaignFailureReason.of(c.getLastError()), event == null ? null : event.getName(),
-                attributedRevenue(p.orgId(), c), skipReasons, sendHold);
+                attributedRevenue(p.orgId(), c), skipReasons, sendHold, stockFactsOf(c));
+    }
+
+    /** What a stock alert's email said (frozen at send), else the facts prepared for the draft; null for others. */
+    private StockFactsDto stockFactsOf(Campaign c) {
+        if (!SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin())) return null;
+        return stockAlerts.findByCampaignId(c.getId())
+                .filter(a -> c.getOrgId().equals(a.getOrgId()))
+                .flatMap(a -> StockFactsReader.parse(a.getFactsAtSendJson()).or(() -> StockFactsReader.parse(a.getFactsJson())))
+                .map(StockFactsDto::from)
+                .orElse(null);
     }
 
     /**

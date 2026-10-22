@@ -33,6 +33,12 @@ public class QuietHours {
         return com.imin.iminapi.audienceplan.engine.ArmTimes.outOfQuietHours(at, zoneOf(timezone));
     }
 
+    /** The first instant at or after {@code from} outside the quiet window: {@code from} itself, else the next 09:00 org time. */
+    public Instant nextEmailAllowed(String timezone, Instant from) {
+        Instant held = heldUntil(timezone, from);
+        return held != null ? held : from;
+    }
+
     /** The org's zone; a blank or unknown id falls back to UTC. */
     public ZoneId zoneOf(String timezone) {
         if (timezone == null || timezone.isBlank()) return ZoneId.of("UTC");

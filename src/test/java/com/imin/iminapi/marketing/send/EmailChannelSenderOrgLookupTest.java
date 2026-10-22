@@ -65,7 +65,7 @@ class EmailChannelSenderOrgLookupTest {
                 mock(ConsumerRepository.class), mock(SendGateService.class), new MarketingGuardProperties(),
                 mock(SendPathGuard.class), mock(AddressSourceLines.class),
                 new AudiencePlanAccess(new AudiencePlanProperties()),
-                events, transactionManager());
+                events, transactionManager(), mock(com.imin.iminapi.marketing.stock.StockAlertSendGuard.class));
         // The per-batch status re-read finds the campaign still on its way out.
         when(campaigns.findStatusById(any())).thenReturn(Optional.of("sending"));
         when(organizations.findById(any())).thenThrow(new IllegalStateException("db hiccup"));

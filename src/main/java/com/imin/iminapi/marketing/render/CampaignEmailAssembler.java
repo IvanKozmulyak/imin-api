@@ -3,6 +3,7 @@ package com.imin.iminapi.marketing.render;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
+import com.imin.iminapi.marketing.stock.StockFactTokens;
 import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.template.TemplateHeader;
 import com.imin.iminapi.model.Event;
@@ -16,6 +17,7 @@ import org.springframework.web.util.HtmlUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -46,10 +48,22 @@ public class CampaignEmailAssembler {
      * event's poster and buyer URL, the AI marker and the language.
      *
      * @param eventUnavailable the campaign links an event that could not be loaded for this org
+     * @param stockTokens      a stock alert's token values ({@link StockFactTokens#values}); null for other campaigns
      */
     public record Context(String campaignId, ResolvedTemplate template, String brandName, OrganizerIdentity sender,
                           String fromName, String fromHeader, boolean eventUnavailable, String posterUrl,
-                          String ticketsUrl, String eventUrl, AiEmailDisclosure ai, String locale) {}
+                          String ticketsUrl, String eventUrl, AiEmailDisclosure ai, String locale,
+                          Map<String, String> stockTokens) {
+        public Context {
+            stockTokens = stockTokens == null ? null : Map.copyOf(stockTokens);
+        }
+
+        /** This context with a stock alert's token values: the frozen facts at send, fresh ones for a preview. */
+        public Context withStockTokens(Map<String, String> values) {
+            return new Context(campaignId, template, brandName, sender, fromName, fromHeader, eventUnavailable,
+                    posterUrl, ticketsUrl, eventUrl, ai, locale, values);
+        }
+    }
 
     /** One recipient's email: subject and preheader with merge tags filled, and the rendered bodies. */
     public record Email(String subject, String preheader, String html, String text) {}
@@ -88,7 +102,7 @@ public class CampaignEmailAssembler {
         String eventUrl = ticketsUrl != null ? ticketsUrl : props.getBuyerSiteBaseUrl();
         return new Context(c.getId().toString(), template, brandName, OrganizerIdentity.of(org),
                 props.displayName(brandName), props.fromHeader(brandName), c.getEventId() != null && event == null,
-                posterUrl, ticketsUrl, eventUrl, c.aiDisclosure(), locale);
+                posterUrl, ticketsUrl, eventUrl, c.aiDisclosure(), locale, null);
     }
 
     /**
@@ -100,9 +114,11 @@ public class CampaignEmailAssembler {
      */
     public Email render(Context ctx, String subject, String preheader, String bodyMd, String firstName,
                         String unsubscribeUrl, CampaignEmailRenderer.AddressSource addressSource) {
-        String mergedSubject = MergeTags.apply(subject, firstName, ctx.eventUrl());
-        String mergedBody = MergeTags.apply(bodyMd, firstName, ctx.eventUrl());
-        String mergedPreheader = MergeTags.apply(preheader, firstName, ctx.eventUrl());
+        // Stock tokens after the merge tags, so a tier name is never read as a merge tag.
+        String mergedSubject = StockFactTokens.apply(MergeTags.apply(subject, firstName, ctx.eventUrl()), ctx.stockTokens());
+        String mergedBody = StockFactTokens.apply(MergeTags.apply(bodyMd, firstName, ctx.eventUrl()), ctx.stockTokens());
+        String mergedPreheader = StockFactTokens.apply(MergeTags.apply(preheader, firstName, ctx.eventUrl()),
+                ctx.stockTokens());
         CampaignEmailRenderer.Rendered rendered = renderer.render(
                 mergedSubject, mergedPreheader, mergedBody,
                 ctx.campaignId(), "email", unsubscribeUrl,

@@ -311,6 +311,16 @@ imin:
       # hours is skipped with skip_reason='frequency_capped'.
       # 2 days per spec §8/§10. Raising it skips MORE people (fewer sends).
       frequency-floor-hours: ${IMIN_MARKETING_FREQUENCY_FLOOR_HOURS:48}
+    stock-alerts:
+      # "Last tickets" / "price goes up" alerts on stored tier facts, re-checked per drive and batch.
+      # Off: StockAlertEvaluator prepares nothing and the settings/review/dismiss endpoints answer 404.
+      enabled: ${IMIN_STOCK_ALERTS_ENABLED:false}
+      # Pause between two evaluator passes (ShedLock stock_alert_evaluator).
+      evaluator-delay-ms: 300000
+      # An automatic alert is scheduled at least this far ahead, so the organizer can still stop it.
+      auto-min-lead-minutes: 30
+      # An automatic "price goes up" alert goes out at least this long before the change, else it waits for a click.
+      price-up-min-margin-hours: 2
     sms:
       # INTENDED first-release SMS policy (spec §8/§10). NOTE: imin does not send SMS —
       # CampaignRepository.claimDue filters WHERE channel='email' and no SMS provider/client

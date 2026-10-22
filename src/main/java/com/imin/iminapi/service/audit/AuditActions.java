@@ -94,6 +94,16 @@ public final class AuditActions {
     /** The org's Meta pixel connection was removed. */
     public static final String META_PIXEL_DISCONNECTED = "META_PIXEL_DISCONNECTED";
 
+    // ---- Stock alerts (V206) ----
+    /** An event's stock-alert switches, threshold or lead time changed; ADMIN or OWNER only. */
+    public static final String STOCK_ALERT_SETTINGS_CHANGED = "STOCK_ALERT_SETTINGS_CHANGED";
+    /** An admin turned on automatic sending of stock alerts for an event, after an explicit confirm. */
+    public static final String STOCK_ALERT_AUTO_ON = "STOCK_ALERT_AUTO_ON";
+    /** Automatic sending of stock alerts was turned off for an event. */
+    public static final String STOCK_ALERT_AUTO_OFF = "STOCK_ALERT_AUTO_OFF";
+    /** IMIN scheduled a stock alert on its own; the actor is the admin who turned automatic sending on. */
+    public static final String STOCK_ALERT_AUTO_SCHEDULED = "STOCK_ALERT_AUTO_SCHEDULED";
+
     // ---- Crew links (V199) ----
     public static final String REFERRAL_PERK_SAVED = "REFERRAL_PERK_SAVED";
     public static final String REFERRAL_PERK_STOPPED = "REFERRAL_PERK_STOPPED";

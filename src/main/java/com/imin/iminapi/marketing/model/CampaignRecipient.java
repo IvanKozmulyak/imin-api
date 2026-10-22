@@ -18,6 +18,8 @@ public class CampaignRecipient {
 
     /** skip_reason of a row the campaign was canceled before it could send. */
     public static final String SKIP_CAMPAIGN_CANCELED = "campaign_canceled";
+    /** skip_reason of a stock-alert row left queued when the stock fact it quoted stopped being true. */
+    public static final String SKIP_FACT_CHANGED = "fact_changed";
     /** skip_reason of an address that cannot be mailed (malformed or a reserved test domain); set by the send gate. */
     public static final String SKIP_INVALID_ADDRESS = "invalid_address";
     /** skip_reason of a row whose batch outcome stayed unknown past the provider's 24 h replay window; never re-sent. */

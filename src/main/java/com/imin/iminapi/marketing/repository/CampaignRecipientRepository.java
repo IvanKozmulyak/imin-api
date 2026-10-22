@@ -338,6 +338,24 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                                @Param("membershipIds") java.util.Collection<UUID> membershipIds);
 
     /**
+     * Rows of {@code [membershipId, count]}: rows of this org's stock-alert campaigns about this event that left the
+     * queue (bounced included), so one person gets at most one stock alert per night.
+     */
+    @Query("""
+            select r.membershipId, count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and c.eventId = :eventId
+               and c.origin = 'stock_alert'
+               and r.membershipId in :membershipIds
+               and r.status in ('sent','delivered','opened','clicked','bounced','complained','unsubscribed')
+             group by r.membershipId
+            """)
+    List<Object[]> countStockAlertSendsByMembership(@Param("orgId") UUID orgId,
+                                                    @Param("eventId") UUID eventId,
+                                                    @Param("membershipIds") java.util.Collection<UUID> membershipIds);
+
+    /**
      * Rows of {@code [membershipId, sends]}: EMAILS that left since {@code since}, per given member —
      * feeds {@code SendPathGuard}'s monthly cap. Joins {@code Campaign} (unlike the other overload
      * of this name) so {@code c.channel = 'email'} can scope it to the email caps only.

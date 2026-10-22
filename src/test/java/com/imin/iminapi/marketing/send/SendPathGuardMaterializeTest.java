@@ -332,4 +332,72 @@ class SendPathGuardMaterializeTest {
 
         assertThat(rowOf(c, objects).getStatus()).isEqualTo("pending");
     }
+
+    // ---- stock alerts ----
+
+    private Campaign stockAlert(UUID orgId, UUID eventId, UUID segmentId) {
+        Campaign c = campaign(orgId, eventId, SendPathGuard.STOCK_ALERT_ORIGIN, segmentId);
+        // The flag stays off: a stock alert skips holders and needs consent whatever its campaign says.
+        c.setSkipTicketHolders(false);
+        return campaigns.save(c);
+    }
+
+    @Test
+    void stockAlert_isConsentGated_evenWithTheAllCampaignsGateOff() {
+        UUID orgId = newOrgId();
+        // Excluded member first, so a guard that stops after the first member cannot pass.
+        Membership legacy = checkoutConsent(member(orgId), null);
+        Membership proven = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        Campaign c = stockAlert(orgId, UUID.randomUUID(), segmentOf(orgId, List.of(legacy, proven)));
+
+        materializer.materialize(c);
+
+        assertThat(rowOf(c, legacy).getStatus()).isEqualTo("skipped");
+        assertThat(rowOf(c, legacy).getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
+        assertThat(rowOf(c, proven).getStatus()).isEqualTo("pending");
+        assertThat(reload(c).getExclusionSummary()).isEqualTo("{\"consent_gate\":1}");
+    }
+
+    @Test
+    void stockAlert_skipsSomeoneWhoAlreadyGotAStockAlertForThisNight() {
+        UUID orgId = newOrgId();
+        UUID eventId = UUID.randomUUID();
+        Membership alerted = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        Membership fresh = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        // An earlier stock alert about the same night left the queue for `alerted` (bounced still counts).
+        Campaign earlier = stockAlert(orgId, eventId, null);
+        CampaignRecipient row = new CampaignRecipient();
+        row.setId(UUID.randomUUID());
+        row.setCampaignId(earlier.getId());
+        row.setMembershipId(alerted.getMembershipId());
+        row.setEmail(fx.email("alerted"));
+        row.setStatus("bounced");
+        row.setLastEventAt(Instant.now().minus(30, ChronoUnit.DAYS));
+        recipients.save(row);
+        Campaign c = stockAlert(orgId, eventId, segmentOf(orgId, List.of(alerted, fresh)));
+
+        materializer.materialize(c);
+
+        assertThat(rowOf(c, alerted).getSkipReason()).isEqualTo(SendPathGuard.STOCK_ALERT_CAP);
+        assertThat(rowOf(c, fresh).getStatus()).isEqualTo("pending");
+        assertThat(reload(c).getExclusionSummary()).isEqualTo("{\"stock_alert_cap\":1}");
+    }
+
+    @Test
+    void stockAlert_skipsALiveTicketHolder_withoutTheSkipHoldersFlag() {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        Event event = fx.event(org, fx.owner(org), EventStatus.LIVE, Instant.now().plus(7, ChronoUnit.DAYS));
+        Membership holder = checkoutConsent(member(org.getId()), "checkout-org-named-2026-09");
+        Membership other = checkoutConsent(member(org.getId()), "checkout-org-named-2026-09");
+        String holderEmail = consumers.findAllByConsumerIdIn(List.of(holder.getConsumerId())).get(0).getNormalizedEmail();
+        fx.ticket(fx.order(event, holderEmail), "issued");
+        Campaign c = stockAlert(org.getId(), event.getId(), segmentOf(org.getId(), List.of(holder, other)));
+
+        materializer.materialize(c);
+
+        assertThat(rowOf(c, holder).getSkipReason()).isEqualTo(SendPathGuard.HAS_TICKET);
+        assertThat(rowOf(c, other).getStatus()).isEqualTo("pending");
+        assertThat(reload(c).getExclusionSummary()).isEqualTo("{\"has_ticket\":1}");
+    }
 }

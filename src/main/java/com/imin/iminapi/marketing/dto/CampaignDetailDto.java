@@ -66,12 +66,23 @@ public record CampaignDetailDto(
          */
         String sendHold,
         /** With an event: people holding a live ticket for it are left out (skip reason {@code has_ticket}). */
-        boolean skipTicketHolders
+        boolean skipTicketHolders,
+        /** Stock alerts only: the facts every email quoted (frozen at the first drive), else those read for the draft. */
+        StockFactsDto stockFacts
 ) {
     public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName,
                                          String segmentPrebuiltKey, String eventTimezone,
                                          String triggerType, String failureReason, String eventName, Long revMinor,
                                          java.util.Map<String, Long> skipReasons, String sendHold) {
+        return from(c, stats, segmentName, segmentPrebuiltKey, eventTimezone, triggerType, failureReason, eventName,
+                revMinor, skipReasons, sendHold, null);
+    }
+
+    public static CampaignDetailDto from(Campaign c, CampaignStatsDto stats, String segmentName,
+                                         String segmentPrebuiltKey, String eventTimezone,
+                                         String triggerType, String failureReason, String eventName, Long revMinor,
+                                         java.util.Map<String, Long> skipReasons, String sendHold,
+                                         StockFactsDto stockFacts) {
         return new CampaignDetailDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
@@ -80,6 +91,6 @@ public record CampaignDetailDto(
                 c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
                 c.getCreatedAt(), c.getUpdatedAt(), stats, segmentName, segmentPrebuiltKey, eventTimezone, triggerType,
                 c.getAttempts(), failureReason, eventName, revMinor, skipReasons, c.getLocale(), sendHold,
-                c.isSkipTicketHolders());
+                c.isSkipTicketHolders(), stockFacts);
     }
 }

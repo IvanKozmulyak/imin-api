@@ -20,13 +20,15 @@ public record PreviewAudienceResponse(int sendable, Excluded excluded) {
             int consentGate,
             // An address on file that cannot be mailed: malformed or on a reserved test domain (email only).
             int invalidAddress,
-            /** Holds a live ticket for the campaign's event (campaigns with {@code skipTicketHolders}). */
-            int hasTicket
+            /** Holds a live ticket for the campaign's event (campaigns with {@code skipTicketHolders}, stock alerts). */
+            int hasTicket,
+            /** Already got a stock alert about the campaign's event (stock alerts only). */
+            int stockAlertCap
     ) {
         /** SendGate counts alone; the send-path counts are 0 because no send-path guard ran. */
         public Excluded(int noBasis, int unsubscribed, int marketingSuppressed, int deliverabilitySuppressed,
                         int noPhone, int noEmail) {
-            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail, 0, 0, 0, 0, 0, 0);
+            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail, 0, 0, 0, 0, 0, 0, 0);
         }
 
         /** SendGate counts and the send-path skips, with no invalid address or ticket holder counted. */
@@ -34,7 +36,7 @@ public record PreviewAudienceResponse(int sendable, Excluded excluded) {
                         int noPhone, int noEmail, int experimentHoldout, int eventCap, int monthlyCap,
                         int consentGate) {
             this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail,
-                    experimentHoldout, eventCap, monthlyCap, consentGate, 0, 0);
+                    experimentHoldout, eventCap, monthlyCap, consentGate, 0, 0, 0);
         }
 
         /** Every count but the ticket holders, for callers that predate them. */
@@ -42,7 +44,15 @@ public record PreviewAudienceResponse(int sendable, Excluded excluded) {
                         int noPhone, int noEmail, int experimentHoldout, int eventCap, int monthlyCap,
                         int consentGate, int invalidAddress) {
             this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail,
-                    experimentHoldout, eventCap, monthlyCap, consentGate, invalidAddress, 0);
+                    experimentHoldout, eventCap, monthlyCap, consentGate, invalidAddress, 0, 0);
+        }
+
+        /** Every count but the stock-alert cap, for callers that predate it. */
+        public Excluded(int noBasis, int unsubscribed, int marketingSuppressed, int deliverabilitySuppressed,
+                        int noPhone, int noEmail, int experimentHoldout, int eventCap, int monthlyCap,
+                        int consentGate, int invalidAddress, int hasTicket) {
+            this(noBasis, unsubscribed, marketingSuppressed, deliverabilitySuppressed, noPhone, noEmail,
+                    experimentHoldout, eventCap, monthlyCap, consentGate, invalidAddress, hasTicket, 0);
         }
     }
 }

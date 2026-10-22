@@ -27,7 +27,8 @@ import java.util.UUID;
  * already holding a live ticket for it (only with {@code skipTicketHolders}) and the per-event and 30-day send
  * caps; for an audience-plan campaign, a Momentum campaign sending to a plan snapshot, or every campaign while
  * {@code consent-gate-all-campaigns} is on, ConsentGate as well. One reason per member, in that order, so a
- * held-out holder stays in its experiment arm.
+ * held-out holder stays in its experiment arm. A stock alert always skips holders and earlier stock-alert recipients
+ * and is always ConsentGate-gated.
  */
 @Service
 public class SendPathGuard {
@@ -37,6 +38,9 @@ public class SendPathGuard {
     public static final String MONTHLY_CAP = "monthly_cap";
     public static final String CONSENT_GATE = "consent_gate";
     public static final String HAS_TICKET = "has_ticket";
+    public static final String STOCK_ALERT_CAP = "stock_alert_cap";
+    /** Campaign origin of a stock alert's draft. */
+    public static final String STOCK_ALERT_ORIGIN = "stock_alert";
     static final String MOMENTUM_ORIGIN = "momentum";
 
     /** Emails about one event at or above which a person gets no more about it. */
@@ -69,7 +73,9 @@ public class SendPathGuard {
     /** Skip reason per member that must not be emailed by this campaign now; members absent may be sent. */
     public Map<UUID, String> skipReasons(Campaign c, Collection<UUID> membershipIds, Instant now) {
         boolean aboutEvent = c.getEventId() != null;
+        boolean stockAlert = STOCK_ALERT_ORIGIN.equals(c.getOrigin());
         boolean consentGated = AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())
+                || stockAlert
                 || Boolean.TRUE.equals(props.getConsentGateAllCampaigns())
                 || sendsToPlanSnapshot(c);
         if ((!aboutEvent && !consentGated) || membershipIds == null) return Map.of();
@@ -80,7 +86,8 @@ public class SendPathGuard {
         Set<UUID> holders = new HashSet<>();
         Map<UUID, Long> eventSends = new HashMap<>();
         Map<UUID, Long> recentSends = new HashMap<>();
-        if (aboutEvent && c.isSkipTicketHolders()) {
+        Map<UUID, Long> stockAlertSends = new HashMap<>();
+        if (aboutEvent && (c.isSkipTicketHolders() || stockAlert)) {
             // Matched by order email to the member's address: a live ticket of a real order for this event.
             for (Object id : fanFeatures.findMembershipIdsHoldingEventTicket(c.getOrgId(), c.getEventId())) {
                 holders.add(ConsentGate.uuid(id));
@@ -93,6 +100,10 @@ public class SendPathGuard {
                 heldOut.addAll(assignments.findHeldOut(c.getOrgId(), c.getEventId(), chunk));
                 collect(recipients.countEventSendsByMembership(c.getOrgId(), c.getEventId(), chunk), eventSends);
                 collect(recipients.countRecentSendsByMembership(chunk, monthSince), recentSends);
+                if (stockAlert) {
+                    collect(recipients.countStockAlertSendsByMembership(c.getOrgId(), c.getEventId(), chunk),
+                            stockAlertSends);
+                }
             }
         }
         Map<UUID, Optional<String>> gate = consentGated ? consentGate.reasons(c.getOrgId(), ids) : Map.of();
@@ -102,6 +113,7 @@ public class SendPathGuard {
             String reason = null;
             if (heldOut.contains(id)) reason = EXPERIMENT_HOLDOUT;
             else if (holders.contains(id)) reason = HAS_TICKET;
+            else if (stockAlertSends.getOrDefault(id, 0L) >= 1) reason = STOCK_ALERT_CAP;
             else if (eventSends.getOrDefault(id, 0L) >= EVENT_CAP_SENDS) reason = EVENT_CAP;
             else if (recentSends.getOrDefault(id, 0L) >= MONTHLY_CAP_SENDS) reason = MONTHLY_CAP;
             // A member ConsentGate did not return (another org, or gone) is not mailable either.

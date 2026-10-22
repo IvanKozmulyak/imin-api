@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignFailureReason;
@@ -8,6 +9,7 @@ import com.imin.iminapi.marketing.model.RecipientStatuses;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignEnded;
+import com.imin.iminapi.marketing.stock.StockAlertSendGuard;
 import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,12 +59,14 @@ public class CampaignSendUnit {
     private final Clock clock;
     /** Read per pause, so the pacing follows imin.marketing.batch-pause. */
     private final MarketingEmailProperties emailProps;
+    /** Stock alerts only: the quoted facts are re-checked before the drive and before every batch. */
+    private final StockAlertSendGuard stockGuard;
 
     public CampaignSendUnit(CampaignRepository campaigns, CampaignRecipientRepository recipients,
                             RecipientMaterializer materializer,
                             EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
                             PlatformTransactionManager txManager, AudiencePlanAccess audiencePlanAccess,
-                            Clock clock, MarketingEmailProperties emailProps) {
+                            Clock clock, MarketingEmailProperties emailProps, StockAlertSendGuard stockGuard) {
         this.campaigns = campaigns;
         this.recipients = recipients;
         this.materializer = materializer;
@@ -71,6 +75,7 @@ public class CampaignSendUnit {
         this.audiencePlanAccess = audiencePlanAccess;
         this.clock = clock;
         this.emailProps = emailProps;
+        this.stockGuard = stockGuard;
         this.newTx = new TransactionTemplate(txManager);
         this.newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -91,13 +96,20 @@ public class CampaignSendUnit {
             c.setStatus("sending");
             c.setUpdatedAt(now);
         }
+        boolean stockAlert = SendPathGuard.STOCK_ALERT_ORIGIN.equals(c.getOrigin());
+        // A stock alert whose fact stopped being true is withdrawn (canceled) before anyone is queued.
+        if (stockAlert && !stockGuard.beforeDrive(c)) {
+            log.warn("[send-unit] stock alert campaign {} withdrawn before its drive", c.getId());
+            return;
+        }
         // ponytail: materialize runs whole, outside the run budget, holding the audience in memory; ~0.6 s per 5,000
         // members, ids queried 10,000 at a time, so the ceiling is time and heap in one transaction, not bind limits.
         materializer.materialize(c);
         // Drive batches until nothing claimable remains. Bounded loop; each call commits
         // its own batch and heartbeats.
         int guard = 0;
-        while (sendsAllowed(c) && emailSender.sendNextBatch(c) && guard++ < 10_000) {
+        while (sendsAllowed(c) && (!stockAlert || stockGuard.beforeBatch(c))
+                && emailSender.sendNextBatch(c) && guard++ < 10_000) {
             if (!clock.instant().isBefore(deadline)) {
                 // Run budget spent: stays 'sending' with rows queued; the stale reclaim resumes it, like the daily-cap stop.
                 log.info("[send-unit] campaign {} paused: dispatcher run budget spent", c.getId());
