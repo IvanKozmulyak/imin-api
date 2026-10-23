@@ -12,14 +12,17 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -91,13 +94,7 @@ class CheckoutReminderDeliveryTest {
             default -> throw new IllegalArgumentException(variant);
         };
 
-        String svixId = "svix_" + UUID.randomUUID();
-        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
-        mvc.perform(post("/api/v1/public/webhooks/resend")
-                        .header("svix-id", svixId).header("svix-timestamp", ts)
-                        .header("svix-signature", sign(svixId, ts, body))
-                        .contentType("application/json").content(body))
-                .andExpect(status().isOk());
+        deliver("svix_" + UUID.randomUUID(), body).andExpect(status().isOk());
 
         boolean permanent = variant.equals("permanentBounce");
         boolean complaint = variant.equals("complaint");
@@ -109,6 +106,34 @@ class CheckoutReminderDeliveryTest {
                 + " AND membership_id = ?", org.id(), member.getMembershipId())).isEqualTo(complaint ? 1 : 0);
         assertThat(rows.load(reminderId).getComplainedAt() != null).isEqualTo(complaint);
         assertThat(rows.load(reminderId).getDeliveredAt() != null).isEqualTo(variant.equals("delivered"));
+    }
+
+    @Test
+    void aComplaintWhoseOptOutWriteFailsIsRetriedUntilRecorded() throws Exception {
+        String body = event("email.complained", "");
+        String svixId = "svix_" + UUID.randomUUID();
+
+        try (PgFaults.Fault ignored = PgFaults.failWrites(jdbc, "marketing_optouts", "org_id", org.id())) {
+            deliver(svixId, body).andExpect(status().isInternalServerError());
+        }
+        assertThat(optOuts()).isZero();
+        assertThat(rows.load(reminderId).getComplainedAt()).isNull();
+
+        deliver(svixId, body).andExpect(status().isOk());
+        assertThat(optOuts()).isEqualTo(1);
+        assertThat(rows.load(reminderId).getComplainedAt()).isNotNull();
+    }
+
+    private ResultActions deliver(String svixId, String body) throws Exception {
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        return mvc.perform(post("/api/v1/public/webhooks/resend")
+                .header("svix-id", svixId).header("svix-timestamp", ts)
+                .header("svix-signature", sign(svixId, ts, body))
+                .contentType("application/json").content(body));
+    }
+
+    private int optOuts() {
+        return count("SELECT count(*) FROM marketing_optouts WHERE email_normalized = ? AND org_id = ?", email, org.id());
     }
 
     private String event(String type, String extra) {

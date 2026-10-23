@@ -21,8 +21,8 @@ import java.util.UUID;
 /**
  * Resend delivery events for reminder emails. A permanent bounce lists the address as undeliverable
  * for everyone; a spam complaint is this person objecting to this organizer, so it writes the sticky
- * opt-out and, when they are in the organizer's audience, a marketing suppression. A transient
- * bounce writes nothing shared.
+ * opt-out and, when they are in the organizer's audience, a marketing suppression; a failed opt-out
+ * write throws, so the webhook answers 500 and Resend retries. A transient bounce writes nothing shared.
  */
 @Service
 public class CheckoutReminderDeliveryProjector {
@@ -63,7 +63,7 @@ public class CheckoutReminderDeliveryProjector {
             }
             case ProviderEvent.TYPE_COMPLAINED -> {
                 if (email != null && !email.isBlank()) {
-                    service.recordStickyOptOut(email, r.getOrgId(), "complaint");
+                    service.recordStickyOptOutOrFail(email, r.getOrgId(), "complaint");
                     memberIn(r.getOrgId(), email).ifPresent(membershipId -> suppressions.addMarketingIfAbsent(
                             r.getOrgId(), membershipId, "spam",
                             new AuthPrincipal(null, r.getOrgId(), UserRole.MEMBER, null)));

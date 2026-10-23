@@ -291,7 +291,7 @@ public class CheckoutReminderService {
     public void unsubscribe(UUID reminderId) {
         CheckoutReminder r = reminders.findById(reminderId).orElse(null);
         if (r == null || r.getEmailNormalized() == null) return;
-        recordStickyOptOutOrFail(r.getEmailNormalized(), r.getOrgId());
+        recordStickyOptOutOrFail(r.getEmailNormalized(), r.getOrgId(), "one_click");
         consumers.findByNormalizedEmail(r.getEmailNormalized())
                 .flatMap(c -> memberships.findByOrgIdAndConsumerId(r.getOrgId(), c.getConsumerId()))
                 .ifPresent(m -> consentService.unsubscribe(r.getOrgId(), m.getMembershipId(), "one_click",
@@ -300,27 +300,12 @@ public class CheckoutReminderService {
     }
 
     /**
-     * The sticky {@code marketing_optouts} row, written in its own transaction; a lost race is the row
-     * we wanted, and any other failure is logged so the caller's opt-out still completes.
+     * The sticky {@code marketing_optouts} row, written in its own transaction; a lost race is the row we
+     * wanted, anything else throws so the caller answers 500 and the sender retries.
      */
-    public void recordStickyOptOut(String email, UUID orgId, String source) {
+    public void recordStickyOptOutOrFail(String email, UUID orgId, String source) {
         try {
             optOutRecorder.record(email, orgId, "email", source);
-        } catch (DataIntegrityViolationException violation) {
-            if (!optOutRecorder.exists(email, orgId, "email")) {
-                log.error("[checkout-reminder] sticky opt-out write failed (not a duplicate) for org {}: {}",
-                        orgId, violation.getClass().getSimpleName());
-            }
-        } catch (RuntimeException e) {
-            log.error("[checkout-reminder] sticky opt-out write failed for org {}: {}", orgId,
-                    e.getClass().getSimpleName());
-        }
-    }
-
-    /** The sticky row for a one-click unsubscribe; a lost race is the row we wanted, anything else throws. */
-    private void recordStickyOptOutOrFail(String email, UUID orgId) {
-        try {
-            optOutRecorder.record(email, orgId, "email", "one_click");
             return;
         } catch (DataIntegrityViolationException violation) {
             boolean duplicate;
@@ -335,12 +320,12 @@ public class CheckoutReminderService {
             logStickyFailure(orgId, e);
         }
         throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
-                "The unsubscribe was not recorded. Try again.");
+                "The opt-out was not recorded. Try again.");
     }
 
     private static void logStickyFailure(UUID orgId, RuntimeException e) {
         // No throwable: its SQL detail carries the address past the redaction.
-        log.error("[checkout-reminder] one-click opt-out not recorded for org {}: {}: {}", orgId,
+        log.error("[checkout-reminder] sticky opt-out not recorded for org {}: {}: {}", orgId,
                 e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
     }
 

@@ -25,6 +25,7 @@ import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.util.Times;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -151,6 +152,14 @@ class CheckoutReminderErasureTest {
             }
             default -> throw new IllegalArgumentException(variant);
         }
+    }
+
+    @Test
+    void aMemberCannotEraseAnAddress() throws Exception {
+        AuthPrincipal member = new AuthPrincipal(org.owner().getId(), org.id(), UserRole.MEMBER, UUID.randomUUID());
+        eraseAddress(member).andExpect(status().isForbidden());
+        assertThat(rows.load(ours).getEmailNormalized()).isEqualTo(email);
+        assertThat(erased.existsForOrg(org.id(), email)).isFalse();
     }
 
     /** The address in another case than stored, as an organizer would type it from a request. */
