@@ -14,6 +14,7 @@ import com.imin.iminapi.marketing.webhook.ResendWebhookProperties;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -486,5 +487,40 @@ class ResendWebhookControllerTest {
         // Filed under the campaign, so the breaker's per-campaign and org counts include it.
         assertThat(jdbc.queryForObject("select campaign_id from provider_events where provider_event_id = ?",
                 UUID.class, svixId)).isEqualTo(c.getId());
+    }
+
+    /** A complaint whose opt-out could not be written is not acknowledged: nothing is claimed and Resend's retry records it. */
+    @Test
+    void aTaggedComplaintWhoseOptOutWriteFailsIsRetriedUntilRecorded() throws Exception {
+        UUID orgId = fx.org().getId();
+        orgIds.add(orgId);
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("purged rows");
+        c.setStatus("sent");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaignRepo.save(c);
+        String email = fx.email("complainer");            // no consumer, no membership: the opt-out row is the whole record
+        String svixId = "svix_" + UUID.randomUUID();
+        String body = taggedBody("email.complained", "msg_" + UUID.randomUUID(), email, c.getId(),
+                Instant.now().minus(2, ChronoUnit.HOURS));
+
+        try (PgFaults.Fault ignored = PgFaults.failWrites(jdbc, "marketing_optouts", "org_id", orgId)) {
+            mvc.perform(signed(svixId, body)).andExpect(status().isInternalServerError());
+        }
+        assertThat(optOuts(email, orgId)).isZero();
+        assertThat(claimed(svixId)).isZero();
+
+        mvc.perform(signed(svixId, body)).andExpect(status().isOk());
+        assertThat(optOuts(email, orgId)).isEqualTo(1);
+        assertThat(claimed(svixId)).isEqualTo(1);
+    }
+
+    private int optOuts(String email, UUID orgId) {
+        return jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ? and org_id = ?",
+                Integer.class, email, orgId);
     }
 }

@@ -3,6 +3,7 @@ package com.imin.iminapi.checkoutreminder.service;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.EmailNormalizer;
+import com.imin.iminapi.audience.service.StickyOptOutWriter;
 import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
 import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
@@ -31,16 +32,16 @@ public class CheckoutReminderDeliveryProjector {
 
     private final CheckoutReminderRepository reminders;
     private final SuppressionService suppressions;
-    private final CheckoutReminderService service;
+    private final StickyOptOutWriter stickyOptOuts;
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
 
     public CheckoutReminderDeliveryProjector(CheckoutReminderRepository reminders, SuppressionService suppressions,
-                                             CheckoutReminderService service, ConsumerRepository consumers,
+                                             StickyOptOutWriter stickyOptOuts, ConsumerRepository consumers,
                                              MembershipRepository memberships) {
         this.reminders = reminders;
         this.suppressions = suppressions;
-        this.service = service;
+        this.stickyOptOuts = stickyOptOuts;
         this.consumers = consumers;
         this.memberships = memberships;
     }
@@ -63,7 +64,7 @@ public class CheckoutReminderDeliveryProjector {
             }
             case ProviderEvent.TYPE_COMPLAINED -> {
                 if (email != null && !email.isBlank()) {
-                    service.recordStickyOptOutOrFail(email, r.getOrgId(), "complaint");
+                    stickyOptOuts.recordOrFail(email, r.getOrgId(), "complaint");
                     memberIn(r.getOrgId(), email).ifPresent(membershipId -> suppressions.addMarketingIfAbsent(
                             r.getOrgId(), membershipId, "spam",
                             new AuthPrincipal(null, r.getOrgId(), UserRole.MEMBER, null)));

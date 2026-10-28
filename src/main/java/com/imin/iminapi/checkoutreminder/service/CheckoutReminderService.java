@@ -4,7 +4,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
-import com.imin.iminapi.audience.service.MarketingOptOutRecorder;
+import com.imin.iminapi.audience.service.StickyOptOutWriter;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.dto.CheckoutReminderPreviewDto;
 import com.imin.iminapi.checkoutreminder.dto.CheckoutReminderSummaryDto;
@@ -37,10 +37,6 @@ import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.service.analytics.NetOrderRevenue;
 import com.imin.iminapi.service.event.TierAvailability;
-import com.imin.iminapi.util.LogSafe;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -66,7 +62,6 @@ import java.util.UUID;
 @Service
 public class CheckoutReminderService {
 
-    private static final Logger log = LoggerFactory.getLogger(CheckoutReminderService.class);
     static final int WINDOW_DAYS = 30;
     static final int RECENT_ROWS = 20;
     private static final int MAX_PREVIEW_QTY = 10;
@@ -93,7 +88,7 @@ public class CheckoutReminderService {
     private final CheckoutReminderEmail email;
     private final CampaignEmailProvider provider;
     private final MarketingEmailProperties emailProps;
-    private final MarketingOptOutRecorder optOutRecorder;
+    private final StickyOptOutWriter stickyOptOuts;
     private final ConsentService consentService;
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
@@ -105,7 +100,7 @@ public class CheckoutReminderService {
                                    UserRepository users, EventRepository events, TicketTierRepository tiers,
                                    ModerationHoldRepository holds, OrderRepository orders,
                                    CheckoutReminderEmail email, CampaignEmailProvider provider,
-                                   MarketingEmailProperties emailProps, MarketingOptOutRecorder optOutRecorder,
+                                   MarketingEmailProperties emailProps, StickyOptOutWriter stickyOptOuts,
                                    ConsentService consentService, ConsumerRepository consumers,
                                    MembershipRepository memberships, AuditLogger audit, Clock clock) {
         this.props = props;
@@ -120,7 +115,7 @@ public class CheckoutReminderService {
         this.email = email;
         this.provider = provider;
         this.emailProps = emailProps;
-        this.optOutRecorder = optOutRecorder;
+        this.stickyOptOuts = stickyOptOuts;
         this.consentService = consentService;
         this.consumers = consumers;
         this.memberships = memberships;
@@ -291,42 +286,12 @@ public class CheckoutReminderService {
     public void unsubscribe(UUID reminderId) {
         CheckoutReminder r = reminders.findById(reminderId).orElse(null);
         if (r == null || r.getEmailNormalized() == null) return;
-        recordStickyOptOutOrFail(r.getEmailNormalized(), r.getOrgId(), "one_click");
+        stickyOptOuts.recordOrFail(r.getEmailNormalized(), r.getOrgId(), "one_click");
         consumers.findByNormalizedEmail(r.getEmailNormalized())
                 .flatMap(c -> memberships.findByOrgIdAndConsumerId(r.getOrgId(), c.getConsumerId()))
                 .ifPresent(m -> consentService.unsubscribe(r.getOrgId(), m.getMembershipId(), "one_click",
                         "email", ConsentOrigin.DATA_SUBJECT, null));
         reminders.markUnsubscribed(reminderId, clock.instant());
-    }
-
-    /**
-     * The sticky {@code marketing_optouts} row, written in its own transaction; a lost race is the row we
-     * wanted, anything else throws so the caller answers 500 and the sender retries.
-     */
-    public void recordStickyOptOutOrFail(String email, UUID orgId, String source) {
-        try {
-            optOutRecorder.record(email, orgId, "email", source);
-            return;
-        } catch (DataIntegrityViolationException violation) {
-            boolean duplicate;
-            try {
-                duplicate = optOutRecorder.exists(email, orgId, "email");
-            } catch (RuntimeException readFailure) {
-                duplicate = false;
-            }
-            if (duplicate) return;
-            logStickyFailure(orgId, violation);
-        } catch (RuntimeException e) {
-            logStickyFailure(orgId, e);
-        }
-        throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
-                "The opt-out was not recorded. Try again.");
-    }
-
-    private static void logStickyFailure(UUID orgId, RuntimeException e) {
-        // No throwable: its SQL detail carries the address past the redaction.
-        log.error("[checkout-reminder] sticky opt-out not recorded for org {}: {}: {}", orgId,
-                e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────

@@ -35,7 +35,9 @@ import java.util.UUID;
  * secrets (never silently accept a forgery), 503 without claiming the event when it is
  * tagged with a campaign whose recipient row for that address is still queued and the
  * event is under {@code recipient-grace} old (its batch has not committed yet; Svix
- * retries), and 200 when the message id can't be resolved to a recipient. A tagged
+ * retries), 500, with nothing claimed, when projection fails (e.g. a complaint's opt-out
+ * could not be recorded), so Svix retries, and 200 when the message id can't be resolved
+ * to a recipient. A tagged
  * event whose id resolves no row is matched by campaign and address among the rows
  * that left. A message id with no campaign recipient may be a checkout reminder's,
  * projected by {@link CheckoutReminderDeliveryProjector}; anything else unmatched

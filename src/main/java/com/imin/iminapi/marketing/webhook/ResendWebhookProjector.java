@@ -3,7 +3,7 @@ package com.imin.iminapi.marketing.webhook;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
-import com.imin.iminapi.audience.service.MarketingOptOutRecorder;
+import com.imin.iminapi.audience.service.StickyOptOutWriter;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentChanged;
 import com.imin.iminapi.audience.service.EmailNormalizer;
@@ -60,7 +60,7 @@ public class ResendWebhookProjector {
     private final ConsentConfirmationTokenRepository confirmationTokens;
     private final MarketingEmailProperties marketingProps;
     private final ConsumerRepository consumers;
-    private final MarketingOptOutRecorder optOuts;
+    private final StickyOptOutWriter stickyOptOuts;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
@@ -72,7 +72,7 @@ public class ResendWebhookProjector {
                                   ConsentConfirmationTokenRepository confirmationTokens,
                                   MarketingEmailProperties marketingProps,
                                   ConsumerRepository consumers,
-                                  MarketingOptOutRecorder optOuts) {
+                                  StickyOptOutWriter stickyOptOuts) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
@@ -83,7 +83,7 @@ public class ResendWebhookProjector {
         this.confirmationTokens = confirmationTokens;
         this.marketingProps = marketingProps;
         this.consumers = consumers;
-        this.optOuts = optOuts;
+        this.stickyOptOuts = stickyOptOuts;
     }
 
     /**
@@ -197,7 +197,8 @@ public class ResendWebhookProjector {
     /**
      * A complaint about a tagged campaign email whose row is gone or never recorded. The org comes from the campaign:
      * the member at that address is suppressed and objects to profiling as in the complaint branch; with no member,
-     * the per-address opt-out from this org is recorded instead. Either way the breaker counts it.
+     * the per-address opt-out from this org is recorded instead. Either way the breaker counts it. A failed opt-out
+     * write throws, so the webhook answers 500 unclaimed and Resend retries.
      */
     @Transactional
     public void projectTaggedComplaint(UUID campaignId, String email, Instant occurredAt) {
@@ -212,14 +213,7 @@ public class ResendWebhookProjector {
             project(campaignId, null, membershipId, address, ProviderEvent.TYPE_COMPLAINED, null, occurredAt);
             return;
         }
-        try {
-            optOuts.record(address, orgId, "email", "complaint");
-        } catch (org.springframework.dao.DataIntegrityViolationException lostRace) {
-            // The row this wanted already exists.
-        } catch (RuntimeException e) {
-            log.error("[resend-projector] opt-out for a complaint on campaign {} not recorded: {}", campaignId,
-                    e.getClass().getSimpleName());
-        }
+        stickyOptOuts.recordOrFail(address, orgId, "complaint");
         complaintRateBreaker.evaluate(campaignId, orgId);
     }
 
