@@ -167,6 +167,21 @@ public class Order {
     private String marketingOptInTextVersion;
 
     /**
+     * The paid-checkout notice the buyer read (sentence + refuse-box label), sent verbatim by the buyer
+     * site (V207). Null ⇒ no notice shown, so the order backs no soft opt-in. Set once, before the insert.
+     */
+    @Column(name = "marketing_notice_proof", length = 500, updatable = false)
+    private String marketingNoticeProof;
+
+    /** Version id of that notice (V207); ConsentGate counts a soft opt-in only under an allowlisted one. */
+    @Column(name = "marketing_notice_text_version", length = 32, updatable = false)
+    private String marketingNoticeTextVersion;
+
+    /** The buyer ticked "Don't email me about events by {organizer}" (V207); recorded as an objection. */
+    @Column(name = "marketing_refused", nullable = false, updatable = false)
+    private boolean marketingRefused = false;
+
+    /**
      * When the buyer accepted the terms of sale at checkout (V97). Null for every
      * order placed before the buyer site started sending it — absence means "not
      * recorded", never "declined".

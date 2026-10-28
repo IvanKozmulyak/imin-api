@@ -67,12 +67,13 @@ public class StripeCheckoutController {
         // normalizes blank to null, so a hostile or over-long param can't break the insert.
         CheckoutAttribution attribution = new CheckoutAttribution(
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId(), body.referralCode());
-        // Consent evidence captured on the buy page (V97). Both optional: imin-public
-        // has not shipped its half, and an absent field must mean "not recorded"
-        // rather than "declined" — nothing here gates the purchase.
+        // Consent evidence captured on the buy page (V97, V207). All optional: an absent field
+        // means "not recorded" (for the notice: "not shown"), never "declined", and nothing
+        // here gates the purchase.
         CheckoutConsent consent = new CheckoutConsent(
                 Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText(),
-                body.marketingOptInTextVersion());
+                body.marketingOptInTextVersion(), body.marketingNoticeProofText(),
+                body.marketingNoticeTextVersion(), Boolean.TRUE.equals(body.marketingRefused()));
         StripeCheckoutService.CheckoutResult result = checkout.createCheckout(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
                 attribution, body.locale(), idempotencyKey, consent);
@@ -95,8 +96,8 @@ public class StripeCheckoutController {
                                    // imin-public consent banner (§7). Nullable; null ⇒ false.
                                    // Persisted to orders.ads_consent; gates the Meta CAPI event.
                                    Boolean adsConsent,
-                                   // Buyer ticked the unticked-by-default marketing box; becomes a basis
-                                   // 'explicit' email consent only with marketingOptInProofText, else none.
+                                   // Buyer ticked the unticked-by-default marketing box; basis 'explicit' only with
+                                   // marketingOptInProofText, else none. marketingRefused below wins over a tick.
                                    Boolean marketingOptIn,
                                    // Last-touch attribution captured by imin-public on landing
                                    // (V62) and replayed here from sessionStorage — by the time the
@@ -136,7 +137,14 @@ public class StripeCheckoutController {
                                    @Size(max = 32) String marketingOptInTextVersion,
                                    // Optional crew-link code (?ref=) the buyer arrived with (V199). Never
                                    // rejected: anything but 6-16 letters or digits is dropped to null.
-                                   String referralCode) {}
+                                   String referralCode,
+                                   // The paid-checkout notice as shown (sentence + refuse-box label), verbatim;
+                                   // absent ⇒ notice not shown, so the order backs no soft opt-in (V207).
+                                   @Size(max = 500) String marketingNoticeProofText,
+                                   // Version id of that notice (≤ 32); counts only on logic-v1.yaml's soft-notice list.
+                                   @Size(max = 32) String marketingNoticeTextVersion,
+                                   // Buyer ticked "Don't email me about events by {organizer}"; null ⇒ false.
+                                   Boolean marketingRefused) {}
 
     /**
      * {@code url} is unchanged and still first — imin-public reads only that.

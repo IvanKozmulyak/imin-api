@@ -10,8 +10,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReservedConsentSourcesTest {
 
     @ParameterizedTest
-    @ValueSource(strings = {"checkout", "organizer_import", "organizer_import_row", "door_qr", "survey",
-            "preference_centre_row", "order_confirmation", "one_click", "footer_link",
+    @ValueSource(strings = {"checkout", "checkout_refusal", "organizer_import", "organizer_import_row", "door_qr",
+            "survey", "preference_centre_row", "order_confirmation", "one_click", "footer_link",
             "buyer_account_deletion"})
     void exactSystemSourceIsReserved(String source) {
         assertThat(ReservedConsentSources.isReserved(source)).isTrue();

@@ -151,11 +151,12 @@ public final class LogicLoader {
                         Set.copyOf(legal.strings("survey_text_versions")),
                         noticeVersions(legal, "survey_notice_versions"),
                         linkingNoticeVersions(legal),
-                        Set.copyOf(legal.strings("follow_text_versions"))),
+                        Set.copyOf(legal.strings("follow_text_versions")),
+                        noticeVersions(legal, "soft_opt_in_notice_versions")),
                 catchment(root.map("catchment")));
     }
 
-    /** Stored in {@code survey_responses.notice_version}, VARCHAR(32). */
+    /** Stored in {@code survey_responses.notice_version} and {@code orders.marketing_notice_text_version}, VARCHAR(32). */
     private static final int NOTICE_VERSION_MAX = 32;
 
     private static Set<String> noticeVersions(Node legal, String key) {

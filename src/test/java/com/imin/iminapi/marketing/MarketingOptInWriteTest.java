@@ -62,6 +62,7 @@ class MarketingOptInWriteTest {
     @Autowired AudiencePlanLogic planLogic;
     @Autowired PlatformTransactionManager txManager;
     @Autowired com.imin.iminapi.audience.repository.ErasedAddressRepository erasedAddresses;
+    @Autowired com.imin.iminapi.audience.service.MarketingOptedOutCheck optedOutCheck;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
@@ -337,7 +338,8 @@ class MarketingOptInWriteTest {
         assertThat(orders.findById(order.getId()).orElseThrow().getMarketingOptInTextVersion()).isEqualTo(version);
 
         new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         // The context's own async projector may record the same order a second time.
@@ -396,7 +398,8 @@ class MarketingOptInWriteTest {
 
         // Plain instance so the projection runs synchronously on this thread.
         new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         var m = membershipFor(addr("free-optin"));

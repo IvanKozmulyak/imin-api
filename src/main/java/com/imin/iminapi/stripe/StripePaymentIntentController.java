@@ -93,7 +93,10 @@ public class StripePaymentIntentController {
                 .body(intent);
     }
 
-    /** Mirrors {@code StripeCheckoutController.CheckoutRequest} field-for-field. */
+    /**
+     * Mirrors {@code StripeCheckoutController.CheckoutRequest} field-for-field, except the paid-checkout
+     * marketing notice fields, which the native buy screen does not show; a native order never carries them.
+     */
     public record PaymentIntentRequest(@NotNull UUID tierId,
                                         @Min(1) @Max(10) Integer quantity,
                                         String promoCode,

@@ -52,8 +52,8 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Drives every consent-writing path and asserts none leaves a soft_opt_in record or basis; a source scan
- * pins that no production class writes one. New consent paths (door QR, survey, site follow) add themselves here.
+ * Drives every consent-writing path and asserts none leaves a soft_opt_in record or basis; source scans pin that
+ * only the paid-checkout projector writes one. New consent paths (door QR, survey, site follow) add themselves here.
  */
 @IminIntegrationTest
 class NeverSoftOptInGuardTest {
@@ -80,6 +80,7 @@ class NeverSoftOptInGuardTest {
     @Autowired AudiencePlanLogic planLogic;
     @Autowired PlatformTransactionManager txManager;
     @Autowired com.imin.iminapi.audience.repository.ErasedAddressRepository erasedAddresses;
+    @Autowired com.imin.iminapi.audience.service.MarketingOptedOutCheck optedOutCheck;
     @Autowired UserRepository users;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
@@ -134,7 +135,8 @@ class NeverSoftOptInGuardTest {
 
         // Plain instance so the projection runs synchronously on this thread.
         projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()));
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords);
     }
 
     @AfterEach
@@ -280,7 +282,11 @@ class NeverSoftOptInGuardTest {
                 String basis = args.size() > 2 ? args.get(2) : "";
                 // The organizer endpoint passes its body, whose @Pattern admits only "explicit" (driven above).
                 boolean validatedBody = file.endsWith("AudienceController.java") && basis.equals("body.basis()");
-                if (!basis.equals("\"explicit\"") && !validatedBody) offenders.add(file.getFileName() + ": " + basis);
+                // The paid-checkout projector is the one soft opt-in writer (CheckoutSoftOptInTest).
+                boolean paidCheckout = file.endsWith("AudienceOrderProjector.java") && basis.equals("SOFT_OPT_IN");
+                if (!basis.equals("\"explicit\"") && !validatedBody && !paidCheckout) {
+                    offenders.add(file.getFileName() + ": " + basis);
+                }
             }
         }
         assertThat(calls).as("capture call sites found").isGreaterThanOrEqualTo(6);
@@ -289,11 +295,11 @@ class NeverSoftOptInGuardTest {
 
     @Test
     void sourceScan_noProductionClassWritesTheSoftOptInLiteral() throws IOException {
-        // Read-side vocabularies only: segment filters and the ConsentGate reader.
-        Set<String> readers = Set.of("SegmentRuleSchema.java", "ConsentGate.java");
+        // Segment filters and the ConsentGate reader, plus the one writer: the paid-checkout projector's constant.
+        Set<String> allowed = Set.of("SegmentRuleSchema.java", "ConsentGate.java", "AudienceOrderProjector.java");
         List<String> offenders = new ArrayList<>();
         for (Path file : mainSources()) {
-            if (Files.readString(file).contains("\"soft_opt_in\"") && !readers.contains(file.getFileName().toString())) {
+            if (Files.readString(file).contains("\"soft_opt_in\"") && !allowed.contains(file.getFileName().toString())) {
                 offenders.add(file.toString());
             }
         }

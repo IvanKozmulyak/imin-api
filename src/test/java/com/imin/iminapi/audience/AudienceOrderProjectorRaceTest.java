@@ -64,6 +64,8 @@ class AudienceOrderProjectorRaceTest {
     @Autowired PlatformTransactionManager txManager;
     @Autowired SmsConsentService smsConsent;
     @Autowired ErasedAddressRepository erasedAddresses;
+    @Autowired com.imin.iminapi.audience.service.MarketingOptedOutCheck optedOutCheck;
+    @Autowired com.imin.iminapi.audience.repository.ConsentRecordRepository consentRecords;
 
     private static final String PROOF = "Email me about this organizer's events. Unsubscribe anytime.";
 
@@ -241,7 +243,8 @@ class AudienceOrderProjectorRaceTest {
         // Plain instance so the projection runs synchronously on this thread.
         AudienceOrderProjector sync = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector,
                 consentService, e -> { }, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()));
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords);
 
         try (PgFaults.Fault fault = PgFaults.failWrites(jdbc, "memberships", "org_id", org.getId())) {
             assertThatCode(() -> sync.onTicketsIssued(new TicketsIssuedEvent(order.getId())))

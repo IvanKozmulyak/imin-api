@@ -56,6 +56,23 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
     boolean existsEmailUnsubscribeSince(@Param("membershipId") UUID membershipId, @Param("since") Instant since);
 
     /**
+     * Whether this member gave their own explicit email consent at or after {@code since}: from one of
+     * {@code personSources}, and in force by then (needing no confirmation, or confirmed since).
+     */
+    @Query("select count(c) > 0 from ConsentRecord c where c.membershipId = :membershipId and c.channel = 'email'"
+            + " and c.status = 'subscribed' and c.lawfulBasis = 'explicit' and c.source in :personSources"
+            + " and ((c.confirmationRequired = false and c.occurredAt >= :since)"
+            + " or (c.confirmedAt is not null and c.confirmedAt >= :since))")
+    boolean existsOwnEmailGrantSince(@Param("membershipId") UUID membershipId, @Param("since") Instant since,
+                                     @Param("personSources") Collection<String> personSources);
+
+    /** Whether this member has an email unsubscribe from {@code source} at or after {@code since}. */
+    @Query("select count(c) > 0 from ConsentRecord c where c.membershipId = :membershipId and c.channel = 'email'"
+            + " and c.status = 'unsubscribed' and c.source = :source and c.occurredAt >= :since")
+    boolean existsEmailUnsubscribeFromSince(@Param("membershipId") UUID membershipId, @Param("source") String source,
+                                            @Param("since") Instant since);
+
+    /**
      * Whether the latest email record in force before {@code at} is an unsubscribe: grants still awaiting
      * confirmation then do not count, and on a tie the unsubscribe wins.
      */

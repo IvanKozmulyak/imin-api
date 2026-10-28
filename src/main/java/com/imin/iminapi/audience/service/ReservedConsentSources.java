@@ -14,6 +14,7 @@ public final class ReservedConsentSources {
 
     static final Set<String> EXACT = Set.of(
             "checkout",               // AudienceOrderProjector
+            "checkout_refusal",       // AudienceOrderProjector (refusal at paid checkout)
             "organizer_import",       // AudienceImportService (bulk attestation)
             "organizer_import_row",   // CSV import with a provenance row
             "door_qr",                // door QR opt-in

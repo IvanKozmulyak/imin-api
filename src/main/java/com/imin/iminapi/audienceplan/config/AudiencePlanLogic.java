@@ -70,7 +70,8 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
             Set<String> surveyTextVersions,
             Set<String> surveyNoticeVersions,
             Set<String> surveyLinkingNoticeVersions,
-            Set<String> followTextVersions) {}
+            Set<String> followTextVersions,
+            Set<String> softOptInNoticeVersions) {}
 
     /** What a consent source needs before it counts as explicit. */
     public enum ProofRequirement { ORGANIZER_NAMED_TEXT_VERSION, PROVENANCE_ROW, TEXT_VERSION }

@@ -2,10 +2,12 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.audienceplan.service.RetentionCutoff;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Order;
@@ -39,8 +41,8 @@ import java.util.UUID;
  * <p>S3: first_touch_src = 'organic' unconditionally in Tier C. (Orders DO carry an anon_id
  * and the landing utm_* since V62, but first-touch attribution is a separate read-model and
  * is not wired here — this stays 'organic' rather than guessing.)
- * <p>S5: an email-consent row is written ONLY from an order's own ticked opt-in with the
- * sentence the buyer read (basis 'explicit'); without both, no basis and the Send Gate excludes them.
+ * <p>S5: an email-consent row comes only from the order's own ticked box with its sentence ('explicit') or from a
+ * paid order whose notice the buyer read without ticking refuse ('soft_opt_in'); a refusal is recorded as an objection.
  * <p>S1: aggregates are DERIVED from source rows (not incremented).
  */
 @Component
@@ -48,6 +50,8 @@ public class AudienceOrderProjector {
 
     private static final Logger log = LoggerFactory.getLogger(AudienceOrderProjector.class);
     private static final String ERASE_PENDING = "erase_pending";
+    static final String SOFT_OPT_IN = "soft_opt_in";
+    static final String REFUSAL_SOURCE = "checkout_refusal";
 
     private final OrderRepository orderRepo;
     private final ConsumerRepository consumerRepo;
@@ -60,6 +64,8 @@ public class AudienceOrderProjector {
     private final TransactionTemplate requiresNew;
     private final ErasedAddressRepository erasedAddressRepo;
     private final RetentionCutoff retentionCutoff;
+    private final MarketingOptedOutCheck optedOutCheck;
+    private final ConsentRecordRepository consentRecords;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
@@ -71,7 +77,11 @@ public class AudienceOrderProjector {
                                    AudiencePlanLogic logic,
                                    PlatformTransactionManager transactionManager,
                                    ErasedAddressRepository erasedAddressRepo,
-                                   RetentionCutoff retentionCutoff) {
+                                   RetentionCutoff retentionCutoff,
+                                   MarketingOptedOutCheck optedOutCheck,
+                                   ConsentRecordRepository consentRecords) {
+        this.optedOutCheck = optedOutCheck;
+        this.consentRecords = consentRecords;
         this.erasedAddressRepo = erasedAddressRepo;
         this.retentionCutoff = retentionCutoff;
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -106,12 +116,18 @@ public class AudienceOrderProjector {
             return;
         }
         String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
-        upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
-                order.getBuyerPhone(), order.isSmsMarketingOptIn(),
-                order.isMarketingOptIn(), order.getId(), order.getMarketingOptInProof(),
-                provenTextVersion(order));
+        UUID orgId = order.getOrgId();
+        Membership m = projectMembership(orgId, normalizedEmail, order.getEmail(),
+                order.getBuyerPhone(), order.isSmsMarketingOptIn());
+        if (order.isMarketingRefused()) {
+            // The refusal is the buyer's latest act: it beats a tick on the same order and any older consent.
+            recordRefusal(orgId, m, order);
+        } else if (!recordTickedOptIn(orgId, m, order.isMarketingOptIn(), order.getId(),
+                order.getMarketingOptInProof(), provenTextVersion(order)) && softOptInEligible(order, m)) {
+            captureSoftOptIn(orgId, m, order);
+        }
         // Downstream projections read the membership, so they follow this commit, not the order's.
-        events.publishEvent(new MembershipProjected(order.getOrgId(), normalizedEmail));
+        events.publishEvent(new MembershipProjected(orgId, normalizedEmail));
     }
 
     /** Locked membership for (org, consumer), inserted first when absent; first_touch_src 'organic' (S3). */
@@ -146,9 +162,52 @@ public class AudienceOrderProjector {
         String proof = order.getMarketingOptInProof();
         if (version == null || proof == null) return null;
         if (!logic.logic().legal().organizerNamedTextVersions().contains(version)) return null;
-        String orgName = orgRepo.findById(order.getOrgId()).map(Organization::getName).map(String::trim).orElse("");
-        if (orgName.isEmpty()) return null;
-        return fold(proof).contains(fold(orgName)) ? version : null;
+        return namesOrganizer(order.getOrgId(), proof) ? version : null;
+    }
+
+    private boolean namesOrganizer(UUID orgId, String sentence) {
+        String orgName = orgRepo.findById(orgId).map(Organization::getName).map(String::trim).orElse("");
+        return !orgName.isEmpty() && fold(sentence).contains(fold(orgName));
+    }
+
+    /**
+     * A paid order whose allowlisted notice named the organizer and was not refused, for a member who has not
+     * opted out or objected, holds no explicit consent, and has no grant for this order yet.
+     */
+    private boolean softOptInEligible(Order order, Membership m) {
+        // The gate also requires a live-mode order, so a test-mode record is written but never counts.
+        if (!"stripe".equals(order.getPaymentMethod()) || order.getTotalMinor() <= 0) return false;
+        String version = order.getMarketingNoticeTextVersion();
+        String proof = order.getMarketingNoticeProof();
+        if (version == null || proof == null) return false;
+        if (!logic.logic().legal().softOptInNoticeVersions().contains(version)) return false;
+        // Also refuses a blank proof: it can never contain the organizer's name.
+        if (!namesOrganizer(order.getOrgId(), proof)) return false;
+        if (optedOutCheck.isOptedOut(order.getOrgId(), m)) return false;
+        if (m.isObjectedProfiling()) return false;
+        // A newer unproven record would outrank the proven explicit one in ConsentGate while the flag is off.
+        if ("subscribed".equals(m.getConsentStatus()) && "explicit".equals(m.getConsentBasis())) return false;
+        return !consentService.hasCheckoutGrant(m.getMembershipId(), order.getId());
+    }
+
+    private void captureSoftOptIn(UUID orgId, Membership m, Order order) {
+        String proof = "Paid order; shown at checkout and left the refuse box unticked: \""
+                + order.getMarketingNoticeProof() + "\", order " + order.getId();
+        // No origin: a soft opt-in is not the person's own fresh consent, so it never lifts an objection.
+        consentService.capture(orgId, m.getMembershipId(), SOFT_OPT_IN, "checkout", proof, "email",
+                order.getMarketingNoticeTextVersion(), order.getId(), null, null, null, null);
+    }
+
+    /**
+     * The refuse box is the person's own objection, recorded once per refused order whatever the member's state, so
+     * the permanent opt-out is written even over an operator unsubscribe or a complaint's bare objection.
+     */
+    private void recordRefusal(UUID orgId, Membership m, Order order) {
+        if (consentRecords.existsEmailUnsubscribeFromSince(m.getMembershipId(), REFUSAL_SOURCE, order.getCreatedAt())) {
+            return;
+        }
+        consentService.unsubscribe(orgId, m.getMembershipId(), REFUSAL_SOURCE, "email",
+                ConsentOrigin.DATA_SUBJECT, null);
     }
 
     private static String fold(String s) {
@@ -216,25 +275,35 @@ public class AudienceOrderProjector {
                                  boolean emailOptIn, java.util.UUID orderIdForProof,
                                  String proofTextOverride, String textVersion) {
         Membership m = projectMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn);
+        recordTickedOptIn(orgId, m, emailOptIn, orderIdForProof, proofTextOverride, textVersion);
+    }
 
-        // 4. Checkout email opt-in: the box is unticked by default, so a tick with the
-        // sentence the buyer read is explicit consent; an opt-in without that sentence is not proof.
-        if (!emailOptIn || "unsubscribed".equals(m.getConsentStatus())) {
-            return;
-        }
+    /**
+     * 4. Checkout email opt-in: the box is unticked by default, so a tick with the sentence the buyer read is
+     * explicit consent; an opt-in without that sentence is not proof. True when the grant is (now) on record or
+     * the member is unsubscribed, so the order backs nothing else.
+     */
+    private boolean recordTickedOptIn(UUID orgId, Membership m, boolean emailOptIn, UUID orderIdForProof,
+                                      String proofTextOverride, String textVersion) {
+        if ("unsubscribed".equals(m.getConsentStatus())) return true;
+        if (!emailOptIn) return false;
         if (proofTextOverride == null || proofTextOverride.isBlank()) {
             log.warn("AudienceOrderProjector: opt-in without proof text for org {} order {} — no consent recorded",
                     orgId, orderIdForProof);
-            return;
+            return false;
         }
         // Under the membership lock, so a backfill row restoring this order cannot also miss it.
         if (orderIdForProof != null && consentService.hasCheckoutGrant(m.getMembershipId(), orderIdForProof)) {
-            return;
+            return true;
         }
         captureCheckoutConsent(orgId, m, orderIdForProof, proofTextOverride, textVersion, null);
+        return true;
     }
 
-    /** The backfill's form: also records each checkout email grant a failed live projection lost, from the order. */
+    /**
+     * The backfill's form: also records each checkout refusal and email grant a failed live projection lost, from
+     * the order, oldest first. It never writes a soft opt-in: the next paid order captures that again.
+     */
     @Transactional
     public void backfillMembership(UUID orgId, String normalizedEmail, String displayName) {
         Membership m = projectMembership(orgId, normalizedEmail, displayName, null, false);
@@ -247,6 +316,13 @@ public class AudienceOrderProjector {
         }
         Instant cutoffAt = retentionCutoff.forOrg(orgId).at();
         for (Order order : orderRepo.findByOrgIdAndNormalizedEmail(orgId, normalizedEmail)) {
+            // Only the person's own sign-up since the refused order outranks it; a soft opt-in or an unconfirmed
+            // sign-up never does, and a withdrawal agrees with it.
+            if (order.isMarketingRefused() && !order.getCreatedAt().isBefore(cutoffAt)
+                    && !consentRecords.existsOwnEmailGrantSince(m.getMembershipId(), order.getCreatedAt(),
+                            ConsentGate.personSources(logic.logic().legal()))) {
+                recordRefusal(orgId, m, order);
+            }
             if (restorable(m, order, cutoffAt)) {
                 captureCheckoutConsent(orgId, m, order.getId(), order.getMarketingOptInProof(),
                         provenTextVersion(order), order.getCreatedAt());

@@ -5,9 +5,12 @@ import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.DsarService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import com.imin.iminapi.support.AsyncDrain;
@@ -15,6 +18,7 @@ import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -41,6 +45,9 @@ class CheckoutConsentBackfillTest {
     @Autowired AudienceBackfillJob backfillJob;
     @Autowired ConsentService consentService;
     @Autowired DsarService dsarService;
+    @Autowired ConsentGate gate;
+    @Autowired AudiencePlanProperties planProps;
+    @Autowired PropertyFlips flips;
     @Autowired OrderRepository orders;
     @Autowired IminFixtures fx;
     @Autowired JdbcTemplate jdbc;
@@ -58,7 +65,10 @@ class CheckoutConsentBackfillTest {
     void tearDown() {
         AsyncDrain.drain(asyncExecutor);
         try {
-            for (UUID orgId : orgIds) jdbc.update("delete from memberships where org_id = ?", orgId);
+            for (UUID orgId : orgIds) {
+                jdbc.update("delete from memberships where org_id = ?", orgId);
+                jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
+            }
             for (String email : emails) {
                 jdbc.update("delete from consumers where normalized_email = ?", email);
                 jdbc.update("delete from erased_addresses where email_normalized = ?", email);
@@ -236,6 +246,87 @@ class CheckoutConsentBackfillTest {
         assertThat(checkoutRecordCount(org, email)).isEqualTo(1);
     }
 
+    /** A refusal lost to a failed live projection would let a later paid order's soft opt-in email the buyer. */
+    @Test
+    void refusedOrderWhoseProjectionFailed_backfillRecordsTheObjection() {
+        Organization org = org();
+        String email = email("refusal-lost");
+        UUID membershipId = memberOf(org, email);
+        Order order = refusedOrder(org, email);
+        projectFailing(order, membershipId);
+        assertThat(refusals(membershipId)).isZero();
+
+        runBackfill();
+
+        assertThat(refusals(membershipId)).isEqualTo(1);
+        assertThat(membership(org, email)).containsEntry("consent_status", "unsubscribed")
+                .containsEntry("objected_profiling", true);
+        assertThat(jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ?"
+                + " and org_id = ? and channel = 'email' and source = 'checkout_refusal'",
+                Integer.class, email, org.getId())).isEqualTo(1);
+    }
+
+    enum OwnSignUp { TICKED_BOX_ON_A_LATER_ORDER, CONFIRMED_DOOR_SIGN_UP }
+
+    @ParameterizedTest
+    @EnumSource(OwnSignUp.class)
+    void refusedOrderThenTheirOwnSignUp_backfillLeavesItAlone(OwnSignUp signUp) {
+        Organization org = org();
+        String email = email("refusal-then-" + signUp.name().toLowerCase());
+        UUID membershipId = memberOf(org, email);
+        Order order = refusedOrder(org, email);
+        projectFailing(order, membershipId);
+        // Signed up again after the refused order: the newer act stands.
+        switch (signUp) {
+            case TICKED_BOX_ON_A_LATER_ORDER -> projectLive(optedInOrder(org, email));
+            case CONFIRMED_DOOR_SIGN_UP -> {
+                doorSignUp(org, membershipId);
+                consentService.confirmPending(org.getId(), membershipId, Instant.now());
+            }
+        }
+
+        runBackfill();
+
+        assertThat(refusals(membershipId)).isZero();
+        assertThat(membership(org, email)).containsEntry("consent_status", "subscribed")
+                .containsEntry("consent_basis", "explicit").containsEntry("objected_profiling", false);
+    }
+
+    enum NotTheirSignUp { LATER_SOFT_OPT_IN, UNCONFIRMED_DOOR_SIGN_UP, GLOBAL_PREFERENCE_TOGGLE }
+
+    /** None of these outranks the refusal on the live path, so none may cancel its replay. */
+    @ParameterizedTest
+    @EnumSource(NotTheirSignUp.class)
+    void refusedOrderThenAGrantThatIsNotTheirSignUp_backfillStillRecordsTheRefusal(NotTheirSignUp later) {
+        flips.set(planProps, "softOptInEnabled", true);
+        Organization org = org();
+        String email = email("refusal-then-" + later.name().toLowerCase());
+        UUID membershipId = memberOf(org, email);
+        Order order = refusedOrder(org, email);
+        projectFailing(order, membershipId);
+        switch (later) {
+            // A later paid order with the notice and no refusal: its soft opt-in is dated after the refused order.
+            case LATER_SOFT_OPT_IN -> {
+                projectLive(noticeOrder(org, email));
+                assertThat(gate.canMarket(org.getId(), membershipId)).isTrue();
+            }
+            case UNCONFIRMED_DOOR_SIGN_UP -> doorSignUp(org, membershipId);
+            // The account-wide "News from imin" switch (BuyerPreferencesService) never lifts a per-organizer objection.
+            case GLOBAL_PREFERENCE_TOGGLE -> consentService.capture(org.getId(), membershipId, "explicit",
+                    "preference_centre_row", "Turned on 'News from imin'", "email", null);
+        }
+
+        runBackfill();
+
+        assertThat(refusals(membershipId)).isEqualTo(1);
+        assertThat(membership(org, email)).containsEntry("consent_status", "unsubscribed")
+                .containsEntry("objected_profiling", true);
+        assertThat(jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ?"
+                + " and org_id = ? and channel = 'email' and source = 'checkout_refusal'",
+                Integer.class, email, org.getId())).isEqualTo(1);
+        assertThat(gate.canMarket(org.getId(), membershipId)).isFalse();
+    }
+
     @Test
     void erasureCommittedAfterTheJobsLedgerSnapshot_backfillRowWritesNothing() {
         Organization org = org();
@@ -270,6 +361,63 @@ class CheckoutConsentBackfillTest {
         order.setMarketingOptIn(true);
         order.setMarketingOptInProof(PROOF);
         return orders.save(order);
+    }
+
+    private UUID memberOf(Organization org, String email) {
+        projector.upsertMembership(org.getId(), email, email);
+        return (UUID) membership(org, email).get("membership_id");
+    }
+
+    /** A paid order whose buyer ticked the refuse box; the column is set before the first insert. */
+    private Order refusedOrder(Organization org, String email) {
+        Order order = new Order();
+        order.setToken("REFUSED_" + UUID.randomUUID());
+        order.setEventId(fx.event(org, fx.owner(org), EventStatus.LIVE, Instant.now().plusSeconds(86_400)).getId());
+        order.setOrgId(org.getId());
+        order.setEmail(email);
+        order.setTotalMinor(1500L);
+        order.setCurrency("EUR");
+        order.setPaymentMethod("stripe");
+        order.setMarketingNoticeProof("Org may email you about its events.");
+        order.setMarketingNoticeTextVersion("checkout-soft-notice-2026-10");
+        order.setMarketingRefused(true);
+        return orders.save(order);
+    }
+
+    /** A paid order of the org that showed the notice, not refused, with one live ticket. */
+    private Order noticeOrder(Organization org, String email) {
+        Order order = new Order();
+        order.setToken("NOTICE_" + UUID.randomUUID());
+        order.setEventId(fx.event(org, fx.owner(org), EventStatus.LIVE, Instant.now().plusSeconds(86_400)).getId());
+        order.setOrgId(org.getId());
+        order.setEmail(email);
+        order.setTotalMinor(1500L);
+        order.setCurrency("EUR");
+        order.setPaymentMethod("stripe");
+        order.setMarketingNoticeProof(org.getName() + " may email you about its events.");
+        order.setMarketingNoticeTextVersion("checkout-soft-notice-2026-10");
+        order = orders.save(order);
+        fx.ticket(order, Ticket.STATE_ISSUED);
+        return order;
+    }
+
+    /** A door QR sign-up as PublicOptInGrant records it: waiting for the address to be confirmed. */
+    private void doorSignUp(Organization org, UUID membershipId) {
+        consentService.capture(org.getId(), membershipId, "explicit", "door_qr", "Email me about events by "
+                + org.getName() + ".", "email", "door-org-named-2026-09", null, ConsentOrigin.DATA_SUBJECT, null);
+    }
+
+    /** The live projection with its commit rejected at the member's refusal record. */
+    private void projectFailing(Order order, UUID membershipId) {
+        try (PgFaults.Fault fault = PgFaults.failWrites(jdbc, "consent_records", "membership_id", membershipId)) {
+            projectLive(order);
+        }
+    }
+
+    private int refusals(UUID membershipId) {
+        return jdbc.queryForObject("select count(*) from consent_records where membership_id = ?"
+                + " and channel = 'email' and status = 'unsubscribed' and source = 'checkout_refusal'",
+                Integer.class, membershipId);
     }
 
     /** The person's own re-consent, which also lifts the objection their unsubscribe set. */

@@ -9,10 +9,11 @@ public final class ConsentGateSql {
     private ConsentGateSql() {}
 
     // Inside the consent subquery: r = consent_records, m = memberships of the org.
-    static final String PAID_ORDER_OF_ORG = """
+    static final String SOFT_OPT_IN_ORDER_OF_ORG = """
             EXISTS (SELECT 1 FROM orders o
                      WHERE o.id = r.order_id AND o.org_id = m.org_id
                        AND o.payment_method = 'stripe' AND o.total_minor > 0 AND o.test_mode = FALSE
+                       AND o.marketing_notice_text_version = r.text_version AND o.marketing_refused = FALSE
                        AND EXISTS (SELECT 1 FROM tickets t
                                     WHERE t.order_id = o.id AND t.state NOT IN ('refunded', 'revoked')))""";
 
@@ -23,13 +24,13 @@ public final class ConsentGateSql {
                        AND p.marketing_status = 'opted_in' AND ai.org_id = m.org_id)""";
 
     // Organizer-typed captures never carry a text version, so every explicit proof also needs one.
-    // A soft opt-in counts only when captured at this org's own paid checkout.
+    // A soft opt-in counts only from this org's own paid checkout that showed an allowlisted notice and was not refused.
     static final String PROVEN = "((r.lawful_basis = 'explicit' AND r.text_version IS NOT NULL AND ("
             + " (r.source IN (:namedSources) AND r.text_version IN (:namedVersions))"
             + " OR (r.source IN (:provenanceSources) AND " + ACCEPTED_PROVENANCE + ")"
             + " OR r.source IN (:textVersionSources)))"
             + " OR (r.lawful_basis IN (:softOptInBases) AND r.source = 'checkout' AND r.order_id IS NOT NULL"
-            + " AND " + PAID_ORDER_OF_ORG + "))";
+            + " AND r.text_version IN (:softOptInVersions) AND " + SOFT_OPT_IN_ORDER_OF_ORG + "))";
 
     static final String CONTACT_WITHIN_RETENTION = "((f.last_contact_from_person_at IS NOT NULL"
             + " AND f.last_contact_from_person_at >= :cutoffAt)"

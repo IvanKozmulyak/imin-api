@@ -259,7 +259,11 @@ class LogicLoaderTest {
                 arguments("overlongNoticeVersion_fails",
                         (UnaryOperator<String>) l -> l.replace("survey_notice_versions: [survey-notice-2026-10, ",
                                 "survey_notice_versions: [survey-notice-2026-10-with-a-long-suffix, "),
-                        "logic.legal.survey_notice_versions: 'survey-notice-2026-10-with-a-long-suffix' is longer than 32 characters"));
+                        "logic.legal.survey_notice_versions: 'survey-notice-2026-10-with-a-long-suffix' is longer than 32 characters"),
+                arguments("overlongSoftOptInNoticeVersion_fails",
+                        (UnaryOperator<String>) l -> l.replace("soft_opt_in_notice_versions: [checkout-soft-notice-2026-10]",
+                                "soft_opt_in_notice_versions: [checkout-soft-notice-2026-10-overlong]"),
+                        "logic.legal.soft_opt_in_notice_versions: 'checkout-soft-notice-2026-10-overlong' is longer than 32 characters"));
     }
 
     @ParameterizedTest(name = "{0}")

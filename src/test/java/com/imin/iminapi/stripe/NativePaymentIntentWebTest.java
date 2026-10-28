@@ -57,6 +57,8 @@ class NativePaymentIntentWebTest {
 
     private static final String LABEL = "Email me about Arty Farty's events.";
     private static final String VERSION = "checkout-org-named-2026-09";
+    private static final String NOTICE = "Arty Farty may email you about its events. Don't email me about events by Arty Farty.";
+    private static final String NOTICE_VERSION = "checkout-soft-notice-2026-10";
 
     @Autowired MockMvc mvc;
     @Autowired IminFixtures fx;
@@ -108,7 +110,11 @@ class NativePaymentIntentWebTest {
                 Arguments.of("payment-intent without tierId", "payment-intent", "{\"quantity\":1}"),
                 Arguments.of("payment-intent quantity 11", "payment-intent", "{\"tierId\":\"%s\",\"quantity\":11}"),
                 Arguments.of("payment-intent textVersion 33 chars", "payment-intent", consentBody("v".repeat(33), false)),
-                Arguments.of("hosted textVersion 33 chars", "checkout", consentBody("v".repeat(33), false)));
+                Arguments.of("hosted textVersion 33 chars", "checkout", consentBody("v".repeat(33), false)),
+                Arguments.of("hosted noticeTextVersion 33 chars", "checkout",
+                        noticeBody(NOTICE, "v".repeat(33), false)),
+                Arguments.of("hosted noticeProofText 501 chars", "checkout",
+                        noticeBody("n".repeat(501), NOTICE_VERSION, false)));
     }
 
     /** Validation runs before the service: an out-of-policy body takes no hold and never reaches Stripe. */
@@ -197,6 +203,32 @@ class NativePaymentIntentWebTest {
         }
     }
 
+    /** The refusal must reach Stripe on the hosted flow; the native buy screen shows no notice, so its fields are dropped. */
+    @Test
+    void hostedCheckout_carriesNoticeAndRefusal_nativeIgnoresThem() throws Exception {
+        when(paymentIntents.create(any(PaymentIntentCreateParams.class))).thenReturn(intent());
+        Session session = new Session();
+        session.setId("cs_" + UUID.randomUUID());
+        session.setUrl("https://checkout.stripe.test/" + session.getId());
+        when(sessions.create(any(SessionCreateParams.class))).thenReturn(session);
+        String body = noticeBody(NOTICE, NOTICE_VERSION, true).formatted(tierId);
+
+        mvc.perform(post(path("checkout")).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        mvc.perform(paymentIntent(body)).andExpect(status().isOk());
+
+        ArgumentCaptor<SessionCreateParams> hosted = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessions).create(hosted.capture());
+        assertThat(hosted.getValue().getMetadata())
+                .containsEntry(CheckoutConsent.META_NOTICE_PROOF, NOTICE)
+                .containsEntry(CheckoutConsent.META_NOTICE_TEXT_VERSION, NOTICE_VERSION)
+                .containsEntry(CheckoutConsent.META_MARKETING_REFUSED, "true");
+        ArgumentCaptor<PaymentIntentCreateParams> nativeIntent = ArgumentCaptor.forClass(PaymentIntentCreateParams.class);
+        verify(paymentIntents).create(nativeIntent.capture());
+        assertThat(nativeIntent.getValue().getMetadata()).doesNotContainKeys(CheckoutConsent.META_NOTICE_PROOF,
+                CheckoutConsent.META_NOTICE_TEXT_VERSION, CheckoutConsent.META_MARKETING_REFUSED);
+    }
+
     /** Bound but dropped is the failure that matters: every native retry would take a second hold and intent. */
     @Test
     void sameIdempotencyKeyTwice_createsOnePaymentIntent_andOneHold() throws Exception {
@@ -235,6 +267,11 @@ class NativePaymentIntentWebTest {
                 + "\"marketingOptInProofText\":\"" + LABEL + "\""
                 + (acceptedTerms ? ",\"acceptedTerms\":true" : "")
                 + (version == null ? "" : ",\"marketingOptInTextVersion\":\"" + version + "\"") + "}";
+    }
+
+    private static String noticeBody(String notice, String version, boolean refused) {
+        return "{\"tierId\":\"%s\",\"quantity\":1,\"marketingNoticeProofText\":\"" + notice + "\","
+                + "\"marketingNoticeTextVersion\":\"" + version + "\",\"marketingRefused\":" + refused + "}";
     }
 
     private String path(String endpoint) {

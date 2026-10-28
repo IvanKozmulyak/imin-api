@@ -89,6 +89,7 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("textVersionSources") Collection<String> textVersionSources,
             @Param("personSources") Collection<String> personSources,
             @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions,
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate);
 
@@ -101,6 +102,7 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("textVersionSources") Collection<String> textVersionSources,
             @Param("personSources") Collection<String> personSources,
             @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions,
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate);
 
@@ -113,6 +115,7 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("textVersionSources") Collection<String> textVersionSources,
             @Param("personSources") Collection<String> personSources,
             @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions,
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate,
             @Param("ids") Collection<UUID> ids);
@@ -125,7 +128,8 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("namedVersions") Collection<String> namedVersions,
             @Param("provenanceSources") Collection<String> provenanceSources,
             @Param("textVersionSources") Collection<String> textVersionSources,
-            @Param("softOptInBases") Collection<String> softOptInBases);
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions);
 
     // ---- Audience read model ----
 
@@ -195,6 +199,7 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("textVersionSources") Collection<String> textVersionSources,
             @Param("personSources") Collection<String> personSources,
             @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions,
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate,
             @Param("freshSince") Instant freshSince);
@@ -207,6 +212,7 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("textVersionSources") Collection<String> textVersionSources,
             @Param("personSources") Collection<String> personSources,
             @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("softOptInVersions") Collection<String> softOptInVersions,
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate,
             @Param("freshSince") Instant freshSince,

@@ -94,7 +94,7 @@ public class ConsentGate {
             List<UUID> chunk = ids.subList(from, Math.min(from + MAX_IDS_PER_QUERY, ids.size()));
             for (Object[] row : repo.findExclusionReasons(orgId, p.namedSources, p.namedVersions,
                     p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases,
-                    p.cutoffAt, p.cutoffDate, chunk)) {
+                    p.softOptInVersions, p.cutoffAt, p.cutoffDate, chunk)) {
                 out.put(uuid(row[0]), Optional.ofNullable((String) row[1]));
             }
         }
@@ -108,7 +108,7 @@ public class ConsentGate {
         List<UUID> out = new ArrayList<>();
         for (Object id : repo.findMailableMembershipIds(orgId, p.namedSources, p.namedVersions,
                 p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases,
-                p.cutoffAt, p.cutoffDate)) {
+                p.softOptInVersions, p.cutoffAt, p.cutoffDate)) {
             out.add(uuid(id));
         }
         return out;
@@ -129,7 +129,7 @@ public class ConsentGate {
         int mailable = 0;
         for (Object[] row : repo.countVerdictsByReasonAndBasis(orgId, p.namedSources, p.namedVersions,
                 p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases,
-                p.cutoffAt, p.cutoffDate)) {
+                p.softOptInVersions, p.cutoffAt, p.cutoffDate)) {
             int n = ((Number) row[2]).intValue();
             members += n;
             if (row[0] == null) {
@@ -156,6 +156,7 @@ public class ConsentGate {
         out.put("textVersionSources", p.textVersionSources);
         out.put("personSources", p.personSources);
         out.put("softOptInBases", p.softOptInBases);
+        out.put("softOptInVersions", p.softOptInVersions);
         out.put("cutoffAt", p.cutoffAt);
         out.put("cutoffDate", p.cutoffDate);
         return Collections.unmodifiableMap(out);
@@ -168,7 +169,7 @@ public class ConsentGate {
         Params p = params(orgId);
         Set<UUID> out = new HashSet<>();
         for (Object id : repo.findUnprovenGrantIds(orgId, membershipId, p.namedSources, p.namedVersions,
-                p.provenanceSources, p.textVersionSources, p.softOptInBases)) {
+                p.provenanceSources, p.textVersionSources, p.softOptInBases, p.softOptInVersions)) {
             out.add(uuid(id));
         }
         return out;
@@ -189,7 +190,8 @@ public class ConsentGate {
         List<UUID> targets = new ArrayList<>();
         int legacy = 0;
         for (Object[] row : repo.findRetentionExpiredIds(orgId, p.namedSources, p.namedVersions, p.provenanceSources,
-                p.textVersionSources, p.personSources, p.softOptInBases, p.cutoffAt, p.cutoffDate, freshSince)) {
+                p.textVersionSources, p.personSources, p.softOptInBases, p.softOptInVersions, p.cutoffAt,
+                p.cutoffDate, freshSince)) {
             if (isLegacyImport(row[1])) legacy++;
             else targets.add(uuid(row[0]));
         }
@@ -202,8 +204,8 @@ public class ConsentGate {
         if (orgId == null || membershipId == null || freshSince == null) return false;
         Params p = params(orgId);
         for (Object[] row : repo.findRetentionExpiredIdsAmong(orgId, p.namedSources, p.namedVersions,
-                p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases, p.cutoffAt,
-                p.cutoffDate, freshSince, List.of(membershipId))) {
+                p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases,
+                p.softOptInVersions, p.cutoffAt, p.cutoffDate, freshSince, List.of(membershipId))) {
             if (!isLegacyImport(row[1])) return true;
         }
         return false;
@@ -222,7 +224,8 @@ public class ConsentGate {
 
     private record Params(List<String> namedSources, List<String> namedVersions, List<String> provenanceSources,
                           List<String> textVersionSources, List<String> personSources,
-                          List<String> softOptInBases, Instant cutoffAt, LocalDate cutoffDate) {}
+                          List<String> softOptInBases, List<String> softOptInVersions, Instant cutoffAt,
+                          LocalDate cutoffDate) {}
 
     private Params params(UUID orgId) {
         AudiencePlanLogic.Legal legal = logic.logic().legal();
@@ -236,9 +239,10 @@ public class ConsentGate {
         });
         RetentionCutoff.Cutoff c = cutoff.forOrg(orgId);
         List<String> softBases = Boolean.TRUE.equals(props.getSoftOptInEnabled()) ? List.of(SOFT_OPT_IN) : List.of();
+        // The notice allowlist is bound whatever the flag says; the flag alone switches the soft branch.
         return new Params(orNever(named), orNever(List.copyOf(legal.organizerNamedTextVersions())),
                 orNever(provenance), orNever(textVersion), personSources(), orNever(softBases),
-                c.at(), c.date());
+                orNever(List.copyOf(legal.softOptInNoticeVersions())), c.at(), c.date());
     }
 
     /**
@@ -246,8 +250,13 @@ public class ConsentGate {
      * Never empty: a never-matching sentinel stands in, so the list binds into a native {@code IN}.
      */
     public List<String> personSources() {
+        return personSources(logic.logic().legal());
+    }
+
+    /** As {@link #personSources()}, for callers that hold the logic but not the gate. */
+    public static List<String> personSources(AudiencePlanLogic.Legal legal) {
         List<String> person = new ArrayList<>();
-        logic.logic().legal().explicitSources().forEach((source, req) -> {
+        legal.explicitSources().forEach((source, req) -> {
             if (req == ProofRequirement.ORGANIZER_NAMED_TEXT_VERSION || req == ProofRequirement.TEXT_VERSION) {
                 person.add(source);
             }

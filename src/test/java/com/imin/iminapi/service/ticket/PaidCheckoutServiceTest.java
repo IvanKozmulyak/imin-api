@@ -1,5 +1,7 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -20,6 +22,7 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.support.PropertyFlips;
@@ -34,6 +37,8 @@ import com.stripe.service.checkout.SessionService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -76,6 +81,9 @@ class PaidCheckoutServiceTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired StripeClient stripeClient;
     @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
+    @Autowired @Qualifier("taskExecutor") Executor asyncExecutor;
+    @Autowired AudiencePlanProperties audiencePlanProperties;
+    @Autowired ConsentGate consentGate;
 
     private CheckoutService checkoutService;
     private SessionService sessionService;
@@ -88,6 +96,7 @@ class PaidCheckoutServiceTest {
     private final String suffix = "_" + UUID.randomUUID().toString().substring(0, 12);
     private final String buyer = "buyer-" + UUID.randomUUID() + "@example.com";
     private final String buyer2 = "buyer2-" + UUID.randomUUID() + "@example.com";
+    private final String audienceBuyer = "audience-buyer-" + UUID.randomUUID() + "@" + IminFixtures.MAIL_DOMAIN;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -137,7 +146,58 @@ class PaidCheckoutServiceTest {
     @AfterEach
     void tearDown() {
         AsyncDrain.drain(ticketEmailExecutor);
-        OrgRows.delete(jdbc, List.of(org.getId()));
+        AsyncDrain.drain(asyncExecutor);
+        try {
+            jdbc.update("delete from memberships where org_id = ?", org.getId());
+            jdbc.update("delete from marketing_optouts where org_id = ?", org.getId());
+            jdbc.update("delete from consumers where normalized_email = ?", audienceBuyer);
+        } finally {
+            OrgRows.delete(jdbc, List.of(org.getId()));
+        }
+    }
+
+    /** The buyer's choice at a paid web checkout rides the PaymentIntent metadata into the audience and the gate. */
+    @ParameterizedTest(name = "refused={0}")
+    @ValueSource(booleans = {false, true})
+    void paidFulfilment_carriesTheCheckoutMarketingChoiceToTheAudience(boolean refused) throws Exception {
+        flips.set(stripeProps, "secretKey", "sk_live_dummy");
+        flips.set(audiencePlanProperties, "softOptInEnabled", true);
+        String notice = "Issuance Org may email you about its events because you're buying a ticket to one."
+                + " Every email has an unsubscribe link. Don't email me about events by Issuance Org.";
+        Map<String, String> meta = new java.util.HashMap<>(Map.of(
+                "tier_id", tier.getId().toString(),
+                "qty", "1",
+                "event_id", event.getId().toString(),
+                "marketing_notice_proof", notice,
+                "marketing_notice_text_version", "checkout-soft-notice-2026-10"));
+        if (refused) meta.put("marketing_refused", "true");
+        PaymentIntent pi = pi(id("pi_test_notice"), 1500, "eur", meta);
+        wireBuyerEmail(pi, audienceBuyer);
+        wireSessionLookup(pi, id("cs_test_notice"), null);
+
+        service.issuePaidOrder(pi);
+        AsyncDrain.drain(asyncExecutor);
+
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_notice")).orElseThrow();
+        assertThat(order.getMarketingNoticeProof()).isEqualTo(notice);
+        assertThat(order.getMarketingNoticeTextVersion()).isEqualTo("checkout-soft-notice-2026-10");
+        assertThat(order.isMarketingRefused()).isEqualTo(refused);
+        Map<String, Object> m = jdbc.queryForMap("select m.membership_id, m.consent_status, m.objected_profiling"
+                + " from memberships m join consumers c on c.consumer_id = m.consumer_id"
+                + " where m.org_id = ? and c.normalized_email = ?", org.getId(), audienceBuyer);
+        UUID membershipId = (UUID) m.get("membership_id");
+        List<String> bases = jdbc.queryForList("select coalesce(lawful_basis, status) from consent_records"
+                + " where membership_id = ? and channel = 'email'", String.class, membershipId);
+        if (refused) {
+            assertThat(bases).containsExactly("unsubscribed");
+            assertThat(m).containsEntry("consent_status", "unsubscribed").containsEntry("objected_profiling", true);
+            assertThat(consentGate.canMarket(org.getId(), membershipId)).isFalse();
+        } else {
+            assertThat(jdbc.queryForList("select lawful_basis from consent_records where order_id = ?",
+                    String.class, order.getId())).containsExactly("soft_opt_in");
+            assertThat(bases).containsExactly("soft_opt_in");
+            assertThat(consentGate.canMarket(org.getId(), membershipId)).isTrue();
+        }
     }
 
     @Test

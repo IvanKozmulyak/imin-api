@@ -85,6 +85,9 @@ class ConsentGateIntegrationTest {
     static final String NAMED_VERSION = "checkout-named-v1";
     /** The version imin-public and the fan-app send with the organizer-named checkout label. */
     static final String SHIPPED_LABEL_VERSION = "checkout-org-named-2026-09";
+    /** The paid-checkout notice version on the shipped soft opt-in allowlist. */
+    static final String SOFT_NOTICE_VERSION = "checkout-soft-notice-2026-10";
+    static final String OTHER_SOFT_NOTICE_VERSION = "checkout-soft-notice-2026-11";
     static final Instant RECENT = NOW.minus(10, ChronoUnit.DAYS);
     static final UUID LOW_ID_1 = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID LOW_ID_2 = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -352,46 +355,80 @@ class ConsentGateIntegrationTest {
 
     // ── soft_opt_in ────────────────────────────────────────────────────────
 
+    /** A checkout that showed this notice version and was not refused, with the record the projector writes. */
+    void qualifyingSoftOptIn(UUID mid) {
+        consent(mid, "soft_opt_in", "checkout", SOFT_NOTICE_VERSION,
+                paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_ISSUED, SOFT_NOTICE_VERSION, false), RECENT);
+    }
+
     @Test
     void softOptIn_flagOff_isLegacyUnproven() {
         UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT);
+        qualifyingSoftOptIn(mid);
         contact(mid, RECENT);
 
         assertReason(gate(false), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
     }
 
     @Test
-    void softOptIn_flagOn_paidOrderOfThisOrg_isMailable() {
+    void softOptIn_flagOn_qualifyingCheckout_isMailable() {
         UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT);
+        qualifyingSoftOptIn(mid);
         contact(mid, RECENT);
 
         assertMailable(gate(true), orgA, mid);
     }
 
-    static Stream<Arguments> softOptInWithoutAQualifyingOrder() {
+    static Stream<Arguments> softOptInWithoutAQualifyingCheckout() {
+        Set<String> shipped = Set.of(SOFT_NOTICE_VERSION);
         return Stream.of(
-                Arguments.of("free order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
-                        t.paidOrder(t.orgA, "free", 0, false, Ticket.STATE_ISSUED), RECENT)),
-                Arguments.of("test-mode order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
-                        t.paidOrder(t.orgA, "stripe", 1500, true, Ticket.STATE_ISSUED), RECENT)),
-                Arguments.of("fully refunded order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
-                        t.paidOrder(t.orgA, "stripe", 1500, false, Ticket.STATE_REFUNDED), RECENT)),
-                Arguments.of("legacy row without an order id", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in",
-                        "checkout", null, null, RECENT)),
-                Arguments.of("order of another org", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
-                        t.paidOrder(t.orgB, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT)));
+                Arguments.of("free order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout",
+                        SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "free", 0, false, Ticket.STATE_ISSUED,
+                                SOFT_NOTICE_VERSION, false), RECENT), shipped),
+                Arguments.of("test-mode order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout",
+                        SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "stripe", 1500, true, Ticket.STATE_ISSUED,
+                                SOFT_NOTICE_VERSION, false), RECENT), shipped),
+                Arguments.of("fully refunded order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout",
+                        SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "stripe", 1500, false, Ticket.STATE_REFUNDED,
+                                SOFT_NOTICE_VERSION, false), RECENT), shipped),
+                Arguments.of("row without an order id", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in",
+                        "checkout", SOFT_NOTICE_VERSION, null, RECENT), shipped),
+                Arguments.of("order of another org", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout",
+                        SOFT_NOTICE_VERSION, t.paidOrder(t.orgB, "stripe", 1500, false, Ticket.STATE_ISSUED,
+                                SOFT_NOTICE_VERSION, false), RECENT), shipped),
+                // The shape every pre-notice soft row in production has: no order id, no version, the order in the proof.
+                Arguments.of("historical pre-ticked row", (Setup) (t, mid) -> {
+                    UUID paid = t.paidOrder(t.orgA, "stripe", 1500, false, Ticket.STATE_ISSUED, null, false);
+                    ConsentRecord r = t.record(mid, "soft_opt_in", "checkout", null, null, RECENT);
+                    r.setProofText("Left the pre-ticked marketing box ticked at checkout, order " + paid);
+                    t.consentRepo.save(r);
+                    t.jdbc.update("update memberships set consent_status = 'subscribed', consent_basis = 'soft_opt_in'"
+                            + " where membership_id = ?", mid);
+                }, shipped),
+                Arguments.of("order from before the notice", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in",
+                        "checkout", SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "stripe", 1500, false,
+                                Ticket.STATE_ISSUED, null, false), RECENT), shipped),
+                Arguments.of("record version differs from the order's", (Setup) (t, mid) -> t.consent(mid,
+                        "soft_opt_in", "checkout", SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "stripe", 1500, false,
+                                Ticket.STATE_ISSUED, OTHER_SOFT_NOTICE_VERSION, false), RECENT),
+                        Set.of(SOFT_NOTICE_VERSION, OTHER_SOFT_NOTICE_VERSION)),
+                Arguments.of("refused order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout",
+                        SOFT_NOTICE_VERSION, t.paidOrder(t.orgA, "stripe", 1500, false, Ticket.STATE_ISSUED,
+                                SOFT_NOTICE_VERSION, true), RECENT), shipped),
+                // Retiring a notice version takes every soft opt-in under it off the list at once.
+                Arguments.of("version not on the allowlist", (Setup) (t, mid) -> t.qualifyingSoftOptIn(mid),
+                        Set.of(OTHER_SOFT_NOTICE_VERSION)));
     }
 
     @ParameterizedTest(name = "{0}")
-    @MethodSource("softOptInWithoutAQualifyingOrder")
-    void softOptIn_flagOn_withoutAPaidOrderOfThisOrg_isLegacyUnproven(String name, Setup setup) {
+    @MethodSource("softOptInWithoutAQualifyingCheckout")
+    void softOptIn_flagOn_withoutAQualifyingCheckout_isLegacyUnproven(String name, Setup setup,
+                                                                      Set<String> softNoticeVersions) {
         UUID mid = member(orgA);
         setup.apply(this, mid);
         contact(mid, RECENT);
 
-        assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+        assertReason(gate(true, softNoticeVersions), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
     }
 
     @ParameterizedTest
@@ -399,7 +436,8 @@ class ConsentGateIntegrationTest {
     void softOptIn_flagOn_paidOrder_nonCheckoutSource_isLegacyUnproven(String source) {
         UUID mid = member(orgA);
         provenance(orgA, mid, true, LocalDate.parse("2026-08-01"));
-        consent(mid, "soft_opt_in", source, "v1", paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT);
+        consent(mid, "soft_opt_in", source, SOFT_NOTICE_VERSION,
+                paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_ISSUED, SOFT_NOTICE_VERSION, false), RECENT);
         contact(mid, RECENT);
 
         assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
@@ -670,7 +708,7 @@ class ConsentGateIntegrationTest {
                 .containsEntry(last, Optional.of(ConsentGate.NO_BASIS));
         ArgumentCaptor<Collection<UUID>> chunks = ArgumentCaptor.forClass(Collection.class);
         verify(counting, times(3)).findExclusionReasons(eq(orgA), any(), any(), any(), any(), any(), any(),
-                any(), any(), chunks.capture());
+                any(), any(), any(), chunks.capture());
         assertThat(chunks.getAllValues()).extracting(Collection::size).containsExactly(1000, 1000, 500);
     }
 
@@ -685,6 +723,11 @@ class ConsentGateIntegrationTest {
                 props(softOptIn), clock());
     }
 
+    ConsentGate gate(boolean softOptIn, Set<String> softNoticeVersions) {
+        return new ConsentGate(fanRepo, orgRepo, withVersions(shippedLogic, Set.of(NAMED_VERSION), softNoticeVersions),
+                props(softOptIn), clock());
+    }
+
     static Clock clock() {
         return Clock.fixed(NOW, ZoneOffset.UTC);
     }
@@ -696,12 +739,16 @@ class ConsentGateIntegrationTest {
     }
 
     static AudiencePlanLogic withNamedVersions(AudiencePlanLogic l, Set<String> versions) {
+        return withVersions(l, versions, l.logic().legal().softOptInNoticeVersions());
+    }
+
+    static AudiencePlanLogic withVersions(AudiencePlanLogic l, Set<String> versions, Set<String> softNoticeVersions) {
         AudiencePlanLogic.Logic o = l.logic();
         AudiencePlanLogic.Legal g = o.legal();
         AudiencePlanLogic.Legal legal = new AudiencePlanLogic.Legal(g.retentionDays(),
                 g.softOptInRequiresPaidOrderAndOrgSeller(), g.esRobinsonCheck(), g.explicitSources(), versions,
                 g.doorQrTextVersions(), g.surveyTextVersions(), g.surveyNoticeVersions(),
-                g.surveyLinkingNoticeVersions(), g.followTextVersions());
+                g.surveyLinkingNoticeVersions(), g.followTextVersions(), softNoticeVersions);
         return new AudiencePlanLogic(new AudiencePlanLogic.Logic(o.version(), o.modes(), o.targetDefaultPct(),
                 o.minSegmentToShow(), o.tasteHalfLifeDays(), o.classes(), o.inviteOtherGenreOnlyIfCoverageBelow(),
                 o.exclusions(), o.coverageVerdict(), o.experiments(), legal, o.catchment()), l.priors(), l.genres());
@@ -825,7 +872,8 @@ class ConsentGateIntegrationTest {
         provenanceRepo.save(p);
     }
 
-    UUID paidOrder(UUID orgId, String paymentMethod, long totalMinor, boolean testMode, String ticketState) {
+    UUID paidOrder(UUID orgId, String paymentMethod, long totalMinor, boolean testMode, String ticketState,
+                   String noticeVersion, boolean refused) {
         User owner = new User();
         owner.setEmail("gate-owner-" + UUID.randomUUID() + "@example.com");
         owner.setOrgId(orgId);
@@ -850,6 +898,9 @@ class ConsentGateIntegrationTest {
         o.setCurrency("EUR");
         o.setPaymentMethod(paymentMethod);
         o.setTestMode(testMode);
+        o.setMarketingNoticeProof(noticeVersion == null ? null : "Gate Org may email you about its events.");
+        o.setMarketingNoticeTextVersion(noticeVersion);
+        o.setMarketingRefused(refused);
         o = orderRepo.save(o);
         Ticket t = new Ticket();
         t.setToken("gate-t-" + UUID.randomUUID());

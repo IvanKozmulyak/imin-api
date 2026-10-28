@@ -51,3 +51,6 @@ legal:
   # imin.wtf "Keep me posted" sentence versions the public follow endpoint accepts; add one only with a reviewed change.
   # site-follow-2026-10: "Send me {organizer} news. Unsubscribe anytime." (imin.wtf guest page, en/es/fr/uk).
   follow_text_versions: [site-follow-2026-10]
+  # Paid-checkout notice versions (sentence + refuse box); a soft_opt_in record counts only under one of these.
+  # checkout-soft-notice-2026-10: "{organizer} may email you about its events because you're buying a ticket to one. …" (imin-public, en/es/fr/uk).
+  soft_opt_in_notice_versions: [checkout-soft-notice-2026-10]

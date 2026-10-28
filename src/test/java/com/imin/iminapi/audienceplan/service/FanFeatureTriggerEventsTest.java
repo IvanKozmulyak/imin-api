@@ -76,6 +76,8 @@ class FanFeatureTriggerEventsTest {
     @Autowired MembershipProjector membershipProjector;
     @Autowired PlatformTransactionManager txManager;
     @Autowired com.imin.iminapi.audience.repository.ErasedAddressRepository erasedAddresses;
+    @Autowired com.imin.iminapi.audience.service.MarketingOptedOutCheck optedOutCheck;
+    @Autowired com.imin.iminapi.audience.repository.ConsentRecordRepository consentRecords;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor liveExecutor;
     @Autowired @Qualifier(FanFeatureExecutors.RECOMPUTE) Executor recomputeExecutor;
@@ -233,7 +235,8 @@ class FanFeatureTriggerEventsTest {
         List<Object> captured = new ArrayList<>();
 
         new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords)
                 .onTicketsIssued(new TicketsIssuedEvent(o.getId()));
 
         assertThat(captured).containsExactly(new MembershipProjected(org.id(), email));
@@ -244,7 +247,8 @@ class FanFeatureTriggerEventsTest {
         List<Object> captured = new ArrayList<>();
 
         new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic, txManager, erasedAddresses,
-                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()))
+                new com.imin.iminapi.audienceplan.service.RetentionCutoff(orgs, planLogic, java.time.Clock.systemUTC()),
+                optedOutCheck, consentRecords)
                 .onTicketsIssued(new TicketsIssuedEvent(UUID.randomUUID()));
 
         assertThat(captured).isEmpty();

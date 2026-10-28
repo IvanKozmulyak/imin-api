@@ -136,11 +136,15 @@ SELECT o.name AS org_name, o.id AS org_id, COUNT(*) AS campaigns_sent_90d, MAX(c
 
 ## 3. Historical `soft_opt_in` consent rows by type
 
-Input to the `IMIN_AUDIENCE_PLAN_SOFT_OPT_IN` decision (nothing writes `soft_opt_in` any more). "Paid order of
-the org" is `ConsentGateSql.PAID_ORDER_OF_ORG`: the record's `order_id` is a live Stripe order of the member's
-org with a positive total and at least one ticket not refunded or revoked; that is the only shape the flag
-would count, and only when it is the member's latest subscribing email consent (unconfirmed door/survey
-sign-ups excluded, as in ConsentGate).
+Input to the `IMIN_AUDIENCE_PLAN_SOFT_OPT_IN` decision. The one writer is `AudienceOrderProjector`, for a paid
+order whose paid-checkout notice (V207) was shown with an allowlisted version and not refused; every earlier
+`soft_opt_in` row predates it and has no order id or version. "Paid order of the org" is the order part of
+`ConsentGateSql.SOFT_OPT_IN_ORDER_OF_ORG`: the record's `order_id` is a live Stripe order of the member's org
+with a positive total and at least one ticket not refunded or revoked. The flag counts a record only when it is
+also `has_notice_evidence` (its `text_version` is set and equals the order's `marketing_notice_text_version`,
+the order is not refused) with that version on `legal.soft_opt_in_notice_versions`, and only when it is the
+member's latest subscribing email consent (unconfirmed door/survey sign-ups excluded, as in ConsentGate).
+Reads the V207 columns, so it runs only once that migration is deployed.
 
 ```sql
 WITH latest AS (
@@ -163,6 +167,11 @@ SELECT r.channel, r.status, r.source,
          ELSE 'paid_order_all_tickets_refunded_or_revoked'
        END AS order_type,
        (NULLIF(TRIM(COALESCE(r.proof_text, '')), '') IS NOT NULL) AS has_proof_text,
+       CASE
+         WHEN r.text_version IS NOT NULL AND o.marketing_notice_text_version = r.text_version
+              AND o.marketing_refused = FALSE THEN TRUE
+         ELSE FALSE
+       END AS has_notice_evidence,
        (l.rn = 1) AS is_latest_email_grant,
        COUNT(*) AS records,
        COUNT(DISTINCT r.membership_id) AS members,
@@ -172,6 +181,6 @@ SELECT r.channel, r.status, r.source,
   LEFT JOIN orders o ON o.id = r.order_id
   LEFT JOIN latest l ON l.id = r.id
  WHERE r.lawful_basis = 'soft_opt_in'
- GROUP BY 1, 2, 3, 4, 5, 6
+ GROUP BY 1, 2, 3, 4, 5, 6, 7
  ORDER BY records DESC;
 ```

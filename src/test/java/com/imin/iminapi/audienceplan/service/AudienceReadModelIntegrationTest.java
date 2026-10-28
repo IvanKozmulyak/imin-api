@@ -84,6 +84,8 @@ class AudienceReadModelIntegrationTest {
     static final Instant RECENT = NOW.minus(10, ChronoUnit.DAYS);
     static final String HOUSE = "house & techno";
     static final String POP = "pop";
+    /** On the shipped soft opt-in notice allowlist (audienceplan/logic-v1.yaml). */
+    static final String SOFT_NOTICE_VERSION = "checkout-soft-notice-2026-10";
 
     @Autowired FanFeatureRepository fanRepo;
     @Autowired OrganizationRepository orgRepo;
@@ -730,13 +732,14 @@ class AudienceReadModelIntegrationTest {
         return m;
     }
 
-    /** Soft opt-in at this org's own paid checkout: mailable only while the soft opt-in flag is on. */
+    /** Soft opt-in at this org's own paid checkout that showed the notice: mailable only while the flag is on. */
     UUID softOptInMember(UUID orgId) {
         UUID m = member(orgId);
         UUID ev = event(orgId, NOW.minus(5, ChronoUnit.DAYS));
         UUID paid = order(orgId, ev, "stripe", 3000, false);
+        jdbc.update("update orders set marketing_notice_text_version = ? where id = ?", SOFT_NOTICE_VERSION, paid);
         ticket(paid, ev, Ticket.STATE_ISSUED);
-        consent(m, "subscribed", "soft_opt_in", "checkout", null, paid, RECENT);
+        consent(m, "subscribed", "soft_opt_in", "checkout", SOFT_NOTICE_VERSION, paid, RECENT);
         return m;
     }
 
