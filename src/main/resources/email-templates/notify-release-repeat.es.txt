@@ -1,0 +1,17 @@
+ENTRADAS A LA VENTA · imin
+
+Ya hay entradas para {{eventName}}.
+
+Nos pediste que te avisáramos cuando hubiera entradas para {{eventName}}. Toda la lista recibe este correo a la vez.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Consigue tus entradas: {{eventUrl}}
+
+Las entradas se venden por orden de compra — este correo no te reserva ninguna. Si se vuelven a agotar y reaparecen, te escribiremos de nuevo, como mucho una vez cada 6 horas, salvo que para entonces esta dirección de email ya tenga entrada.
+
+Cancelar estos avisos: {{unsubscribeUrl}}
+
+imin.wtf · entradas a la venta para {{eventName}}

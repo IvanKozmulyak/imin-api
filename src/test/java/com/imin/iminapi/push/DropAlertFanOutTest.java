@@ -66,6 +66,8 @@ import static org.mockito.Mockito.when;
 class DropAlertFanOutTest {
 
     @Autowired NotifySubscriptionRepository subscriptions;
+
+    @Autowired com.imin.iminapi.repository.NotifyReleaseRepository releases;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
     @Autowired IminFixtures fx;
@@ -101,7 +103,8 @@ class DropAlertFanOutTest {
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 mail, renderer, emailProps, clock,
                 pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens,
-                mock(ModerationHoldRepository.class));
+                mock(ModerationHoldRepository.class), releases,
+                new com.imin.iminapi.service.event.NotifyProperties());
 
         org = fx.org();
         owner = fx.owner(org);

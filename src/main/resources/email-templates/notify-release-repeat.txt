@@ -1,0 +1,17 @@
+TICKETS RELEASED · imin
+
+Tickets for {{eventName}} are available.
+
+You asked us to email you when tickets for {{eventName}} become available. Everyone on the list gets this email at the same time.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Get your tickets: {{eventUrl}}
+
+Tickets sell in the order they're bought — this email doesn't hold any for you. If they sell out and come back again, we'll email you again, at most once every 6 hours, unless this email address has a ticket by then.
+
+Stop these alerts: {{unsubscribeUrl}}
+
+imin.wtf · ticket release for {{eventName}}

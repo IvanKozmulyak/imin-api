@@ -11,5 +11,8 @@ package com.imin.iminapi.dto.publicapi;
  * @param locale optional buyer UI language (en/es/fr/uk). Normalized server-side; anything
  *               unrecognized is stored as null and the release email falls back to English.
  *               Never a validation error — a bad locale must not cost the buyer their signup.
+ * @param everyRelease true when the form showed the "we email everyone each time tickets come back"
+ *                     hint: the row is re-armed after each sell-out and stores that hint as its
+ *                     consent text. Null or false: one email, the legacy promise.
  */
-public record NotifySubscriptionRequest(String email, String locale) {}
+public record NotifySubscriptionRequest(String email, String locale, Boolean everyRelease) {}

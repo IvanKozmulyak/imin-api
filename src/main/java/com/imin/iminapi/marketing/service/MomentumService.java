@@ -16,6 +16,7 @@ import com.imin.iminapi.marketing.repository.MomentumFloorSkipRepository;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
@@ -67,12 +68,14 @@ public class MomentumService {
     private final MomentumThresholds thresholds;
     private final CampaignAttributionService attribution;
     private final MomentumFloorSkipRepository floorSkips;
+    private final NotifySubscriptionRepository notifySubscriptions;
     private final ObjectMapper json = new ObjectMapper();
 
     public MomentumService(MomentumSuggestionRepository suggestions, CampaignRepository campaigns,
                            EventRepository events, SegmentRepository segmentRepo,
                            MembershipRepository memberships, MomentumThresholds thresholds,
-                           CampaignAttributionService attribution, MomentumFloorSkipRepository floorSkips) {
+                           CampaignAttributionService attribution, MomentumFloorSkipRepository floorSkips,
+                           NotifySubscriptionRepository notifySubscriptions) {
         this.suggestions = suggestions;
         this.campaigns = campaigns;
         this.events = events;
@@ -81,6 +84,7 @@ public class MomentumService {
         this.thresholds = thresholds;
         this.attribution = attribution;
         this.floorSkips = floorSkips;
+        this.notifySubscriptions = notifySubscriptions;
     }
 
     /**
@@ -93,8 +97,8 @@ public class MomentumService {
      * IDENTITY/CAPABILITY ({@code eventName}, {@code segmentLabel}, {@code smsLocked}) is resolved
      * LIVE so a rename or a fresh SMS opt-in is reflected.
      *
-     * <p>All three live lookups are batched — one events query, one segments query, one phone
-     * count for the whole page — so enriching N suggestions stays 3 queries, not 3N.
+     * <p>All four live lookups are batched — one events query, one segments query, one phone
+     * count and one waiting count for the whole page — so enriching N suggestions stays 4 queries, not 4N.
      */
     @Transactional(readOnly = true)
     public List<MomentumSuggestionDto> list(AuthPrincipal principal, String status) {
@@ -118,16 +122,34 @@ public class MomentumService {
         }
         // Live #3: SMS is locked when the org has zero opted-in phones to send to.
         boolean smsLocked = memberships.countSmsSubscribedByOrgId(orgId) == 0;
+        // Live #4: who is waiting for tickets behind sold_out cards, one grouped count.
+        Map<UUID, Long> waiting = waitingFor(rows);
 
         return rows.stream()
-                .map(r -> toDto(r, eventNames, segmentsById, smsLocked))
+                .map(r -> toDto(r, eventNames, segmentsById, smsLocked, waiting))
                 .toList();
+    }
+
+    /** Pending notify subscriptions per sold_out event; events with none are absent (0). */
+    private Map<UUID, Long> waitingFor(List<MomentumSuggestion> rows) {
+        Set<UUID> soldOut = rows.stream()
+                .filter(r -> MomentumTriggerType.SOLD_OUT.wireValue().equals(r.getTriggerType()))
+                .map(MomentumSuggestion::getEventId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (soldOut.isEmpty()) return Map.of();
+        Map<UUID, Long> out = new HashMap<>();
+        for (Object[] row : notifySubscriptions.countPendingByEventIds(soldOut)) {
+            out.put((UUID) row[0], ((Number) row[1]).longValue());
+        }
+        return out;
     }
 
     private MomentumSuggestionDto toDto(MomentumSuggestion s,
                                         Map<UUID, String> eventNames,
                                         Map<UUID, Segment> segmentsById,
-                                        boolean smsLocked) {
+                                        boolean smsLocked,
+                                        Map<UUID, Long> waiting) {
         Snapshot snap = parseSnapshot(s.getMetricsSnapshot());
 
         // Null rather than a stand-in when the event is genuinely gone: the FE can say so.
@@ -138,13 +160,18 @@ public class MomentumService {
         MomentumFacts facts = snap == null ? null : MomentumFacts.from(snap.metrics(), snap.clickedNoTicket());
         List<Integer> spark = snap == null || !snap.metrics().hasSpark() ? null : snap.metrics().spark();
 
+        boolean soldOut = MomentumTriggerType.SOLD_OUT.wireValue().equals(s.getTriggerType());
         return new MomentumSuggestionDto(
                 s.getId(), s.getEventId(), eventName, s.getTriggerType(), s.getStatus(),
                 s.getMetricsSnapshot(), s.getDraftPayload(), s.getCampaignId(), s.getSuggestedAt(),
                 facts, spark,
                 segment == null ? null : segment.getName(),
                 segment == null ? null : segment.getPrebuiltKey(),
-                smsLocked);
+                smsLocked,
+                soldOut ? MomentumSuggestionDto.ACTION_WAITLIST : MomentumSuggestionDto.ACTION_CAMPAIGN,
+                soldOut && s.getEventId() != null
+                        ? new MomentumSuggestionDto.WaitlistInfo(waiting.getOrDefault(s.getEventId(), 0L))
+                        : null);
     }
 
     /** The draft's target segment, or null when unset/deleted (never guessed). */
@@ -195,7 +222,8 @@ public class MomentumService {
                     n.path("ticketsPerDay7d").asDouble(),
                     // Snapshots before seatsLeft read sold over every mode, so capacity − sold was the seats.
                     n.has("seatsLeft") ? n.path("seatsLeft").asInt()
-                            : Math.max(0, n.path("capacity").asInt() - n.path("sold").asInt())),
+                            : Math.max(0, n.path("capacity").asInt() - n.path("sold").asInt()),
+                    n.path("seatsHeld").asInt()),
                     clickedNoTicket);
         } catch (Exception e) {
             return null;
@@ -281,6 +309,11 @@ public class MomentumService {
     @Transactional
     public CampaignDto approve(AuthPrincipal principal, UUID suggestionId) {
         MomentumSuggestion s = loadOwned(principal, suggestionId);
+        // A sold-out event has nothing to sell: its card is advisory and never becomes a campaign.
+        if (MomentumTriggerType.SOLD_OUT.wireValue().equals(s.getTriggerType())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "A sold-out suggestion can't be approved; add tickets from the event's Tickets tab instead");
+        }
         JsonNode draft = parse(s.getDraftPayload());
 
         Instant now = Instant.now();

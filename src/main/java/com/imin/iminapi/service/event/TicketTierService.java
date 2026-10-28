@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.event.TicketTierDto;
 import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -185,6 +186,32 @@ public class TicketTierService {
         audit(p, AuditActions.TIER_DELETED, "tier", deletedId,
                 "Deleted tier \"" + name + "\" from event \"" + eventLabel(event) + "\"");
         publishMutated(eventId);
+    }
+
+    /**
+     * Raises the tier's capacity by {@code n} (the waitlist panel's Add tickets), LIVE events only.
+     * The tier row lock is taken before the tier is read, so the full-entity save cannot write
+     * back a {@code reserved}/{@code sold} that a checkout or refund changed meanwhile.
+     */
+    @Transactional
+    @CacheEvict(value = "dashboard", allEntries = true)
+    public TicketTierDto addQuantity(AuthPrincipal p, UUID eventId, UUID tierId, int n) {
+        Event event = loadOwnedEvent(p, eventId);
+        if (event.getStatus() != EventStatus.LIVE) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Tickets can only be added to a live event", Map.of("event", "not_live"));
+        }
+        lockForWrite(eventId, List.of(tierId));
+        TicketTier tier = loadOwnedTier(eventId, tierId);
+        int before = tier.getQuantity();
+        tier.setQuantity(before + n);
+        tier = tiers.save(tier);
+        bumpEventUpdatedAt(event);
+        audit(p, AuditActions.TIER_UPDATED, "tier", tier.getId(),
+                "Added " + n + " tickets to tier \"" + tier.getName() + "\" (" + before + " → "
+                        + tier.getQuantity() + ") on event \"" + eventLabel(event) + "\"");
+        publishMutated(eventId);
+        return TicketTierDto.from(tier);
     }
 
     /**

@@ -55,6 +55,20 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
             + "FROM TicketTier t WHERE t.eventId = :eventId AND t.enabled = true")
     int sumRemainingOnEnabledTiersByEventId(@Param("eventId") UUID eventId);
 
+    /**
+     * One row: [quantity on enabled tiers, seats sold on disabled tiers, unsold and unheld seats on
+     * enabled tiers, seats held by checkouts on enabled tiers (capped at the unsold seats)]. All modes.
+     */
+    @Query("SELECT COALESCE(SUM(CASE WHEN t.enabled = true THEN t.quantity ELSE 0 END), 0), "
+            + "COALESCE(SUM(CASE WHEN t.enabled = false THEN t.sold ELSE 0 END), 0), "
+            + "COALESCE(SUM(CASE WHEN t.enabled = true AND t.quantity - t.sold - t.reserved > 0 "
+            + "THEN t.quantity - t.sold - t.reserved ELSE 0 END), 0), "
+            + "COALESCE(SUM(CASE WHEN t.enabled = true AND t.reserved > 0 AND t.quantity - t.sold > 0 "
+            + "THEN (CASE WHEN t.reserved < t.quantity - t.sold THEN t.reserved ELSE t.quantity - t.sold END) "
+            + "ELSE 0 END), 0) "
+            + "FROM TicketTier t WHERE t.eventId = :eventId")
+    List<Object[]> seatCountsByEventId(@Param("eventId") UUID eventId);
+
     /** Per event of the page: [eventId, SUM(sold), SUM(quantity)]; events with no tiers have no row. */
     @Query("SELECT t.eventId, COALESCE(SUM(t.sold), 0), COALESCE(SUM(t.quantity), 0) "
             + "FROM TicketTier t WHERE t.eventId IN :eventIds GROUP BY t.eventId")

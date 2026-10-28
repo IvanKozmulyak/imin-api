@@ -69,6 +69,8 @@ class NotifyReleaseSenderTest {
     static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     @Autowired NotifySubscriptionRepository subscriptions;
+
+    @Autowired com.imin.iminapi.repository.NotifyReleaseRepository releases;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
     @Autowired OrganizationRepository organizations;
@@ -109,7 +111,7 @@ class NotifyReleaseSenderTest {
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 emailService, renderer, emailProps, CLOCK,
                 pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens,
-                mock(ModerationHoldRepository.class));
+                mock(ModerationHoldRepository.class), releases, new NotifyProperties());
 
         org = new Organization();
         org.setName("Release Org");

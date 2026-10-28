@@ -91,7 +91,8 @@ class MomentumEvaluatorPlanTargetTest {
         event.setOnSaleAt(NOW.minus(Duration.ofHours(50)));
         event.setStartsAt(NOW.plus(Duration.ofDays(30)));
         when(salesTotals.soldForEvent(event.getId())).thenReturn(5);
-        when(tiers.sumQuantityByEventId(event.getId())).thenReturn(100);
+        // One enabled tier of 100, none sold or held.
+        when(tiers.seatCountsByEventId(event.getId())).thenReturn(List.<Object[]>of(new Object[] {100L, 0L, 100L, 0L}));
         when(tiers.findByEventIdOrderBySortOrderAsc(event.getId())).thenReturn(List.of());
         when(orders.findLiveCreatedAtAndTotalSince(eq(event.getId()), any())).thenReturn(List.of());
         when(tickets.findSoldCreatedAtSince(eq(event.getId()), any())).thenReturn(List.of());

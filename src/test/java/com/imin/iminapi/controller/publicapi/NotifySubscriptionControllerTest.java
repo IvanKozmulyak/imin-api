@@ -14,14 +14,18 @@ import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -152,32 +156,36 @@ class NotifySubscriptionControllerTest {
     }
 
     // -----------------------------------------------------------------------
-    // (c2) re-subscribing after a release notification RE-ARMS the row
+    // (c2) re-subscribing re-arms the row, but not within 6 h of the last email
     // -----------------------------------------------------------------------
-    @Test
-    void subscribe_reArmsRow_whenAlreadyNotified() throws Exception {
+    /**
+     * A repeated signup cannot mail an address sooner than the sweep's 6 h cap would: inside the gap the row
+     * stays notified (its provenance still describes the latest signup); after it the row is re-armed.
+     */
+    @ParameterizedTest(name = "notified {0} h ago")
+    @CsvSource({"1, false", "7, true"})
+    void subscribe_reArmsANotifiedRow_onlyOnceItsLastEmailIsSixHoursOld(int hoursAgo, boolean reArmed) throws Exception {
         Event e = publicLiveEvent();
-        String body = body(Map.of("email", ada));
-
         mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .contentType(MediaType.APPLICATION_JSON).content(body(Map.of("email", ada))))
                 .andExpect(status().isOk());
 
         // Simulate NotifyReleaseSender having already mailed this subscriber.
         NotifySubscription row = rows(e.getId()).get(0);
-        row.setNotifiedAt(clock.instant());
+        Instant mailedAt = clock.instant().minus(Duration.ofHours(hoursAgo)).truncatedTo(ChronoUnit.MICROS);
+        row.setNotifiedAt(mailedAt);
         subscriptionRepository.save(row);
 
-        // The buyer signs up again — they want to hear about the NEXT release, so the
-        // UNIQUE pre-check must not silently eat the request.
         mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .header("User-Agent", "Again/2.0")
+                        .contentType(MediaType.APPLICATION_JSON).content(body(Map.of("email", ada))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.subscribed").value(true));
 
         List<NotifySubscription> rows = rows(e.getId());
         assertThat(rows).hasSize(1);
-        assertThat(rows.get(0).getNotifiedAt()).isNull();
+        assertThat(rows.get(0).getNotifiedAt()).isEqualTo(reArmed ? null : mailedAt);
+        assertThat(rows.get(0).getUserAgent()).isEqualTo("Again/2.0");
     }
 
     // -----------------------------------------------------------------------
@@ -255,6 +263,35 @@ class NotifySubscriptionControllerTest {
                 .allSatisfy(row -> assertThat(row.getLocale()).isNull());
     }
 
+    /**
+     * everyRelease stores the hint the form showed and marks the row for re-arming; the latest signup decides,
+     * so a later one from a client without the field puts the row back on the one-email promise.
+     */
+    @Test
+    void subscribe_everyRelease_storesTheRepeatPromise_andTheLatestSignupDecides() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(Map.of("email", ada, "everyRelease", true))))
+                .andExpect(status().isOk());
+
+        NotifySubscription row = rows(e.getId()).get(0);
+        assertThat(row.isEveryRelease()).isTrue();
+        assertThat(row.getConsentText()).isEqualTo("We email everyone on the list at once when tickets go on sale "
+                + "or come back after a sell-out, at most once every 6 hours. First come, first served. "
+                + "We stop once this email address has a ticket.");
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(Map.of("email", ada))))
+                .andExpect(status().isOk());
+
+        NotifySubscription after = rows(e.getId()).get(0);
+        assertThat(after.isEveryRelease()).isFalse();
+        assertThat(after.getConsentText()).isEqualTo(NotifySubscriptionService.CONSENT_TEXT);
+    }
+
     @Test
     void subscribe_refreshesProvenance_onReArm() throws Exception {
         Event e = publicLiveEvent();
@@ -267,7 +304,7 @@ class NotifySubscriptionControllerTest {
                 .andExpect(status().isOk());
 
         NotifySubscription row = rows(e.getId()).get(0);
-        row.setNotifiedAt(clock.instant());
+        row.setNotifiedAt(clock.instant().minus(Duration.ofHours(7)));
         subscriptionRepository.save(row);
 
         // Same buyer, new device, new language, months later — the provenance must

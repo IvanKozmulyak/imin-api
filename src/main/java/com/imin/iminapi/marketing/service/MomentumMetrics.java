@@ -51,8 +51,11 @@ public record MomentumMetrics(
         /**
          * Seats still unsold, every order mode: test-era tickets hold seats though they are not live
          * sales. Sold-out and "N left" read this; {@code sold} and the percentages stay live.
+         * The evaluator counts enabled tiers only and leaves out seats held by checkouts.
          */
-        int seatsLeft) {
+        int seatsLeft,
+        /** Seats held by checkouts in progress on enabled tiers; 0 in snapshots written before it existed. */
+        int seatsHeld) {
 
     /** Days of daily history the spark carries. The prototype card ships 7–10 points. */
     public static final int SPARK_DAYS = 10;
@@ -95,6 +98,23 @@ public record MomentumMetrics(
             Instant now,
             List<Instant> soldTicketCreatedAt,
             int seatsLeft) {
+        return compute(sold, capacity, ordersLast7d, onSaleAt, startsAt, now, soldTicketCreatedAt, seatsLeft, 0);
+    }
+
+    /**
+     * @param seatsLeft unsold seats nobody holds, floored at 0
+     * @param seatsHeld seats held by checkouts in progress, floored at 0
+     */
+    public static MomentumMetrics compute(
+            int sold,
+            int capacity,
+            int ordersLast7d,
+            Instant onSaleAt,
+            Instant startsAt,
+            Instant now,
+            List<Instant> soldTicketCreatedAt,
+            int seatsLeft,
+            int seatsHeld) {
 
         int sellThrough = capacity <= 0 ? 0 : (int) Math.round(sold * 100.0 / capacity);
         int daysOut = startsAt == null ? 0 : (int) Math.max(0, Duration.between(now, startsAt).toDays());
@@ -107,7 +127,8 @@ public record MomentumMetrics(
         double ticketsPerDay = ticketsPerDay(spark);
 
         return new MomentumMetrics(sold, capacity, sellThrough, daysOut, hoursSinceOnSale,
-                velocity, hoursToStart, spark, sparkStart, ticketsPerDay, Math.max(0, seatsLeft));
+                velocity, hoursToStart, spark, sparkStart, ticketsPerDay, Math.max(0, seatsLeft),
+                Math.max(0, seatsHeld));
     }
 
     /**
@@ -173,9 +194,14 @@ public record MomentumMetrics(
         return seatsLeft;
     }
 
-    /** Seats gone in any mode: what a sold-out card counts as "gone". */
+    /** Seats gone in any mode: sold or held by a checkout in progress. */
     public int seatsGone() {
         return Math.max(0, capacity - seatsLeft);
+    }
+
+    /** Seats sold in any mode: capacity less the unsold and the held seats. Held seats are not sold. */
+    public int seatsSold() {
+        return Math.max(0, capacity - seatsLeft - seatsHeld);
     }
 
     /**
@@ -208,7 +234,8 @@ public record MomentumMetrics(
                 + "\"ticketsPerDay7d\":" + fmt(ticketsPerDay7d) + ","
                 + "\"sparkStartDate\":" + (sparkStartDate == null ? "null" : "\"" + sparkStartDate + "\"") + ","
                 + "\"spark\":" + sparkJson() + ","
-                + "\"seatsLeft\":" + seatsLeft
+                + "\"seatsLeft\":" + seatsLeft + ","
+                + "\"seatsHeld\":" + seatsHeld
                 + (clickedNoTicket == null ? "" : ",\"clickedNoTicket\":" + clickedNoTicket)
                 + "}";
     }

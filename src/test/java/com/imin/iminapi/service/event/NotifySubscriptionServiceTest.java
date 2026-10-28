@@ -47,7 +47,7 @@ class NotifySubscriptionServiceTest {
     void setUp() {
         events = mock(EventRepository.class);
         subscriptions = mock(NotifySubscriptionRepository.class);
-        svc = new NotifySubscriptionService(events, subscriptions);
+        svc = new NotifySubscriptionService(events, subscriptions, new NotifyProperties(), java.time.Clock.systemUTC());
 
         Event e = new Event();
         e.setId(eventId);
@@ -68,7 +68,7 @@ class NotifySubscriptionServiceTest {
                 .when(subscriptions).flush();
 
         NotifySubscriptionResponse r = svc.subscribe(eventId,
-                new NotifySubscriptionRequest("ada@example.com", null));
+                new NotifySubscriptionRequest("ada@example.com", null, null));
 
         assertThat(r.subscribed()).isTrue();
         // The insert has to be forced inside the try — a deferred flush raises the

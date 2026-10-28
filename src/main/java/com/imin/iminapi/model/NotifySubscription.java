@@ -19,8 +19,9 @@ import java.util.UUID;
  * <p>{@code notifiedAt} is the one-shot delivery marker consumed by
  * {@code NotifyReleaseSender}: {@code null} means the buyer is still owed the
  * "tickets are available" email, non-null means it has been sent (or deliberately
- * suppressed) and must not be sent again. Re-subscribing after a notification resets
- * it to {@code null}, re-arming the row for the next release.
+ * skipped) for the current release. Re-subscribing at least 6 h after the last email
+ * ({@code imin.notify.rearm-min-gap}) resets it to {@code null}, re-arming the row for the
+ * next release; so does the sweeper for an {@link #everyRelease} row once the event sells out again.
  */
 @Entity
 @Table(name = "notify_subscriptions")
@@ -62,6 +63,13 @@ public class NotifySubscription {
     /** Buyer's UI language (en/es/fr/uk) — picks the notify-release email variant. Null ⇒ English. */
     @Column(length = 5)
     private String locale;
+
+    /**
+     * V201: the signup showed "we email everyone each time tickets come back", so the sweeper
+     * re-arms this row after each sell-out. False for older rows and clients: one email only.
+     */
+    @Column(name = "every_release", nullable = false)
+    private boolean everyRelease;
 
     @PrePersist
     @PreUpdate

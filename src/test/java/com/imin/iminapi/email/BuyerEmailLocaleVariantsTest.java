@@ -73,6 +73,7 @@ class BuyerEmailLocaleVariantsTest {
                 // other way out, so a locale that dropped this placeholder would ship
                 // a drop alert nobody can stop.
                 "unsubscribeUrl", "https://app.imin.wtf/notify/unsubscribe/tok"));
+        TEMPLATES.put("notify-release-repeat", TEMPLATES.get("notify-release"));
 
         // ---- Buyer accounts ----
         // R1.2's three templates were localized but never registered here, so a

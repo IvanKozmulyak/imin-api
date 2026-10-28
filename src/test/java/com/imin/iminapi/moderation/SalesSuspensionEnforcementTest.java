@@ -214,6 +214,8 @@ class SalesSuspensionEnforcementTest {
     // ── T13 ─────────────────────────────────────────────────────────────────────────
 
     @Autowired NotifySubscriptionRepository subscriptions;
+
+    @Autowired com.imin.iminapi.repository.NotifyReleaseRepository releases;
     @Autowired SuppressionRepository suppressions;
     @Autowired RecordingEmailService mail;
     @Autowired EmailTemplateRenderer renderer;
@@ -230,7 +232,7 @@ class SalesSuspensionEnforcementTest {
     void no_release_email_for_a_suspended_event_until_lifted() {
         NotifyReleaseSender sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions, mail,
                 renderer, emailProps, clock, new PushProperties(), push, pushDevices, buyerEmails, pushPrefs,
-                unsubscribeTokens, holds);
+                unsubscribeTokens, holds, releases, new com.imin.iminapi.service.event.NotifyProperties());
         Event e = onSaleEvent(org);
         fx.tier(e, 2500, 50);
         String address = fx.email("watcher");

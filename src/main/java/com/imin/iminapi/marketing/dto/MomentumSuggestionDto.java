@@ -51,6 +51,10 @@ import java.util.UUID;
  * @param facts the snapshot's numbers for the card; null when the snapshot is unparseable
  * @param smsLocked true ⇔ the org has 0 SMS-subscribed phones with a number on file
  *                  ({@code MembershipRepository.countSmsSubscribedByOrgId})
+ * @param action {@code "waitlist"} for {@code sold_out} (an advisory: no draft, approve answers 409),
+ *               {@code "campaign"} for every other trigger
+ * @param waitlist resolved live for {@code sold_out} rows with an event: notify subscriptions still
+ *                 owed the next "tickets available" email; null for other triggers
  */
 public record MomentumSuggestionDto(
         UUID id,
@@ -66,5 +70,13 @@ public record MomentumSuggestionDto(
         List<Integer> spark,
         String segmentLabel,
         String segmentPrebuiltKey,
-        boolean smsLocked) {
+        boolean smsLocked,
+        String action,
+        WaitlistInfo waitlist) {
+
+    public static final String ACTION_CAMPAIGN = "campaign";
+    public static final String ACTION_WAITLIST = "waitlist";
+
+    /** @param waitingPeople pending notify subscriptions of the event, read now */
+    public record WaitlistInfo(long waitingPeople) {}
 }

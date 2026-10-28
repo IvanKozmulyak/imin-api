@@ -20,6 +20,7 @@ import com.imin.iminapi.push.PushMessage;
 import com.imin.iminapi.push.PushProperties;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.ModerationHoldRepository;
+import com.imin.iminapi.repository.NotifyReleaseRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -32,6 +33,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -49,14 +51,25 @@ import java.util.UUID;
  * <p>Every tick this sweeps the {@code notify_subscriptions} rows that have not been
  * notified, keeps the events that are publicly listable AND have at least one tier that
  * is purchasable right now ({@link TierAvailability#isPurchasable} — the same predicate
- * that decides whether the notify-me form is shown at all), and mails the pending
- * subscribers exactly once.
+ * that decides whether the notify-me form is shown at all), and mails every pending
+ * subscriber of the event in the same pass, once per release.
+ *
+ * <p><b>Re-arm.</b> A second pass takes the events that are sold out now (LIVE, listed, every
+ * enabled tier sold; holds do not count) and puts their notified {@code every_release} rows back to
+ * pending, except addresses that hold a live ticket for the event and rows emailed less than
+ * {@code imin.notify.rearm-min-gap} (6 h) ago, so the next release mails them again: at most one
+ * email per 6 h. Rows without {@code every_release} (signed up under the one-email promise) are
+ * never re-armed. A pending address that holds a live ticket is marked without an email.
  *
  * <p><b>Delivery semantics: at-least-once.</b> The send happens before the row is marked,
  * so a crash in that window means the address gets a duplicate on the next tick. That is
- * the deliberate trade: a duplicate one-shot informational email is a far smaller failure
- * than silently never sending it. A send that throws leaves the row pending and is retried
- * on the next tick.
+ * the deliberate trade: a duplicate informational email is a far smaller failure than
+ * silently never sending it. A send that throws leaves the row pending and is retried on
+ * the next tick. Apart from that duplicate, each release reaches a row at most once: the
+ * row is re-armed only after a sell-out, and mailed only while the event is purchasable.
+ *
+ * <p>Each release's accepted emails are counted in {@code notify_releases} for the organizer;
+ * the open row closes when a sweep finds the event with nothing purchasable.
  *
  * <p>Consent: this is a transactional one-shot the buyer explicitly asked for at the point
  * of collection, not marketing — no {@code ConsentService}/{@code SendGateService} gate
@@ -94,6 +107,8 @@ public class NotifyReleaseSender {
     private final BuyerNotificationPreferenceRepository pushPrefs;
     private final UnsubscribeTokenService unsubscribeTokens;
     private final ModerationHoldRepository holds;
+    private final NotifyReleaseRepository releases;
+    private final NotifyProperties notifyProps;
 
     public NotifyReleaseSender(NotifySubscriptionRepository subscriptions,
                                EventRepository events,
@@ -109,7 +124,9 @@ public class NotifyReleaseSender {
                                BuyerAccountEmailRepository buyerEmails,
                                BuyerNotificationPreferenceRepository pushPrefs,
                                UnsubscribeTokenService unsubscribeTokens,
-                               ModerationHoldRepository holds) {
+                               ModerationHoldRepository holds,
+                               NotifyReleaseRepository releases,
+                               NotifyProperties notifyProps) {
         this.subscriptions = subscriptions;
         this.events = events;
         this.tiers = tiers;
@@ -125,24 +142,49 @@ public class NotifyReleaseSender {
         this.pushPrefs = pushPrefs;
         this.unsubscribeTokens = unsubscribeTokens;
         this.holds = holds;
+        this.releases = releases;
+        this.notifyProps = notifyProps;
     }
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     @SchedulerLock(name = "NotifyReleaseSender.sweep", lockAtLeastFor = "PT10S", lockAtMostFor = "PT5M")
     public void sweep() {
-        List<UUID> eventIds = subscriptions.findEventIdsWithPendingSubscriptions();
-        if (eventIds.isEmpty()) return;
-
         Instant now = clock.instant();
-        for (UUID eventId : eventIds) {
+        for (UUID eventId : subscriptions.findEventIdsWithPendingSubscriptions()) {
             try {
                 Event event = events.findById(eventId).orElse(null);
-                if (event == null || !isReleased(event, now)) continue;
-                notifySubscribers(event);
+                if (event == null) continue;
+                if (isReleased(event, now)) {
+                    notifySubscribers(event);
+                } else {
+                    // Nothing purchasable: the current release, if any, is over.
+                    releases.closeOpen(eventId, now);
+                }
             } catch (Exception e) {
                 // One bad event must not kill the sweep — its rows stay pending and
                 // the next tick retries.
                 log.error("NotifyReleaseSender: event {} failed — {}", eventId, e.getMessage(), e);
+            }
+        }
+        rearmSoldOutEvents(now);
+    }
+
+    /**
+     * Second pass: sold-out events with rows to re-arm get them back to pending (the query owns both
+     * conditions, so an event with nothing to change is not touched). ponytail: sampled once per sweep,
+     * so a sell-out that ends within a minute is not seen and those rows wait for the next one.
+     */
+    private void rearmSoldOutEvents(Instant now) {
+        Instant cutoff = now.minus(notifyProps.getRearmMinGap());
+        for (UUID eventId : subscriptions.findEventIdsToRearm(cutoff)) {
+            try {
+                releases.closeOpen(eventId, now);
+                int rearmed = subscriptions.rearmWithoutTicket(eventId, cutoff);
+                if (rearmed > 0) {
+                    log.info("NotifyReleaseSender: event {} sold out again — re-armed {}", eventId, rearmed);
+                }
+            } catch (Exception e) {
+                log.error("NotifyReleaseSender: re-arm of event {} failed — {}", eventId, e.getMessage(), e);
             }
         }
     }
@@ -154,16 +196,19 @@ public class NotifyReleaseSender {
      * A suspended event's subscribers stay pending and are mailed once the hold is lifted.
      */
     private boolean isReleased(Event event, Instant now) {
+        if (!isListable(event)) return false;
+        if (holds.salesSuspended(event.getOrgId(), event.getId())) return false;
+        return tiers.findByEventIdAndEnabledTrueOrderBySortOrderAsc(event.getId()).stream()
+                .anyMatch(t -> TierAvailability.isPurchasable(event, t, now));
+    }
+
+    /** Not deleted, PUBLIC, published, not DRAFT/CANCELLED/PAST. */
+    private static boolean isListable(Event event) {
         if (event.getDeletedAt() != null) return false;
         if (event.getVisibility() != EventVisibility.PUBLIC) return false;
         if (event.getPublishedAt() == null) return false;
         EventStatus status = event.getStatus();
-        if (status == EventStatus.DRAFT || status == EventStatus.CANCELLED || status == EventStatus.PAST) {
-            return false;
-        }
-        if (holds.salesSuspended(event.getOrgId(), event.getId())) return false;
-        return tiers.findByEventIdAndEnabledTrueOrderBySortOrderAsc(event.getId()).stream()
-                .anyMatch(t -> TierAvailability.isPurchasable(event, t, now));
+        return status != EventStatus.DRAFT && status != EventStatus.CANCELLED && status != EventStatus.PAST;
     }
 
     private void notifySubscribers(Event event) {
@@ -172,14 +217,17 @@ public class NotifyReleaseSender {
 
         Set<String> suppressed = new HashSet<>(suppressions.findDeliverabilityEmailsIn(
                 pending.stream().map(s -> normalize(s.getEmail())).toList()));
+        Set<UUID> ticketHolders = new HashSet<>(subscriptions.findPendingTicketHolderIds(event.getId()));
 
         // The event body is identical for every subscriber, but the language is not (V77
-        // stores the locale the buyer signed up in). Render once PER LOCALE and reuse —
-        // a sold-out headliner can have thousands of pending rows and at most four bodies.
-        Map<String, EmailTemplateRenderer.Rendered> byLocale = new HashMap<>();
+        // stores the locale the buyer signed up in), nor the promise (V201 every_release).
+        // Render once per template and locale and reuse — a sold-out headliner can have
+        // thousands of pending rows and at most eight bodies.
+        Map<String, EmailTemplateRenderer.Rendered> byTemplate = new HashMap<>();
 
         int sent = 0;
         int skipped = 0;
+        int holding = 0;
         for (NotifySubscription sub : pending) {
             try {
                 if (suppressed.contains(normalize(sub.getEmail()))) {
@@ -190,14 +238,21 @@ public class NotifyReleaseSender {
                             event.getId());
                     continue;
                 }
+                if (ticketHolders.contains(sub.getId())) {
+                    // Already holds a ticket for this event: nothing to tell them.
+                    mark(sub);
+                    holding++;
+                    continue;
+                }
                 String locale = EmailLocale.normalize(sub.getLocale());
+                String template = sub.isEveryRelease() ? "notify-release-repeat" : "notify-release";
                 EmailTemplateRenderer.Rendered rendered =
-                        byLocale.computeIfAbsent(locale, l -> render(event, l));
+                        byTemplate.computeIfAbsent(template + ":" + locale, k -> render(event, template, locale));
                 String subject = subject(event, locale);
                 // The opt-out link is the one part of the body that differs per
-                // subscriber, and it must not cost a render each: the per-locale
+                // subscriber, and it must not cost a render each: the per-template
                 // cache above exists because a headliner has thousands of pending
-                // rows and at most four bodies. So the template is rendered with a
+                // rows and at most eight bodies. So the template is rendered with a
                 // sentinel and the token is spliced in here.
                 String unsubscribeUrl = buyerSiteBase() + "/notify/unsubscribe/"
                         + unsubscribeTokens.signNotify(sub.getId());
@@ -212,17 +267,28 @@ public class NotifyReleaseSender {
                         sub.getId(), event.getId(), e.getMessage());
             }
         }
-        log.info("NotifyReleaseSender: event {} sent={} suppressed={} pending={}",
-                event.getId(), sent, skipped, pending.size() - sent - skipped);
+        log.info("NotifyReleaseSender: event {} sent={} suppressed={} ticketHolders={} pending={}",
+                event.getId(), sent, skipped, holding, pending.size() - sent - skipped - holding);
 
-        pushToAccountHolders(event, pending);
+        if (sent > 0) recordRelease(event, sent);
+        pushToAccountHolders(event, pending.stream().filter(s -> !ticketHolders.contains(s.getId())).toList());
+    }
+
+    /** Counts this pass's accepted emails into the event's open release; the emails already went out. */
+    private void recordRelease(Event event, int sent) {
+        try {
+            releases.recordSends(UUID.randomUUID(), event.getId(), clock.instant().truncatedTo(ChronoUnit.MICROS), sent);
+        } catch (Exception e) {
+            log.warn("NotifyReleaseSender: release count for event {} not recorded — {}",
+                    event.getId(), e.getMessage());
+        }
     }
 
     /**
      * Best-effort push alongside the drop-alert email.
      *
      * <p><b>Deliberately after the email loop and outside its try/catch.</b>
-     * {@link #mark(NotifySubscription)} is the one-shot delivery marker and it is
+     * {@link #mark(NotifySubscription)} is the per-release delivery marker and it is
      * driven by the email alone; letting a push failure influence it would either
      * re-send a mail somebody already has or suppress one they are owed. Push is
      * the enhancement, email is the promise.
@@ -283,11 +349,10 @@ public class NotifyReleaseSender {
     }
 
     private void mark(NotifySubscription sub) {
-        sub.setNotifiedAt(clock.instant());
-        subscriptions.save(sub);
+        subscriptions.markNotified(sub.getId(), clock.instant().truncatedTo(ChronoUnit.MICROS));
     }
 
-    private EmailTemplateRenderer.Rendered render(Event event, String locale) {
+    private EmailTemplateRenderer.Rendered render(Event event, String template, String locale) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName(event));
         values.put("eventWhen", formatWhen(event));
@@ -297,7 +362,7 @@ public class NotifyReleaseSender {
         // characters the HTML escaper touches, so the spliced URL is the one built
         // here and not a re-escaped copy of it.
         values.put("unsubscribeUrl", UNSUBSCRIBE_SENTINEL);
-        return renderer.render("notify-release", locale, values);
+        return renderer.render(template, locale, values);
     }
 
     private static String subject(Event event, String locale) {

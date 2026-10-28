@@ -8,6 +8,9 @@ import java.util.List;
  * The numbers a suggestion card words in the organizer's language, restated from the frozen metrics snapshot.
  * The webapp builds the headline, time label and pace sentence from these; the api sends no prose.
  *
+ * @param seatsGone               seats sold or held by a checkout in progress
+ * @param seatsSold               seats sold; held seats are not sold
+ * @param seatsHeld               seats held by checkouts in progress on enabled tiers; 0 in snapshots before it
  * @param ticketsPerDay7d         tickets per day over the spark's last 7 points; null without a real series
  * @param projectedSellThroughPct sell-through at doors if that pace holds (capped at 100); null without a series
  *                                or a capacity
@@ -22,6 +25,8 @@ public record MomentumFacts(
         int sellThroughPct,
         int seatsLeft,
         int seatsGone,
+        int seatsSold,
+        int seatsHeld,
         int daysOut,
         long hoursToStart,
         long hoursSinceOnSale,
@@ -36,6 +41,7 @@ public record MomentumFacts(
         Integer decline = declinePct(m.spark());
         return new MomentumFacts(
                 m.sold(), m.capacity(), m.sellThroughPct(), m.remaining(), m.seatsGone(),
+                m.seatsSold(), m.seatsHeld(),
                 m.daysOut(), m.hoursToStart(), m.hoursSinceOnSale(),
                 series ? m.ticketsPerDay7d() : null,
                 series && m.capacity() > 0 ? m.projectedSellThroughPct() : null,

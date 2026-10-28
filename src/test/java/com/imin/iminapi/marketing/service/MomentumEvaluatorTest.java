@@ -194,7 +194,7 @@ class MomentumEvaluatorTest {
                 "\"spark\":[0,0,0,0,0,0,0,1,3,1]", "\"seatsLeft\":0");
         var card = momentum.list(support.principalFor(support.orgIdOf(event)), "suggested").stream()
                 .filter(s -> s.eventId().equals(event)).findFirst().orElseThrow();
-        assertThat(card.facts().seatsGone()).isEqualTo(100);
+        assertThat(card.facts().seatsSold()).isEqualTo(100);
         assertThat(card.facts().capacity()).isEqualTo(100);
     }
 
@@ -550,17 +550,20 @@ class MomentumEvaluatorTest {
         }
     }
 
-    enum Skipped { SOLD_OUT_EMPTY_REPEAT, CLICKERS_BELOW_FLOOR }
+    enum Skipped { URGENCY_EMPTY_REPEAT, CLICKERS_BELOW_FLOOR }
 
-    /** A moment held back at the default floor is recorded; the next pass without one clears it. */
+    /**
+     * A moment held back at the default floor is recorded; the next pass without one clears it. A sell-out is an
+     * advisory, never held at the floor, so it clears the urgency skip.
+     */
     @ParameterizedTest(name = "{0}")
     @EnumSource(Skipped.class)
     void aFloorSkipIsRecordedAndClearedWhenTheMomentPasses(Skipped c) {
         flips.set(thresholds, "minAudienceFloor", defaultFloor);
         UUID event;
         List<String> clickers = new ArrayList<>();
-        if (c == Skipped.SOLD_OUT_EMPTY_REPEAT) {
-            event = liveEvent(100, 100, Instant.now().minus(Duration.ofDays(10)), Instant.now().plus(Duration.ofDays(5)));
+        if (c == Skipped.URGENCY_EMPTY_REPEAT) {
+            event = liveEvent(60, 100, Instant.now().minus(Duration.ofDays(15)), Instant.now().plus(Duration.ofHours(70)));
         } else {
             event = quietEvent(0, 100);
             for (int i = 0; i < 3; i++) {
@@ -574,15 +577,15 @@ class MomentumEvaluatorTest {
 
         MomentumFloorSkip skip = floorSkips.findById(event).orElseThrow();
         assertThat(skip.getOrgId()).isEqualTo(support.orgIdOf(event));
-        assertThat(skip.getTriggerType()).isEqualTo(c == Skipped.SOLD_OUT_EMPTY_REPEAT ? "sold_out" : "clicked_no_buy");
-        assertThat(skip.getSendable()).isEqualTo(c == Skipped.SOLD_OUT_EMPTY_REPEAT ? 0 : 3);
+        assertThat(skip.getTriggerType()).isEqualTo(c == Skipped.URGENCY_EMPTY_REPEAT ? "urgency_72h" : "clicked_no_buy");
+        assertThat(skip.getSendable()).isEqualTo(c == Skipped.URGENCY_EMPTY_REPEAT ? 0 : 3);
         assertThat(skip.getFloor()).isEqualTo(defaultFloor);
         assertThat(live(event)).isEmpty();
 
-        // The moment passes: a seat frees up, or every clicker buys a ticket.
-        if (c == Skipped.SOLD_OUT_EMPTY_REPEAT) {
+        // The moment passes: the event sells out, or every clicker buys a ticket.
+        if (c == Skipped.URGENCY_EMPTY_REPEAT) {
             TicketTier tier = tierRepo.findByEventIdOrderBySortOrderAsc(event).get(0);
-            tier.setSold(90);
+            tier.setSold(100);
             tierRepo.save(tier);
         } else {
             clickers.forEach(email -> ticketFor(event, email, Ticket.STATE_ISSUED));

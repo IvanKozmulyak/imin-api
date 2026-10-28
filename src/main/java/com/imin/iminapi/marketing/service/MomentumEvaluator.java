@@ -41,9 +41,10 @@ import java.util.UUID;
  * from the moment tickets became buyable ({@link EffectiveOnSale}), applies the four trigger rules with guardrails
  * (one live suggestion per trigger, launch_push and sold_out once per event, a cooldown counted from the last
  * suggestion or action, a SLUMP left to a scheduled audience-plan slump arm, the min-audience floor, expiry), and
- * persists a pre-drafted suggestion. Then, on every pass, it considers {@code clicked_no_buy}: recent ticket-link
- * clickers with no live ticket. A moment skipped at the floor is recorded in {@code momentum_floor_skips} and
- * cleared by the next pass without one. Suggestions only — never sends.
+ * persists a pre-drafted suggestion; {@code sold_out} records an advisory with no draft instead. Then, on every
+ * pass, it considers {@code clicked_no_buy}: recent ticket-link clickers with no live ticket. A moment skipped at
+ * the floor is recorded in {@code momentum_floor_skips} and cleared by the next pass without one. Suggestions
+ * only — never sends.
  */
 @Component
 public class MomentumEvaluator {
@@ -144,7 +145,11 @@ public class MomentumEvaluator {
         // sold = live TICKETS sold, the figure the events list and Overview show — NOT an order
         // count (one order can hold several tickets). Velocity and spark are live orders too.
         int sold = salesTotals.soldForEvent(e.getId());
-        int capacity = tiers.sumQuantityByEventId(e.getId());
+        // Seats, not live sales, decide sold out and "N left": a test-era ticket still holds its seat.
+        // [enabled quantity, sold on disabled tiers, unsold and unheld on enabled, held on enabled].
+        int[] seats = seatCounts(e.getId());
+        // Capacity: seats of enabled tiers plus those already sold on disabled ones, so live sales never exceed it.
+        int capacity = seats[0] + seats[1];
         List<Object[]> last7d = orders.findLiveCreatedAtAndTotalSince(
                 e.getId(), now.minus(Duration.ofDays(7)));
         // Real per-day sold series for the card's chart: live SOLD tickets from the tickets
@@ -153,15 +158,13 @@ public class MomentumEvaluator {
         // so it can never contradict the `sold` scalar printed next to it.
         List<Instant> soldAt = tickets.findSoldCreatedAtSince(
                 e.getId(), now.minus(Duration.ofDays(MomentumMetrics.SPARK_DAYS)));
-        // Seats, not live sales, decide sold out and "N left": a test-era ticket still holds its seat.
-        int seatsLeft = Math.max(0, capacity - tiers.sumSoldByEventId(e.getId()));
         // The dashboard never writes on_sale_at, so the clock usually starts at publish or the first tier opening.
         Instant onSale = EffectiveOnSale.of(e.getOnSaleAt(), e.getPublishedAt(), e.getCreatedAt(),
                 tiers.findByEventIdOrderBySortOrderAsc(e.getId()));
         MomentumMetrics m = MomentumMetrics.compute(
-                sold, capacity, last7d.size(), onSale, e.getStartsAt(), now, soldAt, seatsLeft);
+                sold, capacity, last7d.size(), onSale, e.getStartsAt(), now, soldAt, seats[2], seats[3]);
 
-        MomentumTriggerType fired = pickTrigger(m);
+        MomentumTriggerType fired = pickTrigger(m, seats[0] > 0);
         log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} hoursToStart={} ticketsPerDay7d={} required50={} -> {}",
                 e.getId(), m.sold(), m.capacity(), m.sellThroughPct(), m.daysOut(), m.hoursToStart(),
                 String.format(java.util.Locale.ROOT, "%.2f", m.ticketsPerDay7d()),
@@ -206,6 +209,11 @@ public class MomentumEvaluator {
         if (inCooldown(e, fired, now)) return null;
         // An audience-plan slump arm already on its way covers this slump: no second "sales slowed" email.
         if (fired == MomentumTriggerType.SLUMP && timingArms.slumpArmsCover(e.getOrgId(), e.getId())) return null;
+
+        if (fired == MomentumTriggerType.SOLD_OUT) {
+            persistSoldOutAdvisory(e, m, now);
+            return null;
+        }
 
         publishTriggered(e, fired);
         // Publishing schedules the event's armed slump drafts while audience-plan sends are on.
@@ -315,6 +323,35 @@ public class MomentumEvaluator {
         return null;
     }
 
+    /**
+     * Nothing is left to sell, so no segment, floor, plan refresh, drafted email or "campaign suggestion"
+     * notification: the card shows who is waiting for tickets and links to Add tickets; approve answers 409.
+     */
+    private void persistSoldOutAdvisory(Event e, MomentumMetrics m, Instant now) {
+        MomentumSuggestion s = new MomentumSuggestion();
+        s.setId(UUID.randomUUID());
+        s.setOrgId(e.getOrgId());
+        s.setEventId(e.getId());
+        s.setTriggerType(MomentumTriggerType.SOLD_OUT.wireValue());
+        s.setStatus("suggested");
+        s.setMetricsSnapshot(m.toJson());
+        s.setDraftPayload("{\"action\":\"waitlist\"}");
+        s.setSuggestedAt(now);
+        suggestions.save(s);
+    }
+
+    /** Seat counts of the event's tiers; see {@link TicketTierRepository#seatCountsByEventId}. */
+    private int[] seatCounts(UUID eventId) {
+        List<Object[]> rows = tiers.seatCountsByEventId(eventId);
+        int[] out = new int[4];
+        if (rows.isEmpty() || rows.get(0) == null) return out;
+        Object[] row = rows.get(0);
+        for (int i = 0; i < out.length && i < row.length; i++) {
+            out[i] = row[i] == null ? 0 : ((Number) row[i]).intValue();
+        }
+        return out;
+    }
+
     private static String clickedNoBuySegmentName(String eventName) {
         String base = "Momentum: clicked tickets, no ticket";
         return eventName == null || eventName.isBlank() ? base : base + " · " + eventName.trim();
@@ -384,9 +421,13 @@ public class MomentumEvaluator {
         return CampaignLocale.defaultFor(organizations.findById(orgId).map(Organization::getCountry).orElse(null), null);
     }
 
-    /** First matching rule, evaluated most-urgent first (spec §6.1). */
-    private MomentumTriggerType pickTrigger(MomentumMetrics m) {
-        if (m.capacity() > 0 && m.seatsLeft() <= 0) {
+    /**
+     * First matching rule, evaluated most-urgent first (spec §6.1).
+     *
+     * @param sellable an enabled tier has quantity; with none the event is not "sold out", just closed
+     */
+    private MomentumTriggerType pickTrigger(MomentumMetrics m, boolean sellable) {
+        if (sellable && m.seatsLeft() <= 0) {
             return MomentumTriggerType.SOLD_OUT;
         }
         // Urgency: within 72h of start AND sell-through in [30,90].
@@ -421,7 +462,7 @@ public class MomentumEvaluator {
 
     private String triggerContext(MomentumTriggerType t, MomentumMetrics m) {
         return switch (t) {
-            case SOLD_OUT -> "Sold out — " + m.seatsGone() + " of " + m.capacity() + " gone.";
+            case SOLD_OUT -> "Sold out — " + m.seatsSold() + " of " + m.capacity() + " sold.";
             case URGENCY_72H -> m.daysOut() + " days left, " + m.remaining() + " tickets remain.";
             case LAUNCH_PUSH -> "On sale " + m.hoursSinceOnSale() + "h, only "
                     + m.sellThroughPct() + "% sold.";

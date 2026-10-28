@@ -1098,6 +1098,10 @@ imin:
     outcome-window-days: 7
     keep-sent-days: 365
     max-keep-unsent-days: 180
+  notify:
+    # Notify-me re-arm: a notified row is re-armed after a sell-out only once its last email is this old.
+    # The buyer-site hint and the notify-release-repeat email say "at most once every 6 hours".
+    rearm-min-gap: PT6H
 
 # resendTracking reports TRACKING_OFF (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

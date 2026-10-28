@@ -51,7 +51,7 @@ class NotifyRateLimitTest {
 
     @Test
     void consumesNotifySubscribeBucketKeyedByClientIpThenDelegates() {
-        NotifySubscriptionRequest body = new NotifySubscriptionRequest("ada@example.com", null);
+        NotifySubscriptionRequest body = new NotifySubscriptionRequest("ada@example.com", null, null);
         when(notifyService.subscribe(eq(eventId), eq(body), any(), any())).thenReturn(NotifySubscriptionResponse.ok());
 
         var res = controller.notify(eventId, body, requestFrom("203.0.113.7"));
@@ -67,7 +67,7 @@ class NotifyRateLimitTest {
                 .when(rateLimiter).consume(eq("notify-subscribe"), eq("ip:203.0.113.7"));
 
         assertThatThrownBy(() -> controller.notify(
-                eventId, new NotifySubscriptionRequest("ada@example.com", null), requestFrom("203.0.113.7")))
+                eventId, new NotifySubscriptionRequest("ada@example.com", null, null), requestFrom("203.0.113.7")))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
@@ -81,7 +81,7 @@ class NotifyRateLimitTest {
     void limitIsPerIpSoOneSpammerDoesNotBlockOtherBuyers() {
         doThrow(ApiException.rateLimited())
                 .when(rateLimiter).consume(eq("notify-subscribe"), eq("ip:203.0.113.7"));
-        NotifySubscriptionRequest body = new NotifySubscriptionRequest("bob@example.com", null);
+        NotifySubscriptionRequest body = new NotifySubscriptionRequest("bob@example.com", null, null);
         when(notifyService.subscribe(eq(eventId), eq(body), any(), any())).thenReturn(NotifySubscriptionResponse.ok());
 
         // A different client IP is a different bucket key and still gets through.

@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -32,8 +33,10 @@ import java.util.UUID;
  *
  * <p>Email delivery is <strong>not</strong> wired here — the subscription is
  * persisted for {@link NotifyReleaseSender} to consume. Re-subscribing an address
- * that has already been notified re-arms the row ({@code notifiedAt} back to null)
- * so the next release reaches it.
+ * whose last email is at least {@code imin.notify.rearm-min-gap} (6 h) old re-arms the row
+ * ({@code notifiedAt} back to null) so the next release reaches it; inside the gap the row
+ * stays notified, one-shot rows included. A request with {@code everyRelease=true} stores a
+ * row the sweeper re-arms by itself after each sell-out.
  */
 @Service
 public class NotifySubscriptionService {
@@ -49,18 +52,32 @@ public class NotifySubscriptionService {
      */
     public static final String CONSENT_TEXT = "We'll email you if tickets release.";
 
+    /**
+     * The hint the buyer site's notify-me form shows (imin-public {@code event.notifyHint}, EN),
+     * stored on rows signed up with {@code everyRelease=true}. Keep it byte-identical to the UI.
+     */
+    public static final String EVERY_RELEASE_CONSENT_TEXT = "We email everyone on the list at once when "
+            + "tickets go on sale or come back after a sell-out, at most once every 6 hours. "
+            + "First come, first served. We stop once this email address has a ticket.";
+
     /** Column widths from V77 — untrusted header input is truncated, never rejected. */
     private static final int SOURCE_IP_MAX_LENGTH = 45;
     private static final int USER_AGENT_MAX_LENGTH = 255;
 
     private final EventRepository eventRepository;
     private final NotifySubscriptionRepository subscriptionRepository;
+    private final NotifyProperties notifyProps;
+    private final Clock clock;
     private final Validator validator;
 
     public NotifySubscriptionService(EventRepository eventRepository,
-                                     NotifySubscriptionRepository subscriptionRepository) {
+                                     NotifySubscriptionRepository subscriptionRepository,
+                                     NotifyProperties notifyProps,
+                                     Clock clock) {
         this.eventRepository = eventRepository;
         this.subscriptionRepository = subscriptionRepository;
+        this.notifyProps = notifyProps;
+        this.clock = clock;
         // One-off Validator; we only need the @Email constraint applied programmatically.
         // Bean-validation in DTOs would route through FIELD_INVALID; we want INVALID_REQUEST.
         this.validator = Validation.buildDefaultValidatorFactory().getValidator();
@@ -85,37 +102,43 @@ public class NotifySubscriptionService {
         // Locale is deliberately outside normalizeAndValidate: a bad locale is not a
         // request error, it just means "no preference" (⇒ English email).
         String locale = EmailLocale.normalizeOrNull(request == null ? null : request.locale());
+        boolean everyRelease = request != null && Boolean.TRUE.equals(request.everyRelease());
 
         // Reuse the existing public-eligibility predicate so draft / private / deleted
         // events 404 with the same leak-safe envelope as the detail endpoint.
         Event event = eventRepository.findPublic(eventId)
                 .orElseThrow(() -> ApiException.notFound("Event"));
 
+        // Consent provenance (V77) and V201's every_release: the latest signup's form decides them.
+        String ip = truncate(sourceIp, SOURCE_IP_MAX_LENGTH);
+        String ua = truncate(userAgent, USER_AGENT_MAX_LENGTH);
+        String consentText = everyRelease ? EVERY_RELEASE_CONSENT_TEXT : CONSENT_TEXT;
+
         // Idempotency: a SELECT-then-INSERT race could still produce two parallel inserts,
         // so we rely on the UNIQUE constraint as the actual guarantee. The pre-check just
         // avoids generating obvious garbage in the unique-violation log.
         var existing = subscriptionRepository.findByEventIdAndEmail(event.getId(), email);
         if (existing.isPresent()) {
-            // Re-arm: a buyer who was already notified about one release and comes back to
-            // subscribe again wants to hear about the NEXT one. Without this the UNIQUE
-            // pre-check would silently eat the request and we'd repeat the false promise.
-            NotifySubscription row = existing.get();
-            boolean wasNotified = row.getNotifiedAt() != null;
-            if (wasNotified) {
-                row.setNotifiedAt(null);
-            }
-            // Provenance describes the LATEST act of consent, so refresh it on every
-            // re-subscribe — including the plain-duplicate case. The row we would be
-            // mailing next was authorized here, now, from this client.
-            applyProvenance(row, sourceIp, userAgent, locale);
-            subscriptionRepository.save(row);
+            // Targeted writes, never a save of this read: the sweep may mark the row meanwhile, and a full save
+            // would put notified_at back to null, so the next tick would mail the address again inside the 6 h cap.
+            UUID id = existing.get().getId();
+            // Re-arm: a buyer notified about one release who subscribes again wants the NEXT one,
+            // but not sooner than the sweep's 6 h cap, or a repeated POST could mail an address at will.
+            subscriptionRepository.rearmIfNotifiedBy(id, clock.instant().minus(notifyProps.getRearmMinGap()));
+            // Provenance describes the LATEST act of consent, so it is refreshed on every re-subscribe.
+            // ponytail: a row deleted after the read (unsubscribe, erasure) stays deleted; the call still answers ok.
+            subscriptionRepository.refreshProvenance(id, ip, ua, consentText, locale, everyRelease);
             return NotifySubscriptionResponse.ok();
         }
 
         NotifySubscription sub = new NotifySubscription();
         sub.setEventId(event.getId());
         sub.setEmail(email);
-        applyProvenance(sub, sourceIp, userAgent, locale);
+        sub.setSourceIp(ip);
+        sub.setUserAgent(ua);
+        sub.setConsentText(consentText);
+        sub.setLocale(locale);
+        sub.setEveryRelease(everyRelease);
         try {
             subscriptionRepository.save(sub);
             // Flush inside the try. NotifySubscription ids come from an in-VM generator, so
@@ -128,18 +151,6 @@ public class NotifySubscriptionService {
             return NotifySubscriptionResponse.ok();
         }
         return NotifySubscriptionResponse.ok();
-    }
-
-    /**
-     * Stamps the V77 consent-provenance columns. {@code consentText} is always the
-     * current {@link #CONSENT_TEXT} constant — the exact wording shown at collection.
-     */
-    private static void applyProvenance(NotifySubscription row, String sourceIp,
-                                        String userAgent, String locale) {
-        row.setSourceIp(truncate(sourceIp, SOURCE_IP_MAX_LENGTH));
-        row.setUserAgent(truncate(userAgent, USER_AGENT_MAX_LENGTH));
-        row.setConsentText(CONSENT_TEXT);
-        row.setLocale(locale);
     }
 
     /** Trims, caps to {@code max}, and normalizes blank to null. */
