@@ -444,14 +444,17 @@ class SurveyServiceTest {
         String email = addr("late");
         service.submit(token, scored(9, LINKED, email));
         String link = link(email);
+        // A day back on the clock the service reads, so the reconciler's database clock agrees even when the VM's lags.
         jdbc.update("update consent_confirmation_tokens set expires_at = ? where membership_id = ?",
-                Timestamp.from(Instant.now().minusSeconds(60)), membership(email).get("membership_id"));
+                Timestamp.from(clock.instant().minus(Duration.ofDays(1))), membership(email).get("membership_id"));
 
         assertThat(confirmations.confirm(link)).isEqualTo(ConsentConfirmationResponse.invalid());
         assertThat(membership(email).get("nps")).isNull();
 
         assertThat(pendingScore(email)).isEqualTo(9);
-        reconciler.run();
+        // A lock row left by an earlier caller would make run() a no-op.
+        jdbc.update("update shedlock set lock_until = locked_at where name = 'consent_confirmation_reconcile'");
+        assertThat(reconciler.run()).isPresent();
         assertThat(pendingScore(email)).isNull();
     }
 
