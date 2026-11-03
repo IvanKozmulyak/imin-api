@@ -144,7 +144,7 @@ public class Membership {
     @Column(columnDefinition = "TEXT")
     private String notes;
 
-    /** Art.17 erasure schedule: set to now()+30d when erase requested. */
+    /** Art.17 erasure schedule: now()+30d from the first erase request; a repeat never moves it. */
     @Column(name = "erase_at")
     private Instant eraseAt;
 

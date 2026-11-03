@@ -14,14 +14,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Sticky marketing opt-outs, keyed by address rather than by org — like
- * {@link ConsumerRepository}, this is one of the deliberately cross-tenant
- * tables, so every caller must scope it itself.
- *
- * <p>Written by {@code MarketingOptOutRecorder} on a {@code DATA_SUBJECT}
- * unsubscribe; read by the Release-2 account-level "organizer updates" toggle,
- * which may never re-subscribe an address that holds a row here (§6.3).
- * Deleted by account erasure and, 3 years after {@code created_at}, by {@code AudienceRetentionPurgeJob}.
+ * Sticky marketing opt-outs per (address, org, channel); cross-tenant, so callers scope it. Only MarketingOptOutRecorder
+ * writes it: own unsubscribes and checkout refusals, complaints, reminder one-click. Read by consent, reminder, opt-in checks.
  */
 @RepositoryRestResource(exported = false)
 public interface MarketingOptOutRepository extends JpaRepository<MarketingOptOut, MarketingOptOutId> {

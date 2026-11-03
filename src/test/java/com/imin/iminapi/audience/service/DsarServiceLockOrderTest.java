@@ -19,6 +19,7 @@ import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditLogger;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InOrder;
@@ -42,7 +43,7 @@ class DsarServiceLockOrderTest {
             mock(ErasedAddressRepository.class), mock(DsarScopeService.class), fanFeatureRepo,
             mock(ImportRowProvenanceRepository.class), mock(ConsentGate.class), mock(OrderRepository.class),
             mock(AudienceAssignmentRepository.class), mock(EventRepository.class),
-            mock(ConsentConfirmationTokenRepository.class));
+            mock(ConsentConfirmationTokenRepository.class), mock(EntityManager.class));
 
     @ParameterizedTest(name = "{0}")
     @ValueSource(strings = {"requestErase", "executeErase"})

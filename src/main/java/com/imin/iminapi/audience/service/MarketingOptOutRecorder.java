@@ -10,8 +10,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.UUID;
 
 /**
- * Writes the sticky {@code marketing_optouts} row for a {@code DATA_SUBJECT}
- * unsubscribe (buyer-accounts epic §6.3).
+ * Writes the sticky {@code marketing_optouts} row for a {@code DATA_SUBJECT} unsubscribe and, via
+ * {@code StickyOptOutWriter}, for complaints and reminder one-click.
  *
  * <p><b>This is a separate bean for one reason: the transaction boundary.</b>
  * {@link #record} runs {@link Propagation#REQUIRES_NEW}, so its writes commit or roll

@@ -13,6 +13,8 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -303,6 +305,10 @@ public class AudienceController {
     }
 
     @PostMapping("/members/{id}/erase")
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "Erase requested: data goes 30 days after the first request; a repeat keeps that date and changes nothing"),
+            @ApiResponse(responseCode = "403", description = "FORBIDDEN: only an owner or admin can erase"),
+            @ApiResponse(responseCode = "404", description = "NOT_FOUND: no such member in this org")})
     public ResponseEntity<Void> dsarErase(@AuthenticationPrincipal AuthPrincipal principal,
                                            @PathVariable UUID id) {
         dsarService.requestErase(principal.orgId(), id, principal);
@@ -314,6 +320,11 @@ public class AudienceController {
      * now, 202 when it belongs to a member and took the member's erase (30-day grace). OWNER/ADMIN only.
      */
     @PostMapping("/erase-address")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "No member in this org has the address; this org's records for it are erased now"),
+            @ApiResponse(responseCode = "202", description = "The address is a member's; it took the member's erase (30 days after the first request)"),
+            @ApiResponse(responseCode = "400", description = "FIELD_INVALID: email missing, blank or over 254 characters (INVALID_REQUEST: body not JSON)"),
+            @ApiResponse(responseCode = "403", description = "FORBIDDEN: only an owner or admin can erase")})
     public ResponseEntity<Void> dsarEraseAddress(@AuthenticationPrincipal AuthPrincipal principal,
                                                   @Valid @RequestBody EraseAddressRequest body) {
         boolean erasedNow = dsarService.eraseAddress(principal.orgId(), body.email(), principal);

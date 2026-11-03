@@ -18,8 +18,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.imin.iminapi.audience.dto.DsarRecords;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
@@ -35,6 +38,7 @@ import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.*;
@@ -46,6 +50,7 @@ import static org.assertj.core.api.Assertions.*;
  * - Art.16 rectify updates mutable fields
  * - Art.21 object is synchronous (immediately unsubscribed + gate blocked)
  * - Art.17 erase schedules 30-day grace → erase_pending
+ * - Art.17 repeat erase keeps the first erase date and writes nothing
  * - Art.17 execute: cascade (membership + consent + marketing-supp deleted), tombstone written
  * - Art.17 execute: shared consumer survives when another org still references it
  * - Art.17 execute: consumer deleted when last membership erased
@@ -72,6 +77,7 @@ class AudienceDsarTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired IminFixtures fx;
     @Autowired AuditRows audit;
+    @Autowired PlatformTransactionManager txManager;
 
     @Autowired FanFeatureRepository fanFeatureRepo;
     @Autowired ImportRowProvenanceRepository provenanceRepo;
@@ -337,6 +343,62 @@ class AudienceDsarTest {
         dsarService.requestErase(orgA, mid, principalA);
 
         assertThat(fanFeatureRepo.findById(mid)).isEmpty();
+    }
+
+    @Test
+    void request_erase_again_keeps_the_first_erase_date_and_writes_nothing() {
+        UUID mid = seedMembership(orgA, fx.email("eraseagain"));
+        dsarService.requestErase(orgA, mid, principalA);
+        // Backdate as if the first request were 18 days old.
+        java.sql.Timestamp firstEraseAt = java.sql.Timestamp.from(
+                Instant.now().plus(12, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS));
+        jdbc.update("UPDATE memberships SET erase_at = ? WHERE membership_id = ?", firstEraseAt, mid);
+
+        AuthPrincipal otherAdmin = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.ADMIN, UUID.randomUUID());
+        dsarService.requestErase(orgA, mid, otherAdmin);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT erase_at FROM memberships WHERE membership_id = ?", java.sql.Timestamp.class, mid))
+                .isEqualTo(firstEraseAt);
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM memberships WHERE membership_id = ?", String.class, mid))
+                .isEqualTo("erase_pending");
+        assertThat(consentRepo.findByMembershipId(mid).stream()
+                .filter(r -> "dsar_erase".equals(r.getSource())).toList()).hasSize(1);
+        audit.assertRecorded(orgA, AuditActions.DSAR_ERASE_REQUESTED, "membership", mid);
+    }
+
+    /** Two erase-address calls at once: the later one may hold a copy of the member loaded before the first committed. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"firstEraseCommitsBeforeTheLoad", "firstEraseCommitsBetweenTheLoadAndTheLock"})
+    void a_concurrent_first_erase_is_seen_under_the_lock(String ordering) {
+        String email = fx.email("eraserace");
+        UUID mid = seedMembership(orgA, email);
+        java.sql.Timestamp firstEraseAt = java.sql.Timestamp.from(
+                Instant.now().plus(12, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS));
+        // The first erase commits on its own thread and connection; erase_at is then backdated so a move shows.
+        Runnable firstErase = () -> CompletableFuture.runAsync(() -> {
+            dsarService.requestErase(orgA, mid, principalA);
+            jdbc.update("UPDATE memberships SET erase_at = ? WHERE membership_id = ?", firstEraseAt, mid);
+        }).join();
+        AuthPrincipal otherAdmin = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.ADMIN, UUID.randomUUID());
+
+        if ("firstEraseCommitsBeforeTheLoad".equals(ordering)) firstErase.run();
+        new TransactionTemplate(txManager).executeWithoutResult(status -> {
+            // Loaded the way eraseAddress loads it, so the lock meets an entity already in the persistence context.
+            consumerRepo.findByNormalizedEmail(EmailNormalizer.normalize(email))
+                    .flatMap(c -> membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()))
+                    .orElseThrow();
+            if ("firstEraseCommitsBetweenTheLoadAndTheLock".equals(ordering)) firstErase.run();
+            dsarService.requestErase(orgA, mid, otherAdmin);
+        });
+
+        assertThat(jdbc.queryForObject(
+                "SELECT erase_at FROM memberships WHERE membership_id = ?", java.sql.Timestamp.class, mid))
+                .isEqualTo(firstEraseAt);
+        assertThat(consentRepo.findByMembershipId(mid).stream()
+                .filter(r -> "dsar_erase".equals(r.getSource())).toList()).hasSize(1);
+        audit.assertRecorded(orgA, AuditActions.DSAR_ERASE_REQUESTED, "membership", mid);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

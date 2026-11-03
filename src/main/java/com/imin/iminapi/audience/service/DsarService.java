@@ -26,6 +26,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import jakarta.persistence.EntityManager;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,7 +48,7 @@ import java.util.UUID;
  *   <li>object (Art.21) — synchronous, always succeeds immediately.</li>
  *   <li>erase (Art.17) — REAL cascade with 30-day grace period:
  *       <ol>
- *         <li>Sets membership.status='erase_pending' + erase_at=now()+30d.</li>
+ *         <li>First request sets membership.status='erase_pending' + erase_at=now()+30d; a repeat changes nothing.</li>
  *         <li>The scheduled erasure job executes the destructive cascade after 30d.</li>
  *         <li>Leaves immutable tombstone in audit_logs.</li>
  *         <li>Consumer row survives if another org still references it.</li>
@@ -57,6 +58,8 @@ import java.util.UUID;
  */
 @Service
 public class DsarService {
+
+    private static final String ERASE_PENDING = "erase_pending";
 
     private final MembershipRepository membershipRepo;
     private final ConsumerRepository consumerRepo;
@@ -76,6 +79,7 @@ public class DsarService {
     private final AudienceAssignmentRepository assignmentRepo;
     private final EventRepository eventRepo;
     private final com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository confirmationTokenRepo;
+    private final EntityManager entityManager;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -94,7 +98,8 @@ public class DsarService {
                        OrderRepository orderRepo,
                        AudienceAssignmentRepository assignmentRepo,
                        EventRepository eventRepo,
-                       com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository confirmationTokenRepo) {
+                       com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository confirmationTokenRepo,
+                       EntityManager entityManager) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -113,6 +118,7 @@ public class DsarService {
         this.assignmentRepo = assignmentRepo;
         this.eventRepo = eventRepo;
         this.confirmationTokenRepo = confirmationTokenRepo;
+        this.entityManager = entityManager;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -283,7 +289,7 @@ public class DsarService {
 
     /**
      * Art.17 erasure — schedules 30-day grace period.
-     * Sets status='erase_pending', erase_at=now()+30d.
+     * The first request sets status='erase_pending', erase_at=now()+30d; a repeat on an erase_pending member writes nothing.
      * The {@link AudienceErasureJob} executes the cascade after grace period.
      *
      * <p>It also unsubscribes immediately, through the same path {@link #object} uses.
@@ -294,13 +300,18 @@ public class DsarService {
     @Transactional
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
         requirePrivilegedRole(principal, "erase a data subject's record");
-        require(orgId, membershipId);
         // Membership row first, fan_features second: the same lock order as the projector's write.
-        membershipRepo.lockByIdAndOrgId(membershipId, orgId);
+        // Re-read under the lock: eraseAddress already holds a copy, which would hide an erase committed since.
+        entityManager.flush();
+        Membership locked = membershipRepo.lockByIdAndOrgId(membershipId, orgId)
+                .orElseThrow(() -> ApiException.notFound("Membership"));
+        entityManager.refresh(locked);
+        // A repeat writes nothing: the erase date stays 30 days after the first request.
+        if (ERASE_PENDING.equals(locked.getStatus())) return;
         consentService.unsubscribe(orgId, membershipId, "dsar_erase", "email",
                 ConsentOrigin.DATA_SUBJECT, principal);
         Membership m = require(orgId, membershipId);
-        m.setStatus("erase_pending");
+        m.setStatus(ERASE_PENDING);
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
         membershipRepo.save(m);
         // Derived profile goes now, not after the grace period; the projector never rewrites an erase_pending row.
@@ -417,8 +428,7 @@ public class DsarService {
                 .flatMap(c -> membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()))
                 .orElse(null);
         if (member != null) {
-            // Already requested: a second request must not push the erase date back.
-            if (!"erase_pending".equals(member.getStatus())) requestErase(orgId, member.getMembershipId(), principal);
+            requestErase(orgId, member.getMembershipId(), principal);
             return false;
         }
         notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
