@@ -1,7 +1,9 @@
 package com.imin.iminapi.checkoutreminder;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
 import com.imin.iminapi.checkoutreminder.repository.OrgCheckoutReminderSettingRepository;
@@ -63,6 +65,7 @@ class CheckoutReminderControllerTest {
 
     @Autowired MockMvc mvc;
     @Autowired CheckoutReminderProperties props;
+    @Autowired AudiencePlanProperties planProps;
     @Autowired PropertyFlips flips;
     @Autowired AuditRows audit;
     @Autowired IminFixtures fx;
@@ -80,6 +83,7 @@ class CheckoutReminderControllerTest {
     @Autowired MarketingEmailProperties emailProps;
     @Autowired CampaignEmailProvider provider;
 
+    private final ObjectMapper om = new ObjectMapper();
     private ReminderRows rows;
     private ReminderRows.Org org;
 
@@ -196,6 +200,9 @@ class CheckoutReminderControllerTest {
                 started.plusSeconds(3600));
         UUID old = rows.waiting(org, night, tier, rows.email("old"), 1, "en", false,
                 now.minus(Duration.ofDays(31)), now.minus(Duration.ofDays(31)).plusSeconds(3600));
+        // A refused checkout's row kept nothing for a reminder, so it is in no count and no latest row.
+        String refusedCheckout = rows.email("refused-checkout");
+        rows.refusal(org, night, tier, refusedCheckout, started);
         assertThat(rows.load(foreign).getOrgId()).isEqualTo(other.id());
         assertThat(rows.load(old).getCapturedAt()).isBefore(now.minus(Duration.ofDays(30)));
 
@@ -208,13 +215,14 @@ class CheckoutReminderControllerTest {
                 .andExpect(jsonPath("$.notSent").value(2))
                 .andExpect(jsonPath("$.notSentByReason.HAS_TICKETS").value(1))
                 .andExpect(jsonPath("$.notSentByReason.SOLD_OUT").value(1))
+                .andExpect(jsonPath("$.notSentByReason.UNSUBSCRIBED").doesNotExist())
                 .andExpect(jsonPath("$.boughtAfter").value(1))
                 .andExpect(jsonPath("$.salesMinor").value(3558))
                 .andExpect(jsonPath("$.canEdit").value(false))
                 .andExpect(jsonPath("$.recent.length()").value(5))
                 .andExpect(jsonPath("$.recent[0].email").doesNotExist())
                 .andReturn().getResponse().getContentAsString();
-        for (String address : List.of(kept, refunded, waiting, hadTickets, soldOut)) {
+        for (String address : List.of(kept, refunded, waiting, hadTickets, soldOut, refusedCheckout)) {
             assertThat(body).doesNotContain(address);
         }
 
@@ -244,6 +252,24 @@ class CheckoutReminderControllerTest {
         assertThat(limiter.calls()).filteredOn(c -> c.bucket().equals(bucket))
                 .extracting(RecordingRateLimiter.Call::key).containsOnly(admin.getId().toString());
         if (!preview) assertThat(testsSentTo(admin.getEmail())).isEqualTo(1);
+    }
+
+    /** The preview shows the footer this org's buyers get: the notice while soft opt-in is on, else the tick. */
+    @ParameterizedTest(name = "softOptIn={0}")
+    @ValueSource(booleans = {true, false})
+    void previewFollowsTheSoftOptInSwitch(boolean softOptIn) throws Exception {
+        flips.set(planProps, "softOptInEnabled", softOptIn);
+        User admin = user(org.org(), UserRole.ADMIN);
+        rows.tier(rows.night(org, Instant.now().plus(Duration.ofDays(4))), 1600, 50);
+        String name = org.org().getName();
+        String notice = "At checkout you read “" + ReminderRows.NOTICE.formatted(name) + "” and left the box unticked.";
+        String tick = "You ticked “" + ReminderRows.LABEL.formatted(name) + "”";
+
+        String text = om.readTree(mvc.perform(get(URL + "/preview").with(as(admin)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("text").asText();
+
+        assertThat(text).contains(softOptIn ? notice : tick).doesNotContain(softOptIn ? "You ticked" : "At checkout you read");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

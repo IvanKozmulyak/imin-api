@@ -2,7 +2,9 @@ package com.imin.iminapi.checkoutreminder.service;
 
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
+import com.imin.iminapi.checkoutreminder.model.CheckoutReminderBasis;
 import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
 import com.imin.iminapi.checkoutreminder.repository.OrgCheckoutReminderSettingRepository;
 import com.imin.iminapi.email.EmailLocale;
@@ -13,6 +15,7 @@ import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.stripe.CheckoutAmountVerifier;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.imin.iminapi.util.LogSafe;
 import org.slf4j.Logger;
@@ -34,7 +37,9 @@ import java.util.UUID;
 
 /**
  * Keeps an expired, unpaid checkout for one reminder — only when the buyer ticked the organizer-named
- * marketing box and the sentence they read is on record. Anything else stores nothing.
+ * marketing box, or on a paid checkout saw the organizer-named notice and did not tick its refuse box,
+ * and the sentence they read is on record. A refusal drops the night's earlier waiting reminder or leaves
+ * a row, without any sentence, that stops a later one; anything else stores nothing.
  *
  * <p>Runs after the expiry webhook committed the seat release, in its own transaction, and never
  * throws: a reminder that could not be stored must not hold seats or fail the webhook.
@@ -53,6 +58,7 @@ public class CheckoutReminderCapture {
     private final TicketTierRepository tiers;
     private final OrganizationRepository orgs;
     private final AudiencePlanLogic logic;
+    private final AudiencePlanProperties planProps;
     private final StripeProperties stripeProps;
     private final Clock clock;
     private final TransactionTemplate requiresNew;
@@ -60,7 +66,8 @@ public class CheckoutReminderCapture {
     public CheckoutReminderCapture(CheckoutReminderProperties props, CheckoutReminderRepository reminders,
                                    OrgCheckoutReminderSettingRepository settings, EventRepository events,
                                    TicketTierRepository tiers, OrganizationRepository orgs,
-                                   AudiencePlanLogic logic, StripeProperties stripeProps, Clock clock,
+                                   AudiencePlanLogic logic, AudiencePlanProperties planProps,
+                                   StripeProperties stripeProps, Clock clock,
                                    PlatformTransactionManager transactionManager) {
         this.props = props;
         this.reminders = reminders;
@@ -69,6 +76,7 @@ public class CheckoutReminderCapture {
         this.tiers = tiers;
         this.orgs = orgs;
         this.logic = logic;
+        this.planProps = planProps;
         this.stripeProps = stripeProps;
         this.clock = clock;
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -90,16 +98,15 @@ public class CheckoutReminderCapture {
         if (!props.isEnabled()) return;
         Map<String, String> md = expired.metadata();
         if (!"web".equals(md.get("client"))) return;
-        if (!"true".equals(md.get("marketing_opt_in"))) return;
         CheckoutConsent consent = CheckoutConsent.fromMetadata(md);
-        String proof = consent.marketingOptInProofText();
-        String version = consent.marketingOptInTextVersion();
-        // CheckoutConsent drops a version that came without its sentence, so this also requires the sentence.
-        if (version == null || !logic.logic().legal().organizerNamedTextVersions().contains(version)) return;
         String email = EmailNormalizer.normalize(firstNonBlank(expired.customerEmail(), md.get("buyer_email")));
         if (email == null || email.isBlank() || expired.sessionId() == null) return;
-
         UUID eventId = uuid(md.get("event_id"));
+        Instant now = clock.instant();
+        Instant startedAt = expired.created() != null
+                ? Instant.ofEpochSecond(expired.created())
+                : now.minus(Duration.ofMinutes(stripeProps.getCheckoutSessionTtlMinutes()));
+
         UUID tierId = uuid(md.get("tier_id"));
         Integer qty = positiveInt(md.get("qty"));
         if (eventId == null || tierId == null || qty == null || qty > MAX_QTY) return;
@@ -108,22 +115,60 @@ public class CheckoutReminderCapture {
         TicketTier tier = tiers.findById(tierId).orElse(null);
         if (tier == null || !eventId.equals(tier.getEventId())) return;
         Organization org = orgs.findById(event.getOrgId()).orElse(null);
-        if (org == null || !namesOrganizer(proof, org)) return;
-        if (!settings.isEnabled(org.getId())) return;
+        if (org == null) return;
 
-        Instant now = clock.instant();
-        Instant startedAt = expired.created() != null
-                ? Instant.ofEpochSecond(expired.created())
-                : now.minus(Duration.ofMinutes(stripeProps.getCheckoutSessionTtlMinutes()));
+        // The refusal is the buyer's latest act: it beats a tick in the same metadata and an earlier checkout's
+        // row, and its own row stops an older expiry that Stripe delivers after it.
+        if (consent.marketingRefused()) {
+            if (!settings.isEnabled(org.getId())) return;
+            int written = reminders.upsertRefusal(UUID.randomUUID(), org.getId(), eventId, tierId, qty,
+                    expired.sessionId(), email, startedAt, now);
+            log.info("[checkout-reminder] session {} on event {} refused; {} row(s) marked not to send",
+                    expired.sessionId(), eventId, written);
+            return;
+        }
+        // CheckoutConsent drops a version that came without its sentence, so each branch also requires the sentence.
+        CheckoutReminderBasis basis;
+        String proof;
+        String version;
+        AudiencePlanLogic.Legal legal = logic.logic().legal();
+        if ("true".equals(md.get("marketing_opt_in")) && consent.marketingOptInTextVersion() != null
+                && legal.organizerNamedTextVersions().contains(consent.marketingOptInTextVersion())) {
+            basis = CheckoutReminderBasis.EXPLICIT;
+            proof = consent.marketingOptInProofText();
+            version = consent.marketingOptInTextVersion();
+        } else if (consent.marketingNoticeTextVersion() != null
+                && legal.softOptInNoticeVersions().contains(consent.marketingNoticeTextVersion())
+                && Boolean.TRUE.equals(planProps.getSoftOptInEnabled())
+                && expectedTotal(md) > 0) {
+            basis = CheckoutReminderBasis.NOTICE;
+            proof = consent.marketingNoticeProofText();
+            version = consent.marketingNoticeTextVersion();
+        } else {
+            return;
+        }
+        if (!namesOrganizer(proof, org) || !settings.isEnabled(org.getId())) return;
+
         Instant dueAt = CheckoutReminderSchedule.dueAt(startedAt, org.getTimezone(), props.delay());
         int written = reminders.upsertWaiting(UUID.randomUUID(), org.getId(), eventId, tierId, qty,
                 expired.sessionId(), email, EmailLocale.normalizeOrNull(md.get("buyer_locale")),
-                md.get("promo_id") != null, proof, version, startedAt, now, dueAt);
+                md.get("promo_id") != null, proof, version, basis.name(), startedAt, now, dueAt);
         log.info("[checkout-reminder] session {} on event {} {}", expired.sessionId(), eventId,
-                written == 0 ? "left the existing row as it was" : "kept for a reminder");
+                written == 0 ? "left the existing row as it was" : "kept for a reminder (" + basis + ")");
     }
 
-    /** The ticked sentence must name this organizer, as for an order's checkout consent. */
+    /** The total the session was created for; missing or unparseable counts as nothing to pay. */
+    private static long expectedTotal(Map<String, String> md) {
+        String raw = md.get(CheckoutAmountVerifier.EXPECTED_TOTAL_MINOR);
+        if (raw == null) return 0;
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** The ticked sentence or the notice must name this organizer, as for an order's checkout consent. */
     private static boolean namesOrganizer(String proof, Organization org) {
         String name = org.getName() == null ? "" : org.getName().trim();
         return proof != null && !name.isEmpty() && fold(proof).contains(fold(name));

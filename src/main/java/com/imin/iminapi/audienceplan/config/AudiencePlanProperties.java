@@ -28,7 +28,7 @@ public class AudiencePlanProperties {
     /** Real sends of audience-plan campaigns; stays false until the platform legal gates clear. Blank binds false. */
     private Boolean sendsEnabled = Boolean.FALSE;
 
-    /** Lets ConsentGate count a soft opt-in grounded on a paid order; explicit consent only while false. Blank binds false. */
+    /** Lets ConsentGate count a paid-order soft opt-in and the checkout reminder keep a notice-based address. Blank binds false. */
     private Boolean softOptInEnabled = Boolean.FALSE;
 
     /** Lets the nightly retention job remove basis past 3 years; false = dry run that only logs counts. Blank binds false. */

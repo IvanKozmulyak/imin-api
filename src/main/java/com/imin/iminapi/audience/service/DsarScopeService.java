@@ -154,7 +154,7 @@ public class DsarScopeService {
                 checkoutReminders.findForOrgAndEmail(orgId, normalizedEmail).stream()
                         .map(r -> new DsarRecords.CheckoutReminderRecord(r.getId(), r.getEventId(), r.getTierId(),
                                 r.getQty(), r.getEmailNormalized(), r.getConsentProof(), r.getConsentTextVersion(),
-                                r.getBuyerLocale(), r.getStartedAt(), r.getStatus().name(),
+                                r.getConsentBasis().name(), r.getBuyerLocale(), r.getStartedAt(), r.getStatus().name(),
                                 r.getReason() == null ? null : r.getReason().name(), r.getSentAt(),
                                 r.getUnsubscribedAt(), r.getRecoveredOrderId()))
                         .toList();

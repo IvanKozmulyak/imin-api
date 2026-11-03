@@ -266,6 +266,31 @@ class CheckoutConsentBackfillTest {
                 Integer.class, email, org.getId())).isEqualTo(1);
     }
 
+    /** "Email me" from an old tab and "Don't email me" on one order: the repair must not subscribe the buyer. */
+    @Test
+    void refusedAndTickedOrderWhoseProjectionFailed_backfillRecordsOnlyTheObjection() {
+        Organization org = org();
+        String email = email("refused-and-ticked");
+        UUID membershipId = memberOf(org, email);
+        Order order = refusedOrder(org, email);
+        order.setMarketingOptIn(true);
+        order.setMarketingOptInProof(PROOF);
+        order = orders.save(order);
+        projectFailing(order, membershipId);
+        assertThat(refusals(membershipId)).isZero();
+
+        runBackfill();
+
+        assertThat(refusals(membershipId)).isEqualTo(1);
+        assertThat(checkoutGrants(order)).isEmpty();
+        assertThat(membership(org, email)).containsEntry("consent_status", "unsubscribed")
+                .containsEntry("objected_profiling", true);
+        assertThat(membership(org, email).get("consent_basis")).isNull();
+        assertThat(jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ?"
+                + " and org_id = ? and channel = 'email' and source = 'checkout_refusal'",
+                Integer.class, email, org.getId())).isEqualTo(1);
+    }
+
     enum OwnSignUp { TICKED_BOX_ON_A_LATER_ORDER, CONFIRMED_DOOR_SIGN_UP }
 
     @ParameterizedTest

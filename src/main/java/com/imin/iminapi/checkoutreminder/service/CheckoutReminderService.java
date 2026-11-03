@@ -5,10 +5,12 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.StickyOptOutWriter;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.dto.CheckoutReminderPreviewDto;
 import com.imin.iminapi.checkoutreminder.dto.CheckoutReminderSummaryDto;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
+import com.imin.iminapi.checkoutreminder.model.CheckoutReminderBasis;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminderStatus;
 import com.imin.iminapi.checkoutreminder.model.OrgCheckoutReminderSetting;
 import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
@@ -76,6 +78,16 @@ public class CheckoutReminderService {
             "fr", "Envoie-moi des e-mails sur les événements organisés par %s. J’accepte de recevoir du marketing par e-mail et je peux me désinscrire à tout moment, en un clic dans chaque e-mail.",
             "uk", "Пишіть мені на пошту про події організатора %s. Погоджуюсь отримувати email-маркетинг і можу відписатися будь-коли, одним кліком у кожному листі.");
 
+    /**
+     * The paid-checkout notice per language, version checkout-soft-notice-2026-10: mirrors imin-public
+     * {@code buy.marketingNotice} + " " + {@code buy.marketingRefuse}; quoted only by the preview and test send.
+     */
+    private static final Map<String, String> NOTICES = Map.of(
+            "en", "{organizer} may email you about its events because you're buying a ticket to one. Every email has an unsubscribe link. Don't email me about events by {organizer}.",
+            "es", "{organizer} puede enviarte emails sobre sus eventos porque compras una entrada para uno de ellos. Cada email incluye un enlace para darte de baja. No me envíes emails sobre los eventos de {organizer}.",
+            "fr", "{organizer} peut t’envoyer des e-mails sur ses événements, car tu achètes un billet pour l’un d’eux. Chaque e-mail contient un lien de désinscription. Ne m’envoie pas d’e-mails sur les événements organisés par {organizer}.",
+            "uk", "{organizer} може писати тобі на пошту про свої події, адже ти купуєш квиток на одну з них. У кожному листі є посилання, щоб відписатися. Не пишіть мені на пошту про події організатора {organizer}.");
+
     private final CheckoutReminderProperties props;
     private final CheckoutReminderRepository reminders;
     private final OrgCheckoutReminderSettingRepository settings;
@@ -93,6 +105,7 @@ public class CheckoutReminderService {
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
     private final AuditLogger audit;
+    private final AudiencePlanProperties planProps;
     private final Clock clock;
 
     public CheckoutReminderService(CheckoutReminderProperties props, CheckoutReminderRepository reminders,
@@ -102,7 +115,8 @@ public class CheckoutReminderService {
                                    CheckoutReminderEmail email, CampaignEmailProvider provider,
                                    MarketingEmailProperties emailProps, StickyOptOutWriter stickyOptOuts,
                                    ConsentService consentService, ConsumerRepository consumers,
-                                   MembershipRepository memberships, AuditLogger audit, Clock clock) {
+                                   MembershipRepository memberships, AuditLogger audit,
+                                   AudiencePlanProperties planProps, Clock clock) {
         this.props = props;
         this.reminders = reminders;
         this.settings = settings;
@@ -120,6 +134,7 @@ public class CheckoutReminderService {
         this.consumers = consumers;
         this.memberships = memberships;
         this.audit = audit;
+        this.planProps = planProps;
         this.clock = clock;
     }
 
@@ -298,7 +313,10 @@ public class CheckoutReminderService {
 
     private record Rendered(CheckoutReminderEmail.Message message, Event event, TicketTier tier) {}
 
-    /** The org's soonest public night with a tier on sale, rendered with the real checkbox label. */
+    /**
+     * The org's soonest public night with a tier on sale, rendered with what its paid checkout shows: the
+     * notice while soft opt-in is on, else the real checkbox label.
+     */
     private Optional<Rendered> render(Organization org, String lang, Integer rawQty, boolean test) {
         Instant now = clock.instant();
         for (Event e : events.findUpcomingLive(org.getId(), now, PageRequest.of(0, 20))) {
@@ -309,9 +327,13 @@ public class CheckoutReminderService {
             for (TicketTier t : tiers.findByEventIdAndEnabledTrueOrderBySortOrderAsc(e.getId())) {
                 if (!TierAvailability.isPurchasable(e, t, now)) continue;
                 int qty = rawQty == null ? 2 : Math.max(1, Math.min(rawQty, MAX_PREVIEW_QTY));
-                String proof = LABELS.getOrDefault(lang, LABELS.get("en")).formatted(org.getName());
-                CheckoutReminderEmail.Message m = email.build(new CheckoutReminderEmail.Facts(
-                        org, e, t, qty, lang, false, proof), emailProps.unsubscribeUrl("preview"), test);
+                boolean notice = Boolean.TRUE.equals(planProps.getSoftOptInEnabled());
+                String proof = notice
+                        ? NOTICES.getOrDefault(lang, NOTICES.get("en")).replace("{organizer}", org.getName())
+                        : LABELS.getOrDefault(lang, LABELS.get("en")).formatted(org.getName());
+                CheckoutReminderEmail.Message m = email.build(new CheckoutReminderEmail.Facts(org, e, t, qty, lang,
+                        false, proof, notice ? CheckoutReminderBasis.NOTICE : CheckoutReminderBasis.EXPLICIT),
+                        emailProps.unsubscribeUrl("preview"), test);
                 return Optional.of(new Rendered(m, e, t));
             }
         }

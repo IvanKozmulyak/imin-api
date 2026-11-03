@@ -199,11 +199,17 @@ public class AudienceOrderProjector {
     }
 
     /**
-     * The refuse box is the person's own objection, recorded once per refused order whatever the member's state, so
-     * the permanent opt-out is written even over an operator unsubscribe or a complaint's bare objection.
+     * The refuse box is the person's own objection, recorded once per refused order unless the person's own sign-up
+     * since the order is in force, whatever else the member's state, so the permanent opt-out is written even over
+     * an operator unsubscribe or a complaint's bare objection.
      */
     private void recordRefusal(UUID orgId, Membership m, Order order) {
         if (consentRecords.existsEmailUnsubscribeFromSince(m.getMembershipId(), REFUSAL_SOURCE, order.getCreatedAt())) {
+            return;
+        }
+        // Only their own sign-up since the order outranks it; a soft opt-in or an unconfirmed sign-up never does.
+        if (consentRecords.existsOwnEmailGrantSince(m.getMembershipId(), order.getCreatedAt(),
+                ConsentGate.personSources(logic.logic().legal()))) {
             return;
         }
         consentService.unsubscribe(orgId, m.getMembershipId(), REFUSAL_SOURCE, "email",
@@ -316,11 +322,8 @@ public class AudienceOrderProjector {
         }
         Instant cutoffAt = retentionCutoff.forOrg(orgId).at();
         for (Order order : orderRepo.findByOrgIdAndNormalizedEmail(orgId, normalizedEmail)) {
-            // Only the person's own sign-up since the refused order outranks it; a soft opt-in or an unconfirmed
-            // sign-up never does, and a withdrawal agrees with it.
-            if (order.isMarketingRefused() && !order.getCreatedAt().isBefore(cutoffAt)
-                    && !consentRecords.existsOwnEmailGrantSince(m.getMembershipId(), order.getCreatedAt(),
-                            ConsentGate.personSources(logic.logic().legal()))) {
+            // recordRefusal leaves it alone when the person's own sign-up since the order is in force.
+            if (order.isMarketingRefused() && !order.getCreatedAt().isBefore(cutoffAt)) {
                 recordRefusal(orgId, m, order);
             }
             if (restorable(m, order, cutoffAt)) {

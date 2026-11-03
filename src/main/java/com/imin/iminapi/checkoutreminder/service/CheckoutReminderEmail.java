@@ -1,6 +1,7 @@
 package com.imin.iminapi.checkoutreminder.service;
 
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
+import com.imin.iminapi.checkoutreminder.model.CheckoutReminderBasis;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
@@ -40,7 +41,7 @@ public class CheckoutReminderEmail {
 
     /** The facts behind one email, whether from a stored reminder or a preview. */
     public record Facts(Organization org, Event event, TicketTier tier, int qty, String locale,
-                        boolean promoUsed, String consentProof) {}
+                        boolean promoUsed, String consentProof, CheckoutReminderBasis basis) {}
 
     private final EmailTemplateRenderer renderer;
     private final MarketingEmailProperties emailProps;
@@ -90,7 +91,7 @@ public class CheckoutReminderEmail {
                 "Tu as utilisé un code promo. Saisis-le à nouveau au paiement ; le prix ci-dessus ne le compte pas.",
                 "Промокод треба ввести ще раз під час оплати: ціна вище без нього.") : "");
         v.put("finishUrl", finishUrl(f.event().getId(), f.tier().getId(), linkQty));
-        v.put("consentProof", blankTo(f.consentProof(), ""));
+        v.put("consentLine", consentLine(lang, f.basis(), blankTo(f.consentProof(), "")));
         v.put("unsubscribeUrl", unsubscribeUrl);
         v.put("legalFooter", String.join(" · ", OrganizerIdentity.of(f.org()).footerParts()));
 
@@ -114,6 +115,24 @@ public class CheckoutReminderEmail {
     private static void put(Map<String, String> v, String key, String line) {
         v.put(key + "Line", line);
         v.put(key + "Hide", line.isEmpty() ? "display:none;" : "");
+    }
+
+    /** The footer's account of why this address was kept; a notice row never claims a tick. */
+    static String consentLine(String lang, CheckoutReminderBasis basis, String proof) {
+        if (basis == CheckoutReminderBasis.NOTICE) {
+            return switch (lang) {
+                case "es" -> "Durante la compra leíste «" + proof + "» y dejaste la casilla sin marcar.";
+                case "fr" -> "Lors de la commande, tu as lu « " + proof + " » et laissé la case décochée.";
+                case "uk" -> "Під час оформлення замовлення тобі показали: «" + proof + "». Позначки відмови немає.";
+                default -> "At checkout you read “" + proof + "” and left the box unticked.";
+            };
+        }
+        return switch (lang) {
+            case "es" -> "Marcaste «" + proof + "»";
+            case "fr" -> "Tu as coché « " + proof + " »";
+            case "uk" -> "Твоя позначка: «" + proof + "»";
+            default -> "You ticked “" + proof + "”";
+        };
     }
 
     static String subject(String lang) {

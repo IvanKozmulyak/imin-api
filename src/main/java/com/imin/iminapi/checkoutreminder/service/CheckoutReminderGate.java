@@ -8,6 +8,7 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminderReason;
@@ -32,9 +33,9 @@ import java.util.Optional;
 
 /**
  * Every check a reminder must pass at send time, re-read from the database: the organizer still
- * wants it, the address may still be emailed by this organizer, the ticked version still counts as
- * consent, the buyer has not bought, and the tier is still on sale with time left before the night.
- * The first failing check names the reason.
+ * wants it, the address may still be emailed by this organizer, the checkout sentence's version still
+ * counts for its basis, the buyer has not bought, and the tier is still on sale with time left before
+ * the night. The first failing check names the reason.
  */
 @Component
 public class CheckoutReminderGate {
@@ -62,13 +63,15 @@ public class CheckoutReminderGate {
     private final MembershipRepository memberships;
     private final SuppressionRepository suppressions;
     private final AudiencePlanLogic logic;
+    private final AudiencePlanProperties planProps;
 
     public CheckoutReminderGate(CheckoutReminderProperties props, OrgCheckoutReminderSettingRepository settings,
                                 OrganizationRepository orgs, EventRepository events, TicketTierRepository tiers,
                                 ModerationHoldRepository holds, OrderRepository orders,
                                 ErasedAddressRepository erased, MarketingOptOutRepository optOuts,
                                 ConsumerRepository consumers, MembershipRepository memberships,
-                                SuppressionRepository suppressions, AudiencePlanLogic logic) {
+                                SuppressionRepository suppressions, AudiencePlanLogic logic,
+                                AudiencePlanProperties planProps) {
         this.props = props;
         this.settings = settings;
         this.orgs = orgs;
@@ -82,6 +85,7 @@ public class CheckoutReminderGate {
         this.memberships = memberships;
         this.suppressions = suppressions;
         this.logic = logic;
+        this.planProps = planProps;
     }
 
     @Transactional(readOnly = true)
@@ -108,11 +112,17 @@ public class CheckoutReminderGate {
         if (!suppressions.findDeliverabilityEmailsIn(List.of(email)).isEmpty()) {
             return Result.fail(CheckoutReminderReason.UNDELIVERABLE);
         }
-        // The allowlist read at capture is read again: a version taken off it no longer counts as consent.
+        // The allowlist read at capture is read again for the row's basis: a version taken off it no longer counts.
         String version = r.getConsentTextVersion();
-        if (version == null || !logic.logic().legal().organizerNamedTextVersions().contains(version)) {
-            return Result.fail(CheckoutReminderReason.CONSENT_VERSION_RETIRED);
-        }
+        AudiencePlanLogic.Legal legal = logic.logic().legal();
+        boolean counts = version != null && switch (r.getConsentBasis()) {
+            case EXPLICIT -> legal.organizerNamedTextVersions().contains(version);
+            case NOTICE -> legal.softOptInNoticeVersions().contains(version)
+                    && Boolean.TRUE.equals(planProps.getSoftOptInEnabled());
+            // A refusal row is written NOT_SENT and never claimed; it never counts.
+            case REFUSED -> false;
+        };
+        if (!counts) return Result.fail(CheckoutReminderReason.CONSENT_VERSION_RETIRED);
         if (orders.existsForEventAndEmail(r.getEventId(), email)) {
             return Result.fail(CheckoutReminderReason.HAS_TICKETS);
         }

@@ -309,6 +309,28 @@ class CheckoutSoftOptInTest {
                 .isEqualTo(1);
     }
 
+    /** A delayed projection of an old refused order must not undo the sign-up the person made after it. */
+    @Test
+    void lateLiveProjectionOfARefusedOrder_afterTheirOwnSignUp_recordsNoRefusal() {
+        String email = email("late-refusal");
+        Order refused = paidOrder(email, o -> {
+            notice(o, notice());
+            o.setMarketingRefused(true);
+        });
+        projectLive(paidOrder(email, o -> tickedBox(o)));
+        assertThat(membership(email)).containsEntry("consent_basis", "explicit");
+
+        projectLive(refused);
+
+        Map<String, Object> m = membership(email);
+        assertThat(jdbc.queryForObject("select count(*) from consent_records where membership_id = ?"
+                + " and source = 'checkout_refusal'", Integer.class, m.get("membership_id"))).isZero();
+        assertThat(m).containsEntry("consent_status", "subscribed").containsEntry("consent_basis", "explicit")
+                .containsEntry("objected_profiling", false);
+        assertThat(jdbc.queryForObject("select count(*) from marketing_optouts where email_normalized = ?"
+                + " and org_id = ?", Integer.class, email, org.getId())).isZero();
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────
 
     /** The notice and refuse-box label as the buyer site sends them, naming this organizer. */

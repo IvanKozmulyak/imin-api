@@ -102,7 +102,8 @@ public class CheckoutReminderSender {
         }
         String unsubscribeUrl = emailProps.unsubscribeUrl(tokens.signReminder(id));
         CheckoutReminderEmail.Message m = email.build(new CheckoutReminderEmail.Facts(pass.org(), pass.event(),
-                pass.tier(), r.getQty(), r.getBuyerLocale(), r.isPromoUsed(), r.getConsentProof()),
+                pass.tier(), r.getQty(), r.getBuyerLocale(), r.isPromoUsed(), r.getConsentProof(),
+                r.getConsentBasis()),
                 unsubscribeUrl, false);
         CampaignEmailProvider.BatchResult sent;
         try {

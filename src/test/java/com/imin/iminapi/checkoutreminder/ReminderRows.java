@@ -29,6 +29,10 @@ final class ReminderRows {
     static final String LABEL = "Email me about events by %s. I agree to receive email marketing and can "
             + "unsubscribe any time, one click in every email.";
     static final String VERSION = "checkout-org-named-2026-09";
+    /** The paid-checkout notice plus its refuse label, as imin-public sends it (EN). */
+    static final String NOTICE = "%1$s may email you about its events because you're buying a ticket to one. "
+            + "Every email has an unsubscribe link. Don't email me about events by %1$s.";
+    static final String NOTICE_VERSION = "checkout-soft-notice-2026-10";
 
     private final IminFixtures fx;
     private final OrganizationRepository orgs;
@@ -94,8 +98,24 @@ final class ReminderRows {
                  Instant startedAt, Instant dueAt) {
         UUID id = UUID.randomUUID();
         reminders.upsertWaiting(id, o.id(), e.getId(), t.getId(), qty, "cs_test_" + UUID.randomUUID(), email,
-                locale, promo, LABEL.formatted(o.org().getName()), VERSION, startedAt, startedAt, dueAt);
+                locale, promo, LABEL.formatted(o.org().getName()), VERSION, "EXPLICIT", startedAt, startedAt, dueAt);
         return id;
+    }
+
+    /** A waiting reminder kept from a paid checkout's notice the buyer did not refuse. */
+    UUID waitingNotice(Org o, Event e, TicketTier t, String email, int qty, String locale,
+                       Instant startedAt, Instant dueAt) {
+        UUID id = UUID.randomUUID();
+        reminders.upsertWaiting(id, o.id(), e.getId(), t.getId(), qty, "cs_test_" + UUID.randomUUID(), email,
+                locale, false, NOTICE.formatted(o.org().getName()), NOTICE_VERSION, "NOTICE", startedAt, startedAt,
+                dueAt);
+        return id;
+    }
+
+    /** The row a refused checkout leaves when no reminder was waiting for the night. */
+    void refusal(Org o, Event e, TicketTier t, String email, Instant startedAt) {
+        reminders.upsertRefusal(UUID.randomUUID(), o.id(), e.getId(), t.getId(), 1, "cs_test_" + UUID.randomUUID(),
+                email, startedAt, startedAt);
     }
 
     void status(UUID id, String status, String reason, Instant sentAt) {

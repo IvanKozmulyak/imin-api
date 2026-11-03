@@ -22,6 +22,6 @@ Terminer ma commande :
 Notre seul rappel pour cette commande.
 
 —
-Tu as coché « {{consentProof}} »
+{{consentLine}}
 Se désinscrire : {{unsubscribeUrl}}
 {{legalFooter}} · Envoyé par IMIN pour {{organizer}}

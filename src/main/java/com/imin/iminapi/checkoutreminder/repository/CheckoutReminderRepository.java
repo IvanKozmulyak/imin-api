@@ -29,21 +29,23 @@ public interface CheckoutReminderRepository extends Repository<CheckoutReminder,
 
     /**
      * Keeps one row per (night, address). A later expiry updates the row only while it still waits
-     * and only with a newer checkout; a claimed, sent or dropped row is left alone. Returns rows written.
+     * and only with a newer checkout, whose proof, version and basis replace the old ones together;
+     * a claimed, sent or dropped row is left alone. Returns rows written.
      */
     @Modifying
     @Transactional
     @Query(value = """
             INSERT INTO checkout_reminders (id, org_id, event_id, tier_id, qty, stripe_session_id, email_normalized,
                                             buyer_locale, promo_used, consent_proof, consent_text_version,
-                                            started_at, captured_at, due_at, status, attempts)
+                                            consent_basis, started_at, captured_at, due_at, status, attempts)
             VALUES (:id, :orgId, :eventId, :tierId, :qty, :sessionId, :email, :locale, :promoUsed, :proof, :version,
-                    :startedAt, :capturedAt, :dueAt, 'PENDING', 0)
+                    :basis, :startedAt, :capturedAt, :dueAt, 'PENDING', 0)
             ON CONFLICT (event_id, email_normalized) WHERE email_normalized IS NOT NULL
             DO UPDATE SET tier_id = EXCLUDED.tier_id, qty = EXCLUDED.qty,
                           stripe_session_id = EXCLUDED.stripe_session_id, buyer_locale = EXCLUDED.buyer_locale,
                           promo_used = EXCLUDED.promo_used, consent_proof = EXCLUDED.consent_proof,
-                          consent_text_version = EXCLUDED.consent_text_version, started_at = EXCLUDED.started_at,
+                          consent_text_version = EXCLUDED.consent_text_version,
+                          consent_basis = EXCLUDED.consent_basis, started_at = EXCLUDED.started_at,
                           captured_at = EXCLUDED.captured_at, due_at = EXCLUDED.due_at
              WHERE checkout_reminders.status = 'PENDING'
                AND checkout_reminders.started_at <= EXCLUDED.started_at
@@ -52,8 +54,31 @@ public interface CheckoutReminderRepository extends Repository<CheckoutReminder,
                       @Param("tierId") UUID tierId, @Param("qty") int qty, @Param("sessionId") String sessionId,
                       @Param("email") String email, @Param("locale") String locale,
                       @Param("promoUsed") boolean promoUsed, @Param("proof") String proof,
-                      @Param("version") String version, @Param("startedAt") Instant startedAt,
-                      @Param("capturedAt") Instant capturedAt, @Param("dueAt") Instant dueAt);
+                      @Param("version") String version, @Param("basis") String basis,
+                      @Param("startedAt") Instant startedAt, @Param("capturedAt") Instant capturedAt,
+                      @Param("dueAt") Instant dueAt);
+
+    /**
+     * The buyer refused at checkout: a waiting row from a checkout started no later is dropped, and with no row
+     * yet a NOT_SENT row keeping only the address stops any later expiry for the night. Returns rows written.
+     */
+    @Modifying
+    @Transactional
+    @Query(value = """
+            INSERT INTO checkout_reminders (id, org_id, event_id, tier_id, qty, stripe_session_id, email_normalized,
+                                            promo_used, consent_basis, started_at, captured_at, due_at, status,
+                                            reason, attempts)
+            VALUES (:id, :orgId, :eventId, :tierId, :qty, :sessionId, :email, FALSE, 'REFUSED', :startedAt,
+                    :capturedAt, :capturedAt, 'NOT_SENT', 'UNSUBSCRIBED', 0)
+            ON CONFLICT (event_id, email_normalized) WHERE email_normalized IS NOT NULL
+            DO UPDATE SET status = 'NOT_SENT', reason = 'UNSUBSCRIBED'
+             WHERE checkout_reminders.status = 'PENDING'
+               AND checkout_reminders.started_at <= EXCLUDED.started_at
+            """, nativeQuery = true)
+    int upsertRefusal(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
+                      @Param("tierId") UUID tierId, @Param("qty") int qty, @Param("sessionId") String sessionId,
+                      @Param("email") String email, @Param("startedAt") Instant startedAt,
+                      @Param("capturedAt") Instant capturedAt);
 
     /** Claims up to {@code limit} due rows of every org; another replica's claimed rows are skipped. */
     @Transactional
@@ -216,10 +241,10 @@ public interface CheckoutReminderRepository extends Repository<CheckoutReminder,
     @Query(value = "DELETE FROM checkout_reminders WHERE captured_at < :cutoff", nativeQuery = true)
     int deleteCapturedBefore(@Param("cutoff") Instant cutoff);
 
-    /** Rows of {@code [status, reason, count]} for the org's reminders captured since {@code since}. */
+    /** Rows of {@code [status, reason, count]} for the org's reminders captured since {@code since}; refusals kept nothing. */
     @Query(value = """
             SELECT status, reason, count(*) FROM checkout_reminders
-             WHERE org_id = :orgId AND captured_at >= :since
+             WHERE org_id = :orgId AND captured_at >= :since AND consent_basis <> 'REFUSED'
              GROUP BY status, reason
             """, nativeQuery = true)
     List<Object[]> countByStatusAndReason(@Param("orgId") UUID orgId, @Param("since") Instant since);
@@ -236,6 +261,7 @@ public interface CheckoutReminderRepository extends Repository<CheckoutReminder,
     @Query("""
             select r from CheckoutReminder r
              where r.orgId = :orgId and r.capturedAt >= :since
+               and r.consentBasis <> com.imin.iminapi.checkoutreminder.model.CheckoutReminderBasis.REFUSED
              order by r.capturedAt desc, r.id desc
             """)
     List<CheckoutReminder> findRecent(@Param("orgId") UUID orgId, @Param("since") Instant since, Pageable page);

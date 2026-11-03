@@ -7,6 +7,7 @@ import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.MarketingOptOutRecorder;
 import com.imin.iminapi.audience.service.SuppressionService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminder;
 import com.imin.iminapi.checkoutreminder.model.CheckoutReminderStatus;
@@ -73,6 +74,7 @@ class CheckoutReminderSenderTest {
 
     @Autowired CheckoutReminderSender sender;
     @Autowired CheckoutReminderProperties props;
+    @Autowired AudiencePlanProperties planProps;
     @Autowired MarketingEmailProperties emailProps;
     @Autowired CampaignEmailProvider provider;
     @Autowired UnsubscribeTokenService tokens;
@@ -121,7 +123,8 @@ class CheckoutReminderSenderTest {
     @ValueSource(strings = {"HAS_TICKETS", "SOLD_OUT", "SALES_CLOSED:tier_closed", "SALES_CLOSED:cancelled",
             "SALES_CLOSED:sales_hold", "TOO_CLOSE_TO_DOORS", "TOO_LATE", "UNSUBSCRIBED:opt_out",
             "UNSUBSCRIBED:membership", "UNSUBSCRIBED:suppressed", "UNDELIVERABLE", "ERASED:platform", "ERASED:org",
-            "ERASED:erase_pending", "CONSENT_VERSION_RETIRED",
+            "ERASED:erase_pending", "CONSENT_VERSION_RETIRED", "CONSENT_VERSION_RETIRED:notice_off_soft_list",
+            "CONSENT_VERSION_RETIRED:explicit_with_notice_version", "CONSENT_VERSION_RETIRED:soft_opt_in_off",
             "PAUSED", "DISABLED", "LEGAL_IDENTITY_MISSING"})
     void dropsWithTheReasonAndSendsNothing(String variant) {
         Instant startedAt = NOW.minus(Duration.ofMinutes(61));
@@ -152,16 +155,29 @@ class CheckoutReminderSenderTest {
             // An accepted erasure request still in its 30-day grace period.
             case "ERASED:erase_pending" -> jdbc.update("UPDATE memberships SET status = 'erase_pending' WHERE membership_id = ?",
                     rows.member(org, email, "subscribed").getMembershipId());
-            // Set on the row below: a version taken off the allowlist after the tick was kept.
-            case "CONSENT_VERSION_RETIRED" -> { }
+            // Set on the row below: a version taken off the allowlist after the tick was kept, or a version
+            // that is only on the other basis's list.
+            case "CONSENT_VERSION_RETIRED", "CONSENT_VERSION_RETIRED:explicit_with_notice_version" -> { }
+            case "CONSENT_VERSION_RETIRED:notice_off_soft_list" -> flips.set(planProps, "softOptInEnabled", true);
+            // An allowlisted notice row, with soft opt-in switched off before the send.
+            case "CONSENT_VERSION_RETIRED:soft_opt_in_off" -> flips.set(planProps, "softOptInEnabled", false);
             case "PAUSED" -> orgs.pauseMarketingIfNotPaused(org.id(), "complaint_rate", NOW.minus(Duration.ofHours(2)));
             case "DISABLED" -> settings.disable(org.id(), NOW);
             case "LEGAL_IDENTITY_MISSING" -> saveOrg(o -> o.setLegalName(" "));
             default -> throw new IllegalArgumentException(variant);
         }
-        UUID id = rows.waiting(org, night, tier, email, 2, "en", false, startedAt, NOW.minus(Duration.ofMinutes(1)));
-        if (variant.equals("CONSENT_VERSION_RETIRED")) {
-            jdbc.update("UPDATE checkout_reminders SET consent_text_version = 'checkout-generic-2026-09' WHERE id = ?", id);
+        boolean noticeRow = variant.endsWith(":notice_off_soft_list") || variant.endsWith(":soft_opt_in_off");
+        UUID id = noticeRow
+                ? rows.waitingNotice(org, night, tier, email, 2, "en", startedAt, NOW.minus(Duration.ofMinutes(1)))
+                : rows.waiting(org, night, tier, email, 2, "en", false, startedAt, NOW.minus(Duration.ofMinutes(1)));
+        String retiredVersion = switch (variant) {
+            case "CONSENT_VERSION_RETIRED" -> "checkout-generic-2026-09";
+            case "CONSENT_VERSION_RETIRED:notice_off_soft_list" -> ReminderRows.VERSION;
+            case "CONSENT_VERSION_RETIRED:explicit_with_notice_version" -> ReminderRows.NOTICE_VERSION;
+            default -> null;
+        };
+        if (retiredVersion != null) {
+            jdbc.update("UPDATE checkout_reminders SET consent_text_version = ? WHERE id = ?", retiredVersion, id);
         }
 
         tick();
@@ -230,6 +246,35 @@ class CheckoutReminderSenderTest {
 
         tick();
         assertThat(sentTo(email)).hasSize(1);
+    }
+
+    /** A notice row's footer quotes the notice it showed and never claims a tick. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"en", "es", "fr", "uk"})
+    void noticeBasis_sendsOneEmailWithTheNoticeFooter(String locale) {
+        flips.set(planProps, "softOptInEnabled", true);
+        UUID id = rows.waitingNotice(org, night, tier, email, 2, locale,
+                NOW.minus(Duration.ofMinutes(61)), NOW.minus(Duration.ofMinutes(1)));
+        String proof = ReminderRows.NOTICE.formatted(org.org().getName());
+        String line = switch (locale) {
+            case "es" -> "Durante la compra leíste «" + proof + "» y dejaste la casilla sin marcar.";
+            case "fr" -> "Lors de la commande, tu as lu « " + proof + " » et laissé la case décochée.";
+            case "uk" -> "Під час оформлення замовлення тобі показали: «" + proof + "». Позначки відмови немає.";
+            default -> "At checkout you read “" + proof + "” and left the box unticked.";
+        };
+
+        tick();
+
+        List<CampaignEmailProvider.OutgoingEmail> sent = sentTo(email);
+        assertThat(sent).hasSize(1);
+        CampaignEmailProvider.OutgoingEmail m = sent.get(0);
+        assertThat(m.text()).contains(line).contains(m.unsubscribeUrl());
+        assertThat(m.html()).contains(line.replace("'", "&#39;")).contains(m.unsubscribeUrl());
+        for (String ticked : List.of("You ticked", "Marcaste", "Tu as coché", "Твоя позначка")) {
+            assertThat(m.text()).doesNotContain(ticked);
+            assertThat(m.html()).doesNotContain(ticked);
+        }
+        assertThat(rows.load(id).getStatus()).isEqualTo(CheckoutReminderStatus.SENT);
     }
 
     @ParameterizedTest(name = "{0}")

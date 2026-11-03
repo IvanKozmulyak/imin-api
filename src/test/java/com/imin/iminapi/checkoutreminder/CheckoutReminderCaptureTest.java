@@ -3,6 +3,7 @@ package com.imin.iminapi.checkoutreminder;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.checkoutreminder.config.CheckoutReminderProperties;
 import com.imin.iminapi.checkoutreminder.repository.CheckoutReminderRepository;
 import com.imin.iminapi.checkoutreminder.repository.OrgCheckoutReminderSettingRepository;
@@ -23,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -41,7 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** Only a proven tick on an expired web checkout is kept, and keeping it never holds a seat. */
+/**
+ * Only a proven tick, or an unrefused organizer-named notice on a paid checkout, on an expired web checkout is
+ * kept; a refusal keeps nothing and drops the night's earlier reminder; keeping it never holds a seat.
+ */
 @IminIntegrationTest
 class CheckoutReminderCaptureTest {
 
@@ -51,6 +56,7 @@ class CheckoutReminderCaptureTest {
     @Autowired MockMvc mvc;
     @Autowired StripeProperties stripeProps;
     @Autowired CheckoutReminderProperties props;
+    @Autowired AudiencePlanProperties planProps;
     @Autowired PropertyFlips flips;
     @Autowired IminFixtures fx;
     @Autowired OrganizationRepository orgs;
@@ -140,10 +146,160 @@ class CheckoutReminderCaptureTest {
         assertThat(row.get("promo_used")).isEqualTo(true);
         assertThat(row.get("consent_proof")).isEqualTo(ReminderRows.LABEL.formatted(org.org().getName()));
         assertThat(row.get("consent_text_version")).isEqualTo(ReminderRows.VERSION);
+        assertThat(row.get("consent_basis")).isEqualTo("EXPLICIT");
         assertThat(((Timestamp) row.get("started_at")).toInstant()).isEqualTo(startedAt);
         assertThat(((Timestamp) row.get("due_at")).toInstant())
                 .isEqualTo(CheckoutReminderSchedule.dueAt(startedAt, "Europe/Paris", Duration.ofMinutes(60)));
         assertThat(row.get("status")).isEqualTo("PENDING");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"noticeKept", "refused", "refusedWithTick", "noNoticeFields", "genericNoticeUnversioned",
+            "versionNotOnSoftList", "noticeNamesAnotherOrganizer", "freeTotal", "totalMissing", "softOptInOff",
+            "refusedWhileOrgOff"})
+    void onlyAnUnrefusedNamedNoticeOnAPaidWebSessionIsKept(String variant) throws Exception {
+        flips.set(planProps, "softOptInEnabled", true);
+        String email = rows.email("capture-notice");
+        Map<String, String> md = noticed(inventory.reserve(tier.getId(), 2, Instant.now().plusSeconds(1800), null), tier, 2);
+        switch (variant) {
+            case "noticeKept" -> { }
+            case "refused" -> md.put("marketing_refused", "true");
+            // An old tab's tick in the same metadata: the refusal still wins.
+            case "refusedWithTick" -> {
+                md.put("marketing_refused", "true");
+                md.put("marketing_opt_in", "true");
+                md.put("marketing_opt_in_proof", ReminderRows.LABEL.formatted(org.org().getName()));
+                md.put("marketing_opt_in_text_version", ReminderRows.VERSION);
+            }
+            // The fan-app or a stale tab: no refuse option was shown.
+            case "noNoticeFields" -> {
+                md.remove("marketing_notice_proof");
+                md.remove("marketing_notice_text_version");
+            }
+            case "genericNoticeUnversioned" -> {
+                md.put("marketing_notice_proof", "This organiser may email you about its events because you're "
+                        + "buying a ticket to one. Every email has an unsubscribe link. Don't email me about this "
+                        + "organiser's events.");
+                md.remove("marketing_notice_text_version");
+            }
+            case "versionNotOnSoftList" -> md.put("marketing_notice_text_version", ReminderRows.VERSION);
+            case "noticeNamesAnotherOrganizer" ->
+                    md.put("marketing_notice_proof", ReminderRows.NOTICE.formatted("Some Other Club"));
+            case "freeTotal" -> md.put("expected_total_minor", "0");
+            case "totalMissing" -> md.remove("expected_total_minor");
+            case "softOptInOff" -> flips.set(planProps, "softOptInEnabled", false);
+            // An organizer without the reminder keeps no address, not even a refusal's.
+            case "refusedWhileOrgOff" -> {
+                md.put("marketing_refused", "true");
+                settings.disable(org.id(), Instant.now());
+            }
+            default -> throw new IllegalArgumentException(variant);
+        }
+        String session = "cs_test_cr_n_" + UUID.randomUUID();
+        long created = Instant.now().minus(Duration.ofMinutes(31)).getEpochSecond();
+
+        expire(session, created, email, md);
+
+        List<Map<String, Object>> kept = jdbc.queryForList(
+                "SELECT * FROM checkout_reminders WHERE stripe_session_id = ?", session);
+        if (variant.equals("refused") || variant.equals("refusedWithTick")) {
+            assertRefusalRow(kept, email, Instant.ofEpochSecond(created));
+            return;
+        }
+        if (!variant.equals("noticeKept")) {
+            assertThat(kept).isEmpty();
+            return;
+        }
+        assertThat(kept).hasSize(1);
+        Map<String, Object> row = kept.get(0);
+        Instant startedAt = Instant.ofEpochSecond(created);
+        assertThat(row.get("consent_basis")).isEqualTo("NOTICE");
+        assertThat(row.get("consent_proof")).isEqualTo(ReminderRows.NOTICE.formatted(org.org().getName()));
+        assertThat(row.get("consent_text_version")).isEqualTo(ReminderRows.NOTICE_VERSION);
+        assertThat(row.get("status")).isEqualTo("PENDING");
+        assertThat(row.get("email_normalized")).isEqualTo(email);
+        assertThat(((Timestamp) row.get("due_at")).toInstant())
+                .isEqualTo(CheckoutReminderSchedule.dueAt(startedAt, "Europe/Paris", Duration.ofMinutes(60)));
+    }
+
+    /** Which checkout started later, and which expiry Stripe delivered first. */
+    enum RefusalTiming { REFUSAL_NEWER, REFUSAL_OLDER_ARRIVING_LATE, REFUSAL_NEWER_PROCESSED_FIRST }
+
+    @ParameterizedTest
+    @EnumSource(RefusalTiming.class)
+    void aRefusedCheckoutStopsTheReminderOfACheckoutStartedBeforeIt(RefusalTiming timing) throws Exception {
+        flips.set(planProps, "softOptInEnabled", true);
+        String email = rows.email("capture-refusal");
+        long t0 = Instant.now().minus(Duration.ofMinutes(50)).getEpochSecond();
+        String keptSession = "cs_test_cr_kept_" + UUID.randomUUID();
+        String refusedSession = "cs_test_cr_refused_" + UUID.randomUUID();
+        Map<String, String> unrefused = noticed(inventory.reserve(tier.getId(), 2, Instant.now().plusSeconds(1800), null),
+                tier, 2);
+        Map<String, String> refused = noticed(inventory.reserve(tier.getId(), 1, Instant.now().plusSeconds(1800), null),
+                tier, 1);
+        refused.put("marketing_refused", "true");
+
+        switch (timing) {
+            case REFUSAL_NEWER -> {
+                expire(keptSession, t0, email, unrefused);
+                expire(refusedSession, t0 + 300, email, refused);
+            }
+            case REFUSAL_OLDER_ARRIVING_LATE -> {
+                expire(keptSession, t0 + 300, email, unrefused);
+                expire(refusedSession, t0, email, refused);
+            }
+            // Stripe does not promise order: the refused, later checkout's expiry lands first.
+            case REFUSAL_NEWER_PROCESSED_FIRST -> {
+                expire(refusedSession, t0 + 300, email, refused);
+                expire(keptSession, t0, email, unrefused);
+            }
+        }
+
+        List<Map<String, Object>> found = rowsFor(email);
+        switch (timing) {
+            case REFUSAL_NEWER -> {
+                assertThat(found).singleElement().satisfies(r -> {
+                    assertThat(r.get("stripe_session_id")).isEqualTo(keptSession);
+                    assertThat(r.get("status")).isEqualTo("NOT_SENT");
+                    assertThat(r.get("reason")).isEqualTo("UNSUBSCRIBED");
+                });
+            }
+            case REFUSAL_OLDER_ARRIVING_LATE -> {
+                assertThat(found).singleElement().satisfies(r -> {
+                    assertThat(r.get("stripe_session_id")).isEqualTo(keptSession);
+                    assertThat(r.get("status")).isEqualTo("PENDING");
+                    assertThat(r.get("reason")).isNull();
+                });
+            }
+            case REFUSAL_NEWER_PROCESSED_FIRST -> {
+                // No PENDING row, so the sender has nothing it could ever claim for this night.
+                assertRefusalRow(found, email, Instant.ofEpochSecond(t0 + 300));
+                assertThat(found.get(0).get("stripe_session_id")).isEqualTo(refusedSession);
+            }
+        }
+    }
+
+    /** A retry's newer checkout brings its own sentence, version and basis; the footer must not claim a tick. */
+    @Test
+    void aNewerNoticeCheckoutReplacesAWaitingTickWithItsBasis() throws Exception {
+        flips.set(planProps, "softOptInEnabled", true);
+        String email = rows.email("capture-basis");
+        long t0 = Instant.now().minus(Duration.ofMinutes(50)).getEpochSecond();
+        String newer = "cs_test_cr_notice_" + UUID.randomUUID();
+        expire("cs_test_cr_tick_" + UUID.randomUUID(), t0, email,
+                ticked(inventory.reserve(tier.getId(), 2, Instant.now().plusSeconds(1800), null), tier, 2));
+        assertThat(rowsFor(email)).singleElement().extracting(r -> r.get("consent_basis")).isEqualTo("EXPLICIT");
+
+        expire(newer, t0 + 300, email,
+                noticed(inventory.reserve(tier.getId(), 2, Instant.now().plusSeconds(1800), null), tier, 2));
+
+        List<Map<String, Object>> kept = rowsFor(email);
+        assertThat(kept).hasSize(1);
+        assertThat(kept.get(0).get("stripe_session_id")).isEqualTo(newer);
+        assertThat(kept.get(0).get("consent_basis")).isEqualTo("NOTICE");
+        assertThat(kept.get(0).get("consent_proof")).isEqualTo(ReminderRows.NOTICE.formatted(org.org().getName()));
+        assertThat(kept.get(0).get("consent_text_version")).isEqualTo(ReminderRows.NOTICE_VERSION);
+        assertThat(kept.get(0).get("status")).isEqualTo("PENDING");
     }
 
     @Test
@@ -214,6 +370,22 @@ class CheckoutReminderCaptureTest {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
+    /** The refusal's own row: never sent, the address and the refused checkout's start, no sentence or language. */
+    private void assertRefusalRow(List<Map<String, Object>> found, String email, Instant startedAt) {
+        assertThat(found).singleElement().satisfies(r -> {
+            assertThat(r.get("email_normalized")).isEqualTo(email);
+            assertThat(r.get("status")).isEqualTo("NOT_SENT");
+            assertThat(r.get("reason")).isEqualTo("UNSUBSCRIBED");
+            assertThat(r.get("consent_basis")).isEqualTo("REFUSED");
+            assertThat(r.get("org_id")).isEqualTo(org.id());
+            assertThat(r.get("consent_proof")).isNull();
+            assertThat(r.get("consent_text_version")).isNull();
+            assertThat(r.get("buyer_locale")).isNull();
+            assertThat(r.get("promo_used")).isEqualTo(false);
+            assertThat(((Timestamp) r.get("started_at")).toInstant()).isEqualTo(startedAt);
+        });
+    }
+
     private Map<String, String> ticked(UUID reservation, TicketTier t, int qty) {
         Map<String, String> md = new LinkedHashMap<>();
         md.put("reservation_id", reservation.toString());
@@ -224,6 +396,21 @@ class CheckoutReminderCaptureTest {
         md.put("marketing_opt_in", "true");
         md.put("marketing_opt_in_proof", ReminderRows.LABEL.formatted(org.org().getName()));
         md.put("marketing_opt_in_text_version", ReminderRows.VERSION);
+        return md;
+    }
+
+    /** A paid web checkout's metadata as StripeCheckoutService writes it: the notice, unrefused, a total to pay. */
+    private Map<String, String> noticed(UUID reservation, TicketTier t, int qty) {
+        Map<String, String> md = new LinkedHashMap<>();
+        md.put("reservation_id", reservation.toString());
+        md.put("tier_id", t.getId().toString());
+        md.put("qty", String.valueOf(qty));
+        md.put("event_id", night.getId().toString());
+        md.put("client", "web");
+        md.put("marketing_opt_in", "false");
+        md.put("marketing_notice_proof", ReminderRows.NOTICE.formatted(org.org().getName()));
+        md.put("marketing_notice_text_version", ReminderRows.NOTICE_VERSION);
+        md.put("expected_total_minor", "3558");
         return md;
     }
 

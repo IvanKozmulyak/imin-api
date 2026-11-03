@@ -22,6 +22,6 @@
 Це наше єдине нагадування про це замовлення.
 
 —
-Твоя позначка: «{{consentProof}}»
+{{consentLine}}
 Відписатися: {{unsubscribeUrl}}
 {{legalFooter}} · Надіслано IMIN для {{organizer}}

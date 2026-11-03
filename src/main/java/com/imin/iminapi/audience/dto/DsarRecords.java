@@ -152,8 +152,9 @@ public record DsarRecords(
             Short pendingScore) {}
 
     /**
-     * An unfinished-checkout reminder kept because this person ticked the organizer's box: the
-     * address and ticked sentence while held, and what happened to the reminder.
+     * An unfinished-checkout reminder kept because this person ticked the organizer's box or, on a
+     * paid checkout, saw its notice and did not refuse (or, basis REFUSED, the row that stops one after
+     * they refused): the address and that checkout sentence while held, and what happened to the reminder.
      */
     public record CheckoutReminderRecord(
             UUID id,
@@ -163,6 +164,7 @@ public record DsarRecords(
             String email,
             String consentProof,
             String consentTextVersion,
+            String consentBasis,
             String locale,
             Instant startedAt,
             String status,

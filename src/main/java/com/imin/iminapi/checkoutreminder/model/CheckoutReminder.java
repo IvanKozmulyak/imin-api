@@ -51,12 +51,16 @@ public class CheckoutReminder {
     @Column(name = "promo_used", nullable = false)
     private boolean promoUsed;
 
-    /** The verbatim sentence the buyer ticked; null once wiped. */
+    /** The verbatim checkout sentence: the box label the buyer ticked, or the notice they read; null once wiped. */
     @Column(name = "consent_proof")
     private String consentProof;
 
     @Column(name = "consent_text_version")
     private String consentTextVersion;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "consent_basis", nullable = false)
+    private CheckoutReminderBasis consentBasis;
 
     @Column(name = "started_at", nullable = false)
     private Instant startedAt;

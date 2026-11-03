@@ -22,6 +22,6 @@ Termina tu pedido:
 Es nuestro único recordatorio para este pedido.
 
 —
-Marcaste «{{consentProof}}»
+{{consentLine}}
 Darte de baja: {{unsubscribeUrl}}
 {{legalFooter}} · Enviado por IMIN para {{organizer}}

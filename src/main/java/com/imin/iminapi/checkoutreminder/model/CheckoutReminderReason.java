@@ -1,6 +1,9 @@
 package com.imin.iminapi.checkoutreminder.model;
 
-/** Why a reminder ended NOT_SENT. Each value is a check the sender ran at send time, or a send outcome. */
+/**
+ * Why a reminder ended NOT_SENT. Each value is a check the sender ran at send time, a send outcome, or
+ * (UNSUBSCRIBED) the buyer's refusal at a checkout for the night.
+ */
 public enum CheckoutReminderReason {
     /** An order for the night from this address exists. */
     HAS_TICKETS,
@@ -12,13 +15,13 @@ public enum CheckoutReminderReason {
     TOO_CLOSE_TO_DOORS,
     /** The checkout started longer ago than the maximum age. */
     TOO_LATE,
-    /** Opted out of this organizer, unsubscribed or suppressed in their audience. */
+    /** Opted out of this organizer, unsubscribed or suppressed in their audience, or refused at checkout. */
     UNSUBSCRIBED,
     /** The address bounced permanently or was reported undeliverable. */
     UNDELIVERABLE,
     /** The address was erased, platform-wide or for this organizer. */
     ERASED,
-    /** The version of the ticked sentence is no longer on the organizer-named allowlist. */
+    /** The version of the checkout sentence is no longer on its basis's allowlist, or the notice basis is switched off. */
     CONSENT_VERSION_RETIRED,
     /** The organizer's marketing email is paused. */
     PAUSED,

@@ -22,6 +22,6 @@ Finish your order:
 Our only reminder for this order.
 
 —
-You ticked "{{consentProof}}"
+{{consentLine}}
 Unsubscribe: {{unsubscribeUrl}}
 {{legalFooter}} · Sent by IMIN for {{organizer}}
