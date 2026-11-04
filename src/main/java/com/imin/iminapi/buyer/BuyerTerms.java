@@ -29,20 +29,20 @@ public final class BuyerTerms {
      * terms change; existing acceptances keep the version they were taken under,
      * because {@code completeOnboarding} stamps once and never rewrites.
      */
-    public static final String CURRENT_VERSION = "1.2";
+    public static final String CURRENT_VERSION = "1.3";
 
     /**
      * The sentence shown next to the mandatory checkbox on the finish-registration
      * step, in the language the buyer read it in. Same contract as
      * {@code BuyerPreferencesService.proofText}: these strings mirror
-     * {@code onboarding.terms.label} in {@code imin-public/lib/i18n/{en,es,fr,uk}.ts};
+     * {@code onboarding.terms.title} in {@code imin-public/lib/i18n/{en,es,fr,uk}.ts};
      * if you edit the screen, edit these.
      */
     public static String acceptanceText(String locale) {
         return EmailLocale.choose(locale,
-                "I accept the imin terms of use and privacy policy.",
-                "Acepto las condiciones de uso y la política de privacidad de imin.",
-                "J’accepte les conditions d’utilisation et la politique de confidentialité d’imin.",
-                "Я приймаю умови користування та політику конфіденційності imin.");
+                "I accept the terms and privacy policy",
+                "Acepto los términos y la política de privacidad",
+                "J’accepte les conditions et la politique de confidentialité",
+                "Приймаю умови використання та політику конфіденційності");
     }
 }

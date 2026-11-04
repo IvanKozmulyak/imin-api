@@ -202,7 +202,8 @@ class BuyerProfileTest {
         assertThat(account.getTermsVersion())
                 .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
         // A version is only evidence if the text it names can be produced later.
-        assertThat(account.getTermsProof()).isNotBlank();
+        // ...and the text is the sentence the finish-registration screen shows.
+        assertThat(account.getTermsProof()).isEqualTo("I accept the terms and privacy policy");
     }
 
     /**

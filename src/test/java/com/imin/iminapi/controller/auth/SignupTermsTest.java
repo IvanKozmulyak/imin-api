@@ -42,6 +42,7 @@ class SignupTermsTest {
                 Arguments.of("acceptedTerms", false, "acceptedTerms", "must be true"),
                 Arguments.of("termsVersion", null, "termsVersion", "must not be blank"),
                 Arguments.of("termsVersion", "2020-01-01", "termsVersion", OrganizerTerms.STALE_MESSAGE),
+                Arguments.of("termsVersion", "1.2", "termsVersion", OrganizerTerms.STALE_MESSAGE),
                 Arguments.of("termsVersion", "1.4", "termsVersion", OrganizerTerms.STALE_MESSAGE));
     }
 
@@ -61,9 +62,9 @@ class SignupTermsTest {
         assertThat(users.existsByEmailLower(email.toLowerCase())).isFalse();
     }
 
-    /** 1.1–1.3 are accepted before they become current, so the dashboard can ship them without 400ing every sign-up. */
+    /** Only the current id is accepted; a dashboard tab still on an older one gets the reload message. */
     @ParameterizedTest(name = "\"{0}\" -> {1}")
-    @CsvSource({"' 1.0 ', 1.0", "' 1.1 ', 1.1", "' 1.2 ', 1.2", "' 1.3 ', 1.3"})
+    @CsvSource({"' 1.3 ', 1.3"})
     void signupWithAKnownTermsVersion_recordsTheMatchedVersion(String sent, String stored) throws Exception {
         String email = fx.email("signup");
         Instant before = Instant.now();
