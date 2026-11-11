@@ -262,11 +262,11 @@ public class DsarService {
                 .toList();
     }
 
-    /** Art.16 rectification — updates display_name/city/notes fields. Audited. */
+    /** Art.16 rectification — display_name/city/notes, written under the row lock so an erase committed meanwhile is kept. Audited. */
     @Transactional
     public Membership rectify(UUID orgId, UUID membershipId, String displayName,
                               String city, String notes, AuthPrincipal principal) {
-        Membership m = require(orgId, membershipId);
+        Membership m = lockMember(orgId, membershipId);
         if (displayName != null) m.setDisplayName(displayName);
         if (city != null) m.setCity(city);
         if (notes != null) m.setNotes(notes);
@@ -301,11 +301,7 @@ public class DsarService {
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
         requirePrivilegedRole(principal, "erase a data subject's record");
         // Membership row first, fan_features second: the same lock order as the projector's write.
-        // Re-read under the lock: eraseAddress already holds a copy, which would hide an erase committed since.
-        entityManager.flush();
-        Membership locked = membershipRepo.lockByIdAndOrgId(membershipId, orgId)
-                .orElseThrow(() -> ApiException.notFound("Membership"));
-        entityManager.refresh(locked);
+        Membership locked = lockMember(orgId, membershipId);
         // A repeat writes nothing: the erase date stays 30 days after the first request.
         if (ERASE_PENDING.equals(locked.getStatus())) return;
         consentService.unsubscribe(orgId, membershipId, "dsar_erase", "email",
@@ -473,5 +469,14 @@ public class DsarService {
     private Membership require(UUID orgId, UUID membershipId) {
         return membershipRepo.findByIdAndOrgId(membershipId, orgId)
                 .orElseThrow(() -> ApiException.notFound("Membership"));
+    }
+
+    /** Row-locked and re-read under the lock: a copy loaded earlier in this transaction would hide a write committed since. */
+    private Membership lockMember(UUID orgId, UUID membershipId) {
+        entityManager.flush();
+        Membership m = membershipRepo.lockByIdAndOrgId(membershipId, orgId)
+                .orElseThrow(() -> ApiException.notFound("Membership"));
+        entityManager.refresh(m);
+        return m;
     }
 }

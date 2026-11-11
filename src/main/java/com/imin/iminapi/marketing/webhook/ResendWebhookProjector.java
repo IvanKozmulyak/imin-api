@@ -17,6 +17,7 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.ComplaintRateBreaker;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import jakarta.persistence.EntityManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -61,6 +62,7 @@ public class ResendWebhookProjector {
     private final MarketingEmailProperties marketingProps;
     private final ConsumerRepository consumers;
     private final StickyOptOutWriter stickyOptOuts;
+    private final EntityManager entityManager;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
@@ -72,7 +74,8 @@ public class ResendWebhookProjector {
                                   ConsentConfirmationTokenRepository confirmationTokens,
                                   MarketingEmailProperties marketingProps,
                                   ConsumerRepository consumers,
-                                  StickyOptOutWriter stickyOptOuts) {
+                                  StickyOptOutWriter stickyOptOuts,
+                                  EntityManager entityManager) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
@@ -84,6 +87,7 @@ public class ResendWebhookProjector {
         this.marketingProps = marketingProps;
         this.consumers = consumers;
         this.stickyOptOuts = stickyOptOuts;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -161,6 +165,9 @@ public class ResendWebhookProjector {
                     // A spam report is the person objecting; no sticky opt-out row, only the profiling flag.
                     // Membership lock before fan_features, the projector's order; taste clears in this transaction.
                     membershipRepo.lockByIdAndOrgId(membershipId, orgId).ifPresent(m -> {
+                        // The lock hands back the copy loaded above (SuppressionService, projectTaggedComplaint);
+                        // re-read it so a committed erase stays.
+                        entityManager.refresh(m);
                         m.setObjectedProfiling(true);
                         membershipRepo.save(m);
                         fanFeatureRepo.clearProfiling(membershipId);
