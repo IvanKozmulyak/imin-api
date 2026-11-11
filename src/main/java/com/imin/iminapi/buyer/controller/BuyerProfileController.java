@@ -9,6 +9,7 @@ import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerProfileService;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -142,6 +143,7 @@ public class BuyerProfileController {
      * would punish a household behind a single NAT.
      */
     @PostMapping("/api/v1/buyer/me/password")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> changePassword(@CurrentBuyer BuyerPrincipal buyer,
                                                @Valid @RequestBody PasswordChangeRequest body) {
         rateLimiter.consume("buyer-password-change", "acct:" + buyer.accountId());
@@ -159,6 +161,7 @@ public class BuyerProfileController {
     }
 
     @DeleteMapping("/api/v1/buyer/identities/{provider}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> unlink(@CurrentBuyer BuyerPrincipal buyer,
                                        @PathVariable String provider) {
         service.unlinkIdentity(buyer.accountId(), buyer.sessionId(), provider);

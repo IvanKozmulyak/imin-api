@@ -5,6 +5,7 @@ import com.imin.iminapi.marketing.dto.GenerateTemplateRequest;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -57,6 +58,7 @@ public class EmailTemplateController {
     }
 
     @DeleteMapping("/{id}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> delete(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
         service.delete(principal, id);

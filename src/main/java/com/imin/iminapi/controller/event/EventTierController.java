@@ -6,6 +6,7 @@ import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.event.TicketTierService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -31,6 +32,7 @@ public class EventTierController {
     }
 
     @PostMapping
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<TicketTierDto> create(@CurrentUser AuthPrincipal p,
                                                 @PathVariable UUID eventId,
                                                 @RequestBody TicketTierCreateRequest body) {

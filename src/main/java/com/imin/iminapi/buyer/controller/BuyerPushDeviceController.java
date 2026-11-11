@@ -4,6 +4,7 @@ import com.imin.iminapi.buyer.dto.BuyerPushDeviceRequests;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerPushDeviceService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -27,6 +28,7 @@ public class BuyerPushDeviceController {
     }
 
     @PostMapping("/api/v1/buyer/push-devices")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> register(@CurrentBuyer BuyerPrincipal buyer,
                                          @Valid @RequestBody BuyerPushDeviceRequests.Register req) {
         devices.register(buyer.accountId(), req.expoToken(), req.platform(),
@@ -53,6 +55,7 @@ public class BuyerPushDeviceController {
      * <p>A body also keeps the token out of access logs.
      */
     @PostMapping("/api/v1/buyer/push-devices/revoke")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> revoke(@CurrentBuyer BuyerPrincipal buyer,
                                        @Valid @RequestBody BuyerPushDeviceRequests.Revoke req) {
         devices.revoke(buyer.accountId(), req.expoToken());

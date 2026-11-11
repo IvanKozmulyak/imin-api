@@ -128,6 +128,7 @@ public class AudienceController {
     }
 
     @PostMapping("/segments")
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<SegmentDto> createSegment(
             @AuthenticationPrincipal AuthPrincipal principal,
             @Valid @RequestBody CreateSegmentRequest body) {
@@ -139,6 +140,7 @@ public class AudienceController {
     }
 
     @DeleteMapping("/segments/{id}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> deleteSegment(@AuthenticationPrincipal AuthPrincipal principal,
                                                @PathVariable UUID id) {
         segmentService.deleteSegment(principal.orgId(), id, principal);

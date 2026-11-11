@@ -5,6 +5,8 @@ import com.imin.iminapi.predictor.dto.PredictionStatusResponse;
 import com.imin.iminapi.predictor.service.PredictionRequestService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -47,6 +49,10 @@ public class PredictionController {
     }
 
     @PostMapping
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "A score is running: just started, or one was already in flight. Poll GET for the result."),
+            @ApiResponse(responseCode = "200", description = "Inputs unchanged since the last score: the stored result is returned and no new run starts.")
+    })
     public ResponseEntity<?> trigger(@CurrentUser AuthPrincipal p, @PathVariable UUID eventId) {
         PredictionRequestService.Trigger t = service.trigger(p, eventId);
         return ResponseEntity.status(t.httpStatus()).body(t.body());

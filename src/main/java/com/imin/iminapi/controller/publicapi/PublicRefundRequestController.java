@@ -4,6 +4,7 @@ import com.imin.iminapi.refund.RefundRequestService;
 import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitRequest;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -55,6 +56,7 @@ public class PublicRefundRequestController {
     }
 
     @PostMapping("/by-token/{token}")
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<PublicRefundSubmitResponse> submit(@PathVariable("token") String token,
                                                              @Valid @RequestBody PublicRefundSubmitRequest body) {
         PublicRefundSubmitResponse resp = service.submitByToken(token, body);

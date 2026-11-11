@@ -11,6 +11,7 @@ import com.imin.iminapi.marketing.dto.RenderPreviewResponse;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -75,6 +76,7 @@ public class CampaignController {
     }
 
     @PostMapping
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<CampaignDto> create(
             @AuthenticationPrincipal AuthPrincipal principal,
             @jakarta.validation.Valid @RequestBody CreateCampaignRequest req) {
@@ -98,6 +100,7 @@ public class CampaignController {
     }
 
     @PostMapping("/{id}/duplicate")
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<CampaignDto> duplicate(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
         return ResponseEntity.status(HttpStatus.CREATED).body(service.duplicate(principal, id));
@@ -126,6 +129,7 @@ public class CampaignController {
     }
 
     @PostMapping("/{id}/test-send")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> testSend(
             @AuthenticationPrincipal AuthPrincipal principal,
             @PathVariable UUID id,
@@ -146,6 +150,7 @@ public class CampaignController {
      * {@code bodyMd}, {@code segmentId} (required), {@code audience} (empty) or {@code scheduledAt} (more than 2 min in the past); a non-draft is {@code 409 INVALID_STATE}.
      */
     @PostMapping("/{id}/send")
+    @ApiResponse(responseCode = "202")
     public ResponseEntity<com.imin.iminapi.marketing.dto.CampaignSendResponse> send(
             @PathVariable UUID id,
             @com.imin.iminapi.security.CurrentUser AuthPrincipal principal,
@@ -183,6 +188,7 @@ public class CampaignController {
      * because it mails every requeued recipient.
      */
     @PostMapping("/{id}/retry")
+    @ApiResponse(responseCode = "202")
     public ResponseEntity<Void> retry(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
         service.retry(principal, id);
@@ -194,6 +200,7 @@ public class CampaignController {
      * 404 (no-leak) when not found or another org's; 409 INVALID_STATE for any non-draft status.
      */
     @DeleteMapping("/{id}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> delete(
             @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
         service.delete(principal, id);

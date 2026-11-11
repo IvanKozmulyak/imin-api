@@ -5,6 +5,7 @@ import com.imin.iminapi.buyer.dto.BuyerSavedResponse;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerSavedService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -65,12 +66,14 @@ public class BuyerSavedController {
     }
 
     @PutMapping("/api/v1/buyer/saved/{eventId}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> save(@CurrentBuyer BuyerPrincipal buyer, @PathVariable UUID eventId) {
         service.save(buyer.accountId(), eventId);
         return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();
     }
 
     @DeleteMapping("/api/v1/buyer/saved/{eventId}")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> remove(@CurrentBuyer BuyerPrincipal buyer, @PathVariable UUID eventId) {
         service.remove(buyer.accountId(), eventId);
         return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();

@@ -6,6 +6,7 @@ import com.imin.iminapi.marketing.kit.StoryKitCaptionService;
 import com.imin.iminapi.marketing.kit.StoryKitService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ContentDisposition;
@@ -44,6 +45,7 @@ public class StoryKitController {
     }
 
     @PostMapping
+    @ApiResponse(responseCode = "201")
     public ResponseEntity<StoryKitDto.State> make(@AuthenticationPrincipal AuthPrincipal p,
                                                   @PathVariable UUID eventId,
                                                   @Valid @RequestBody StoryKitRequests.Create body) {

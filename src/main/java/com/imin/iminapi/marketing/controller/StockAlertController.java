@@ -5,6 +5,7 @@ import com.imin.iminapi.marketing.dto.StockAlertSettingsRequest;
 import com.imin.iminapi.marketing.dto.StockAlertsDto;
 import com.imin.iminapi.marketing.stock.StockAlertService;
 import com.imin.iminapi.security.AuthPrincipal;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -49,6 +50,7 @@ public class StockAlertController {
     }
 
     @PostMapping("/{alertId}/dismiss")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> dismiss(@AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID eventId,
                                         @PathVariable UUID alertId) {
         service.dismiss(principal, eventId, alertId);

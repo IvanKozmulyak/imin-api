@@ -6,6 +6,7 @@ import com.imin.iminapi.checkoutreminder.dto.CheckoutReminderToggleRequest;
 import com.imin.iminapi.checkoutreminder.service.CheckoutReminderService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -57,6 +58,7 @@ public class CheckoutReminderController {
 
     /** Sends one "[TEST]" copy to the caller's own address; 409 when no night is on sale. */
     @PostMapping("/test")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> test(@AuthenticationPrincipal AuthPrincipal principal,
                                      @RequestParam(required = false) String locale) {
         rateLimiter.consume("checkout-reminder-test", principal.userId().toString());

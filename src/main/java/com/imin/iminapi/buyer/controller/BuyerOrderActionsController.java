@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.ticket.TicketIssuanceEmailer;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -56,6 +57,7 @@ public class BuyerOrderActionsController {
      * already on its way.
      */
     @PostMapping("/api/v1/buyer/orders/{token}/resend")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> resend(@CurrentBuyer BuyerPrincipal buyer, @PathVariable String token) {
         rateLimiter.consume("buyer-order-resend", "account:" + buyer.accountId());
 

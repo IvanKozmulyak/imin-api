@@ -1,6 +1,7 @@
 package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.service.ticket.OrderRecoveryService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,6 +29,7 @@ public class PublicRecoveryController {
     }
 
     @PostMapping("/api/v1/public/orders/recover")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> recover(@RequestBody Req req, HttpServletRequest http) {
         if (req != null) {
             service.requestRecovery(req.email(), req.eventId(), http.getRemoteAddr());

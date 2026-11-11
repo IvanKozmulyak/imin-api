@@ -9,6 +9,7 @@ import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
 import com.imin.iminapi.security.ApiException;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -68,6 +69,7 @@ public class BuyerMeController {
      * inbox is compromised, so it deliberately does not spare the caller.
      */
     @PostMapping("/api/v1/buyer/sessions/revoke-all")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> revokeAll(@CurrentBuyer BuyerPrincipal buyer) {
         sessionService.revokeAll(buyer.accountId());
         return ResponseEntity.noContent()

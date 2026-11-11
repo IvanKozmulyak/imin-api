@@ -8,6 +8,7 @@ import com.imin.iminapi.marketing.dto.PutMetaConnectionRequest;
 import com.imin.iminapi.marketing.service.MetaConnectionService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -46,6 +47,7 @@ public class MetaConnectionController {
 
     /** ADMIN or OWNER only (403 for a MEMBER). Audited. */
     @DeleteMapping("/connection")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> delete(@CurrentUser AuthPrincipal principal) {
         service.delete(principal);
         return ResponseEntity.noContent().build();

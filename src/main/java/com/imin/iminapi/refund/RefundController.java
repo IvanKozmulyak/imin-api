@@ -4,6 +4,7 @@ import com.imin.iminapi.refund.dto.CreateRefundRequest;
 import com.imin.iminapi.refund.dto.RefundResponse;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -50,6 +51,7 @@ public class RefundController {
     }
 
     @PostMapping("/refund")
+    @ApiResponse(responseCode = "202")
     public ResponseEntity<RefundResponse> refund(
         @PathVariable UUID orderId,
         @CurrentUser AuthPrincipal principal,

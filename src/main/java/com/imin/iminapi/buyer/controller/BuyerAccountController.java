@@ -5,6 +5,7 @@ import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerAccountDeletionService;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -72,6 +73,7 @@ public class BuyerAccountController {
      * be the product deciding on their behalf.
      */
     @PostMapping("/api/v1/buyer/account/delete/cancel")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> cancelDeletion(@CurrentBuyer BuyerPrincipal buyer) {
         deletion.auditDeletionCancelled(buyer.accountId());
         deletion.cancel(buyer.accountId());

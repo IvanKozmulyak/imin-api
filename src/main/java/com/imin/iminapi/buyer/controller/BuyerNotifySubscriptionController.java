@@ -10,6 +10,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -95,6 +96,7 @@ public class BuyerNotifySubscriptionController {
 
     /** Idempotent. "Stop watching" means every address the account holds. */
     @DeleteMapping("/api/v1/buyer/notify-subscriptions/{eventId}")
+    @ApiResponse(responseCode = "204")
     @Transactional
     public ResponseEntity<Void> stopWatching(@CurrentBuyer BuyerPrincipal buyer,
                                              @PathVariable UUID eventId) {

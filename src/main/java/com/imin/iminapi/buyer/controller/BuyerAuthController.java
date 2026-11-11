@@ -17,6 +17,7 @@ import com.imin.iminapi.oauth.GoogleOAuthService;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
@@ -101,6 +102,7 @@ public class BuyerAuthController {
      * {@code getRemoteAddr()} the real client IP in production.
      */
     @PostMapping("/api/v1/buyer/auth/signup")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> signup(@Valid @RequestBody BuyerAuthRequests.Signup req,
                                        HttpServletRequest http) {
         rateLimiter.consume("buyer-signup", "ip:" + http.getRemoteAddr());
@@ -130,6 +132,7 @@ public class BuyerAuthController {
     }
 
     @PostMapping("/api/v1/buyer/auth/resend-verification")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> resendVerification(
             @Valid @RequestBody BuyerAuthRequests.ResendVerification req) {
         rateLimiter.consume("buyer-verification-resend", EmailNormalizer.normalize(req.email()));
@@ -146,6 +149,7 @@ public class BuyerAuthController {
     }
 
     @PostMapping("/api/v1/buyer/auth/forgot-password")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> forgotPassword(@Valid @RequestBody BuyerAuthRequests.ForgotPassword req) {
         rateLimiter.consume("buyer-password-reset", EmailNormalizer.normalize(req.email()));
         credentials.forgotPassword(req.email());
@@ -158,6 +162,7 @@ public class BuyerAuthController {
      * behaviour the notification email describes.
      */
     @PostMapping("/api/v1/buyer/auth/reset-password")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> resetPassword(@Valid @RequestBody BuyerAuthRequests.ResetPassword req,
                                               HttpServletRequest http) {
         // Per client IP — the only key available before the token resolves. The
@@ -293,6 +298,7 @@ public class BuyerAuthController {
      * a foreign site cannot log a buyer out as a nuisance.
      */
     @PostMapping("/api/v1/buyer/auth/logout")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> logout(HttpServletRequest request) {
         // Bearer first, cookie second — the same precedence the auth filter uses,
         // so logout always revokes the credential the caller actually presented.

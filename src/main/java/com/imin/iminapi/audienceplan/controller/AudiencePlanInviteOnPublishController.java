@@ -5,6 +5,7 @@ import com.imin.iminapi.audienceplan.dto.AudiencePlanInviteOnPublishResponse;
 import com.imin.iminapi.audienceplan.service.InviteOnPublishService;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,6 +40,7 @@ public class AudiencePlanInviteOnPublishController {
     }
 
     @DeleteMapping("/{eventId}/audience-plan/invite-on-publish")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> delete(@CurrentUser AuthPrincipal p, @PathVariable UUID eventId) {
         service.delete(p, eventId);
         return ResponseEntity.noContent().build();

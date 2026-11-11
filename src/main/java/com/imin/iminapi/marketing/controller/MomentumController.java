@@ -5,6 +5,7 @@ import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.service.MomentumService;
 import com.imin.iminapi.security.AuthPrincipal;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -57,6 +58,7 @@ public class MomentumController {
     }
 
     @PostMapping("/{id}/dismiss")
+    @ApiResponse(responseCode = "204")
     public ResponseEntity<Void> dismiss(
             @AuthenticationPrincipal AuthPrincipal principal,
             @PathVariable UUID id) {
